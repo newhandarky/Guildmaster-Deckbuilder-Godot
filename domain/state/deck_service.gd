@@ -25,7 +25,7 @@ static func discard_hand_and_play_area(
 			)
 			if not bool(move_result.get("ok", false)):
 				return str(move_result.get("error", "zone_move_failed"))
-			var event := (move_result.get("event", {}) as Dictionary).duplicate(true)
+			var event: Dictionary = (move_result.get("event", {}) as Dictionary).duplicate(true)
 			event["reason"] = "rest_cleanup"
 			events.append(event)
 	return ""

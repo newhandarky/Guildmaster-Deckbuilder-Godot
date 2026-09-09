@@ -1,7 +1,7 @@
 {
   "manifest": {
     "pack_id": "base:vertical-slice",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "includes_custom_adventurers": false
   },
   "definitions": [

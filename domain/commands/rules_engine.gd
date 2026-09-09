@@ -4,7 +4,11 @@ extends RefCounted
 const PHASES: Array[StringName] = [&"action1", &"combat", &"action2", &"purchase", &"rest"]
 
 
-static func get_legal_commands(state: GameStateData, actor_id: StringName) -> Array[Dictionary]:
+static func get_legal_commands(
+	state: GameStateData,
+	actor_id: StringName,
+	definitions: Dictionary = {}
+) -> Array[Dictionary]:
 	var commands: Array[Dictionary] = []
 	if not InvariantService.validate(state).is_empty():
 		return commands
@@ -19,10 +23,15 @@ static func get_legal_commands(state: GameStateData, actor_id: StringName) -> Ar
 		"actor_id": str(actor_id),
 		"expected_revision": state.revision,
 	})
+	commands.append_array(EquipmentService.get_legal_commands(state, actor_id, definitions))
 	return commands
 
 
-static func dispatch(state: GameStateData, envelope: Dictionary) -> Dictionary:
+static func dispatch(
+	state: GameStateData,
+	envelope: Dictionary,
+	definitions: Dictionary = {}
+) -> Dictionary:
 	var before_hash := CanonicalJson.sha256(state.to_dictionary())
 	var state_errors := InvariantService.validate(state)
 	if not state_errors.is_empty():
@@ -32,7 +41,8 @@ static func dispatch(state: GameStateData, envelope: Dictionary) -> Dictionary:
 		return _failure(error, before_hash)
 
 	var command: Dictionary = envelope.get("command", {})
-	error = _validate_command(state, command)
+	var actor_id := StringName(envelope.get("actor_id", ""))
+	error = _validate_command(state, actor_id, command, definitions)
 	if not error.is_empty():
 		return _failure(error, before_hash)
 	var draft := state.clone_state()
@@ -40,6 +50,8 @@ static func dispatch(state: GameStateData, envelope: Dictionary) -> Dictionary:
 	match StringName(command.get("type", "")):
 		&"END_PHASE":
 			error = _apply_end_phase(draft, events)
+		&"EQUIP_ITEM":
+			error = EquipmentService.apply(draft, actor_id, command, definitions, events)
 		_:
 			return _failure("unsupported_command", before_hash)
 	if not error.is_empty():
@@ -83,14 +95,23 @@ static func _validate_envelope(state: GameStateData, envelope: Dictionary) -> St
 	return ""
 
 
-static func _validate_command(state: GameStateData, command: Dictionary) -> String:
+static func _validate_command(
+	state: GameStateData,
+	actor_id: StringName,
+	command: Dictionary,
+	definitions: Dictionary
+) -> String:
 	if state.status != &"active":
 		return "game_not_active"
 	if not state.effect_state.is_empty():
 		return "effects_pending"
-	if StringName(command.get("type", "")) != &"END_PHASE":
-		return "unsupported_command"
-	return ""
+	match StringName(command.get("type", "")):
+		&"END_PHASE":
+			return ""
+		&"EQUIP_ITEM":
+			return EquipmentService.validate(state, actor_id, command, definitions)
+		_:
+			return "unsupported_command"
 
 
 static func _apply_end_phase(state: GameStateData, events: Array[Dictionary]) -> String:
@@ -98,6 +119,9 @@ static func _apply_end_phase(state: GameStateData, events: Array[Dictionary]) ->
 	var old_player_id := state.active_player_id
 	var phase_index := PHASES.find(state.phase)
 	if phase_index == PHASES.size() - 1:
+		var outgoing_player := state.players[old_player_id] as PlayerStateData
+		outgoing_player.reset_turn_scope()
+		events.append({"type": "turn_resources_reset", "player_id": str(old_player_id)})
 		var rest_error := DeckService.restock_hand(state, old_player_id, 5, events)
 		if not rest_error.is_empty():
 			return rest_error

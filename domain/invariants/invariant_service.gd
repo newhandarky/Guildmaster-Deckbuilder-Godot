@@ -43,6 +43,7 @@ static func validate(state: GameStateData) -> PackedStringArray:
 			errors.append("Card %s references missing owner %s" % [instance_id, owner_id])
 		if not locations.has(instance_id):
 			errors.append("Card %s is not in any zone" % instance_id)
+	_validate_equipment_attachments(state, locations, errors)
 	var command_ids: Dictionary = {}
 	for command_id: String in state.processed_command_ids:
 		if command_id.is_empty():
@@ -62,6 +63,67 @@ static func validate(state: GameStateData) -> PackedStringArray:
 	if state.revision < 0 or state.event_cursor < 0:
 		errors.append("Revision and event cursor must not be negative")
 	return errors
+
+
+static func _validate_equipment_attachments(
+	state: GameStateData,
+	locations: Dictionary,
+	errors: PackedStringArray
+) -> void:
+	var occupied_targets: Dictionary = {}
+	for instance_id: Variant in state.cards:
+		var card := state.cards[instance_id] as Dictionary
+		if card == null or not card.get("state", {}) is Dictionary:
+			errors.append("Card %s state must be a Dictionary" % instance_id)
+			continue
+		var card_state := card.get("state", {}) as Dictionary
+		var equipment_ids_value: Variant = card_state.get("equipment_ids", [])
+		if not equipment_ids_value is Array:
+			errors.append("Card %s equipment_ids must be an Array" % instance_id)
+		else:
+			var seen_equipment: Dictionary = {}
+			for raw_equipment_id: Variant in equipment_ids_value as Array:
+				var equipment_id := StringName(str(raw_equipment_id))
+				if seen_equipment.has(equipment_id):
+					errors.append("Card %s lists equipment %s more than once" % [instance_id, equipment_id])
+					continue
+				seen_equipment[equipment_id] = true
+				var equipment_card := state.cards.get(equipment_id) as Dictionary
+				if equipment_card == null:
+					errors.append("Card %s lists missing equipment %s" % [instance_id, equipment_id])
+					continue
+				var equipment_state := equipment_card.get("state", {}) as Dictionary
+				if StringName(equipment_state.get("equipped_to", "")) != StringName(instance_id):
+					errors.append("Card %s and equipment %s attachment is not bidirectional" % [instance_id, equipment_id])
+		var target_id := StringName(card_state.get("equipped_to", ""))
+		if target_id.is_empty():
+			continue
+		if not state.cards.has(target_id):
+			errors.append("Equipment %s references missing target %s" % [instance_id, target_id])
+			continue
+		if occupied_targets.has(target_id):
+			errors.append("Target %s has more than one equipment" % target_id)
+		else:
+			occupied_targets[target_id] = instance_id
+		var owner_id := StringName(card.get("owner_id", ""))
+		var target_card := state.cards[target_id] as Dictionary
+		if StringName(target_card.get("owner_id", "")) != owner_id:
+			errors.append("Equipment %s and target %s have different owners" % [instance_id, target_id])
+		var target_state := target_card.get("state", {}) as Dictionary
+		var target_equipment_value: Variant = target_state.get("equipment_ids", [])
+		if not target_equipment_value is Array:
+			errors.append("Equipment target %s equipment_ids must be an Array" % target_id)
+			continue
+		var target_equipment_ids := target_equipment_value as Array
+		if not str(instance_id) in target_equipment_ids and not StringName(instance_id) in target_equipment_ids:
+			errors.append("Equipment %s is not listed by target %s" % [instance_id, target_id])
+		var player := state.players.get(owner_id) as PlayerStateData
+		if player == null:
+			continue
+		if StringName(locations.get(instance_id, "")) != StringName(player.zone_ids.get(&"equipment", &"")):
+			errors.append("Equipped card %s must be in its owner's equipment zone" % instance_id)
+		if StringName(locations.get(target_id, "")) != StringName(player.zone_ids.get(&"party", &"")):
+			errors.append("Equipment target %s must be in its owner's party" % target_id)
 
 
 static func _validate_turn_order(state: GameStateData, errors: PackedStringArray) -> void:
@@ -93,6 +155,7 @@ static func _validate_players(state: GameStateData, errors: PackedStringArray) -
 		&"hand": &"hand",
 		&"discard_pile": &"discard_pile",
 		&"party": &"party",
+		&"equipment": &"equipment",
 		&"play_area": &"play_area",
 		&"bonds": &"bonds",
 	}

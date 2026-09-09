@@ -6,6 +6,7 @@ signal events_committed(events: Array[Dictionary])
 signal command_rejected(error_code: String)
 
 const CONTENT_PACK_PATH := "res://content/packs/base_vertical_slice.json"
+const RULESET_FINGERPRINT := "ruleset:vertical-slice:0.3.0"
 
 var state: GameStateData
 var content_registry := ContentRegistry.new()
@@ -18,7 +19,7 @@ func start_new_game(seed_value: int = 20260909) -> PackedStringArray:
 	state = GameStateData.create_vertical_slice(seed_value)
 	errors.append_array(InvariantService.validate(state))
 	if errors.is_empty():
-		state_changed.emit(state.to_dictionary())
+		_emit_state_changed()
 	return errors
 
 
@@ -26,7 +27,7 @@ func get_legal_commands(actor_id: StringName = &"") -> Array[Dictionary]:
 	if state == null:
 		return []
 	var resolved_actor_id := state.active_player_id if actor_id.is_empty() else actor_id
-	return RulesEngine.get_legal_commands(state, resolved_actor_id)
+	return RulesEngine.get_legal_commands(state, resolved_actor_id, content_registry.definitions)
 
 
 func end_phase() -> Dictionary:
@@ -43,17 +44,35 @@ func end_phase() -> Dictionary:
 	return submit_command(envelope)
 
 
+func equip_item(card_instance_id: StringName, target_card_id: StringName) -> Dictionary:
+	if state == null:
+		return {"ok": false, "error": "session_not_started", "events": []}
+	var envelope := {
+		"protocol_version": 1,
+		"game_id": str(state.game_id),
+		"command_id": "cmd-%06d" % (state.revision + 1),
+		"actor_id": str(state.active_player_id),
+		"expected_revision": state.revision,
+		"command": {
+			"type": "EQUIP_ITEM",
+			"card_instance_id": str(card_instance_id),
+			"target_card_id": str(target_card_id),
+		},
+	}
+	return submit_command(envelope)
+
+
 func submit_command(envelope: Dictionary) -> Dictionary:
 	if state == null:
 		var result := {"ok": false, "error": "session_not_started", "events": []}
 		command_rejected.emit(result["error"])
 		return result
-	var result := RulesEngine.dispatch(state, envelope)
+	var result := RulesEngine.dispatch(state, envelope, content_registry.definitions)
 	if not bool(result.get("ok", false)):
 		command_rejected.emit(str(result.get("error", "unknown_error")))
 		return result
 	state = result["state"] as GameStateData
-	state_changed.emit(state.to_dictionary())
+	_emit_state_changed()
 	events_committed.emit(result["events"])
 	return result
 
@@ -63,9 +82,21 @@ func snapshot() -> Dictionary:
 		return {}
 	return {
 		"snapshot_schema_version": 1,
-		"app_version": "0.2.0",
+		"app_version": "0.3.0",
 		"content_fingerprint": content_registry.pack_fingerprint,
-		"ruleset_fingerprint": "ruleset:vertical-slice:0.2.0",
+		"ruleset_fingerprint": RULESET_FINGERPRINT,
 		"state": state.to_dictionary(),
 		"state_hash": CanonicalJson.sha256(state.to_dictionary()),
 	}
+
+
+func _emit_state_changed() -> void:
+	var public_state := state.to_dictionary()
+	public_state["definitions"] = content_registry.to_public_dictionary()
+	public_state["legal_commands"] = get_legal_commands()
+	public_state["active_resources"] = ResourceService.evaluate_player(
+		state,
+		state.active_player_id,
+		content_registry.definitions
+	)
+	state_changed.emit(public_state)

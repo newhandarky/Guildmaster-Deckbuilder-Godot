@@ -6,6 +6,7 @@ const REQUIRED_ZONE_KEYS: Array[StringName] = [
 	&"hand",
 	&"discard_pile",
 	&"party",
+	&"equipment",
 	&"play_area",
 	&"bonds",
 ]
@@ -32,6 +33,7 @@ static func create(id: StringName, seat: int, name: String) -> PlayerStateData:
 		&"hand": StringName("%s:hand" % id),
 		&"discard_pile": StringName("%s:discard-pile" % id),
 		&"party": StringName("%s:party" % id),
+		&"equipment": StringName("%s:equipment" % id),
 		&"play_area": StringName("%s:play-area" % id),
 		&"bonds": StringName("%s:bonds" % id),
 	}

@@ -46,3 +46,22 @@ func validate() -> PackedStringArray:
 	if presentation_id.is_empty():
 		errors.append("presentation_id is required for %s" % definition_id)
 	return errors
+
+
+func to_dictionary() -> Dictionary:
+	var serialized_tags: Array[String] = []
+	for tag: StringName in tags:
+		serialized_tags.append(str(tag))
+	return {
+		"definition_id": str(definition_id),
+		"display_name": display_name,
+		"card_type": str(card_type),
+		"copies": copies,
+		"cost": cost,
+		"combat": combat,
+		"purchase_power": purchase_power,
+		"honor": honor,
+		"tags": serialized_tags,
+		"effects": effects.duplicate(true),
+		"presentation_id": str(presentation_id),
+	}

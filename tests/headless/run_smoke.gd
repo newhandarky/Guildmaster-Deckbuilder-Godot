@@ -23,6 +23,11 @@ func _run() -> void:
 	_test_player_invariant_guards()
 	_test_legal_command_and_dispatch()
 	_test_command_legality_guards()
+	_test_equip_item_legality_and_resources()
+	_test_equip_item_rejection_is_atomic()
+	_test_equipment_replacement()
+	_test_effect_resolution_fifo()
+	_test_equipment_survives_rest()
 	_test_turn_rotation()
 	_test_session_turn_integration()
 	_test_zone_move_service()
@@ -118,6 +123,20 @@ func _test_player_invariant_guards() -> void:
 	_expect(not InvariantService.validate(exposed_hand).is_empty(), "private hand zone must not become public")
 	_expect(RulesEngine.get_legal_commands(exposed_hand, &"p1").is_empty(), "invalid state must expose no legal commands")
 
+	var attachment_state := GameStateData.create_vertical_slice()
+	var definitions := _load_definitions()
+	var attachment_result := RulesEngine.dispatch(
+		attachment_state,
+		_equip_item_envelope(attachment_state, &"card-p1-spirit-crystal-01", &"card-p1-starter-adventurer-01", "cmd-attachment-invariant"),
+		definitions
+	)
+	_expect(bool(attachment_result.get("ok", false)), "attachment invariant fixture should equip successfully")
+	if bool(attachment_result.get("ok", false)):
+		var broken_attachment := attachment_result["state"] as GameStateData
+		var target := broken_attachment.cards[&"card-p1-starter-adventurer-01"] as Dictionary
+		(target.get("state", {}) as Dictionary)["equipment_ids"] = []
+		_expect(not InvariantService.validate(broken_attachment).is_empty(), "equipment attachments must remain bidirectional")
+
 
 func _test_legal_command_and_dispatch() -> void:
 	var state := GameStateData.create_vertical_slice()
@@ -150,6 +169,192 @@ func _test_command_legality_guards() -> void:
 	wrong_actor_envelope["actor_id"] = "p2"
 	var wrong_actor_result := RulesEngine.dispatch(wrong_actor, wrong_actor_envelope)
 	_expect(str(wrong_actor_result.get("error", "")) == "wrong_actor", "non-active player command must be rejected")
+
+
+func _test_equip_item_legality_and_resources() -> void:
+	var state := GameStateData.create_vertical_slice()
+	var definitions := _load_definitions()
+	var legal := RulesEngine.get_legal_commands(state, &"p1", definitions)
+	var play_commands: Array[Dictionary] = []
+	for command: Dictionary in legal:
+		if command.get("type") == "EQUIP_ITEM":
+			play_commands.append(command)
+	_expect(play_commands.size() == 5, "spirit crystal should be equippable to each of five party members")
+	for command: Dictionary in play_commands:
+		_expect(command.get("card_instance_id") == "card-p1-spirit-crystal-01", "summoning stones must not be exposed as playable cards")
+
+	var before_resources := ResourceService.evaluate_player(state, &"p1", definitions)
+	_expect(int(before_resources.get("combat", 0)) == 6, "starter party should provide six printed combat")
+	_expect(int(before_resources.get("purchase_power", 0)) == 4, "four stones in hand should provide four purchase power")
+	var result := RulesEngine.dispatch(
+		state,
+		_equip_item_envelope(
+			state,
+			&"card-p1-spirit-crystal-01",
+			&"card-p1-starter-adventurer-01",
+			"cmd-equip-crystal"
+		),
+		definitions
+	)
+	_expect(bool(result.get("ok", false)), "legal equipment play should dispatch")
+	var deterministic_result := RulesEngine.dispatch(
+		state,
+		_equip_item_envelope(
+			state,
+			&"card-p1-spirit-crystal-01",
+			&"card-p1-starter-adventurer-01",
+			"cmd-equip-crystal"
+		),
+		definitions
+	)
+	_expect(result.get("after_hash") == deterministic_result.get("after_hash"), "same equipment command should produce the same committed hash")
+	if not bool(result.get("ok", false)):
+		return
+	var equipped := result["state"] as GameStateData
+	_expect(ZoneService.find_card_zone(equipped, &"card-p1-spirit-crystal-01") == &"p1:equipment", "equipped card should move to the equipment zone")
+	var crystal := equipped.cards[&"card-p1-spirit-crystal-01"] as Dictionary
+	_expect((crystal.get("state", {}) as Dictionary).get("equipped_to") == "card-p1-starter-adventurer-01", "equipment should retain its target")
+	var target := equipped.cards[&"card-p1-starter-adventurer-01"] as Dictionary
+	_expect("card-p1-spirit-crystal-01" in (target.get("state", {}) as Dictionary).get("equipment_ids", []), "target should retain the reverse equipment attachment")
+	var after_resources := ResourceService.evaluate_player(equipped, &"p1", definitions)
+	_expect(int(after_resources.get("combat", 0)) == 7, "equipped spirit crystal should add one combat")
+	_expect(int(after_resources.get("purchase_power", 0)) == 4, "equipping the crystal must not spend or add purchase power")
+	_expect(InvariantService.validate(equipped).is_empty(), "equipped state should satisfy invariants")
+	_expect(ZoneService.find_card_zone(state, &"card-p1-spirit-crystal-01") == &"p1:hand", "transaction must leave the original state unchanged")
+
+
+func _test_equip_item_rejection_is_atomic() -> void:
+	var definitions := _load_definitions()
+	var wrong_phase := GameStateData.create_vertical_slice()
+	wrong_phase.phase = &"combat"
+	var before_hash := CanonicalJson.sha256(wrong_phase.to_dictionary())
+	var wrong_phase_result := RulesEngine.dispatch(
+		wrong_phase,
+		_equip_item_envelope(wrong_phase, &"card-p1-spirit-crystal-01", &"card-p1-starter-adventurer-01", "cmd-wrong-phase"),
+		definitions
+	)
+	_expect(str(wrong_phase_result.get("error", "")) == "wrong_phase", "equipment may only be played during an action phase")
+	_expect(CanonicalJson.sha256(wrong_phase.to_dictionary()) == before_hash, "wrong-phase play must not mutate state")
+
+	var stone_state := GameStateData.create_vertical_slice()
+	var stone_hash := CanonicalJson.sha256(stone_state.to_dictionary())
+	var stone_result := RulesEngine.dispatch(
+		stone_state,
+		_equip_item_envelope(stone_state, &"card-p1-summoning-stone-01", &"card-p1-starter-adventurer-01", "cmd-play-stone"),
+		definitions
+	)
+	_expect(str(stone_result.get("error", "")) == "unsupported_card_type", "summoning stones must stay in hand as passive purchase power")
+	_expect(CanonicalJson.sha256(stone_state.to_dictionary()) == stone_hash, "unsupported card play must be atomic")
+
+	var invalid_target := GameStateData.create_vertical_slice()
+	var target_hash := CanonicalJson.sha256(invalid_target.to_dictionary())
+	var target_result := RulesEngine.dispatch(
+		invalid_target,
+		_equip_item_envelope(invalid_target, &"card-p1-spirit-crystal-01", &"card-monster-skeleton-01", "cmd-invalid-target"),
+		definitions
+	)
+	_expect(str(target_result.get("error", "")) == "target_not_owned", "equipment target must belong to the acting player")
+	_expect(CanonicalJson.sha256(invalid_target.to_dictionary()) == target_hash, "invalid target must leave state unchanged")
+
+
+func _test_equipment_replacement() -> void:
+	var definitions := _load_definitions()
+	var state := GameStateData.create_vertical_slice()
+	var first := RulesEngine.dispatch(
+		state,
+		_equip_item_envelope(state, &"card-p1-spirit-crystal-01", &"card-p1-starter-adventurer-01", "cmd-first-equipment"),
+		definitions
+	)
+	_expect(bool(first.get("ok", false)), "replacement fixture should equip the first card")
+	if not bool(first.get("ok", false)):
+		return
+	state = first["state"] as GameStateData
+	var replacement_definition := CardDefinition.from_dictionary({
+		"definition_id": "test:equipment/replacement",
+		"display_name": "測試裝備",
+		"card_type": "equipment",
+		"copies": 1,
+		"combat": 2,
+		"tags": ["equipment"],
+		"effects": [],
+		"presentation_id": "test:presentation/equipment",
+	})
+	definitions[replacement_definition.definition_id] = replacement_definition
+	state.cards[&"card-p1-test-equipment"] = {
+		"instance_id": "card-p1-test-equipment",
+		"definition_id": "test:equipment/replacement",
+		"owner_id": "p1",
+		"state": {},
+	}
+	(state.zones[&"p1:hand"] as ZoneData).card_instance_ids.append(&"card-p1-test-equipment")
+	var second := RulesEngine.dispatch(
+		state,
+		_equip_item_envelope(state, &"card-p1-test-equipment", &"card-p1-starter-adventurer-01", "cmd-replace-equipment"),
+		definitions
+	)
+	_expect(bool(second.get("ok", false)), "new equipment should replace an occupied slot")
+	if not bool(second.get("ok", false)):
+		return
+	var replaced := second["state"] as GameStateData
+	_expect(ZoneService.find_card_zone(replaced, &"card-p1-spirit-crystal-01") == &"p1:discard-pile", "replaced equipment should enter discard")
+	_expect(ZoneService.find_card_zone(replaced, &"card-p1-test-equipment") == &"p1:equipment", "new equipment should occupy the equipment zone")
+	_expect(int(ResourceService.evaluate_player(replaced, &"p1", definitions).get("combat", 0)) == 8, "replacement combat should use only the new equipment")
+	_expect(InvariantService.validate(replaced).is_empty(), "equipment replacement should preserve invariants")
+
+
+func _test_effect_resolution_fifo() -> void:
+	var state := GameStateData.create_vertical_slice()
+	var events: Array[Dictionary] = []
+	var effects: Array[Dictionary] = [
+		{"op": "grant_purchase_power", "amount": 2},
+		{"op": "grant_combat", "amount": 3},
+	]
+	var error := EffectResolver.resolve(state, &"p1", effects, events)
+	_expect(error.is_empty(), "supported effects should resolve")
+	var player := state.players[&"p1"] as PlayerStateData
+	_expect(int(player.turn_resources.get("purchase_power", 0)) == 2, "purchase-power effect should update turn resources")
+	_expect(int(player.turn_resources.get("combat", 0)) == 3, "combat effect should update turn resources")
+	_expect(events.size() == 2 and events[0].get("op") == "grant_purchase_power" and events[1].get("op") == "grant_combat", "effects should emit events in FIFO content order")
+
+	var invalid_state := GameStateData.create_vertical_slice()
+	var invalid_hash := CanonicalJson.sha256(invalid_state.to_dictionary())
+	var invalid_events: Array[Dictionary] = []
+	var invalid_effects: Array[Dictionary] = [
+		{"op": "grant_combat", "amount": 1},
+		{"op": "unknown_operation", "amount": 1},
+	]
+	_expect(not EffectResolver.resolve(invalid_state, &"p1", invalid_effects, invalid_events).is_empty(), "unknown effects should be rejected")
+	_expect(CanonicalJson.sha256(invalid_state.to_dictionary()) == invalid_hash and invalid_events.is_empty(), "effect validation must finish before any mutation")
+
+
+func _test_equipment_survives_rest() -> void:
+	var definitions := _load_definitions()
+	var state := GameStateData.create_vertical_slice(211)
+	var equip_result := RulesEngine.dispatch(
+		state,
+		_equip_item_envelope(state, &"card-p1-spirit-crystal-01", &"card-p1-starter-adventurer-01", "cmd-rest-equip"),
+		definitions
+	)
+	_expect(bool(equip_result.get("ok", false)), "rest fixture should equip the crystal")
+	if not bool(equip_result.get("ok", false)):
+		return
+	state = equip_result["state"] as GameStateData
+	var player := state.players[&"p1"] as PlayerStateData
+	player.turn_resources["combat"] = 3
+	player.turn_resources["purchase_power"] = 2
+	for index in 5:
+		var result := RulesEngine.dispatch(state, _end_phase_envelope(state, "cmd-equipped-rest-%d" % index), definitions)
+		_expect(bool(result.get("ok", false)), "equipped rest phase %d should dispatch" % index)
+		if not bool(result.get("ok", false)):
+			return
+		state = result["state"] as GameStateData
+	player = state.players[&"p1"] as PlayerStateData
+	_expect(ZoneService.find_card_zone(state, &"card-p1-spirit-crystal-01") == &"p1:equipment", "equipped cards must remain attached through rest")
+	_expect((state.zones[&"p1:hand"] as ZoneData).card_instance_ids.size() == 4, "rest should draw only the four physically available stones")
+	_expect(int(player.turn_resources.get("combat", -1)) == 0 and int(player.turn_resources.get("purchase_power", -1)) == 0, "rest should clear outgoing player's temporary resources")
+	var resources := ResourceService.evaluate_player(state, &"p1", definitions)
+	_expect(int(resources.get("combat", 0)) == 7 and int(resources.get("purchase_power", 0)) == 4, "printed party, equipment, and hand resources should remain derivable after rest")
+	_expect(InvariantService.validate(state).is_empty(), "rest with persistent equipment should satisfy invariants")
 
 
 func _test_turn_rotation() -> void:
@@ -186,12 +391,17 @@ func _test_session_turn_integration() -> void:
 	_expect(errors.is_empty(), "session should start a two-player game")
 	if not errors.is_empty():
 		return
+	var equip_result := session.equip_item(&"card-p1-spirit-crystal-01", &"card-p1-starter-adventurer-01")
+	_expect(bool(equip_result.get("ok", false)), "session should submit an equipment command")
 	for index in 5:
 		var result := session.end_phase()
 		_expect(bool(result.get("ok", false)), "session should advance player-one phase %d" % index)
 	_expect(session.state.active_player_id == &"p2", "session should expose player two after player one rests")
 	var legal := session.get_legal_commands()
-	_expect(legal.size() == 1 and legal[0].get("actor_id") == "p2", "session default legal query should follow active player")
+	var all_for_player_two := not legal.is_empty()
+	for command: Dictionary in legal:
+		all_for_player_two = all_for_player_two and command.get("actor_id") == "p2"
+	_expect(all_for_player_two, "session default legal query should follow active player")
 
 
 func _test_zone_move_service() -> void:
@@ -335,6 +545,15 @@ func _test_stale_command_rollback() -> void:
 
 func _test_snapshot_round_trip() -> void:
 	var state := GameStateData.create_vertical_slice()
+	var definitions := _load_definitions()
+	var equip_result := RulesEngine.dispatch(
+		state,
+		_equip_item_envelope(state, &"card-p1-spirit-crystal-01", &"card-p1-starter-adventurer-01", "cmd-snapshot-equipment"),
+		definitions
+	)
+	_expect(bool(equip_result.get("ok", false)), "snapshot fixture should equip the crystal")
+	if bool(equip_result.get("ok", false)):
+		state = equip_result["state"] as GameStateData
 	var encoded := SnapshotCodec.encode(state, "content:test", "rules:test")
 	var decoded := SnapshotCodec.decode(encoded)
 	_expect(bool(decoded.get("ok", false)), "snapshot should decode: %s" % decoded)
@@ -345,6 +564,9 @@ func _test_snapshot_round_trip() -> void:
 		var restored := decoded["state"] as GameStateData
 		_expect(restored.players.size() == 2, "snapshot should preserve both players")
 		_expect(restored.turn_order == state.turn_order, "snapshot should preserve turn order")
+		_expect(ZoneService.find_card_zone(restored, &"card-p1-spirit-crystal-01") == &"p1:equipment", "snapshot should preserve the equipment zone")
+		var restored_crystal := restored.cards[&"card-p1-spirit-crystal-01"] as Dictionary
+		_expect((restored_crystal.get("state", {}) as Dictionary).get("equipped_to") == "card-p1-starter-adventurer-01", "snapshot should preserve equipment attachment")
 		_expect(
 			CanonicalJson.sha256(restored.to_dictionary()) == CanonicalJson.sha256(state.to_dictionary()),
 			"snapshot round trip should preserve state hash"
@@ -414,6 +636,33 @@ func _end_phase_envelope(state: GameStateData, command_id: String = "cmd-test") 
 		"expected_revision": state.revision,
 		"command": {"type": "END_PHASE"},
 	}
+
+
+func _equip_item_envelope(
+	state: GameStateData,
+	card_instance_id: StringName,
+	target_card_id: StringName,
+	command_id: String
+) -> Dictionary:
+	return {
+		"protocol_version": 1,
+		"game_id": str(state.game_id),
+		"command_id": command_id,
+		"actor_id": str(state.active_player_id),
+		"expected_revision": state.revision,
+		"command": {
+			"type": "EQUIP_ITEM",
+			"card_instance_id": str(card_instance_id),
+			"target_card_id": str(target_card_id),
+		},
+	}
+
+
+func _load_definitions() -> Dictionary:
+	var registry := ContentRegistry.new()
+	var errors := registry.load_pack("res://content/packs/base_vertical_slice.json")
+	_expect(errors.is_empty(), "test content definitions should load: %s" % "; ".join(errors))
+	return registry.definitions.duplicate()
 
 
 func _expect(condition: bool, message: String) -> void:

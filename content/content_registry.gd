@@ -42,6 +42,7 @@ func load_pack(path: String) -> PackedStringArray:
 			continue
 		var definition: CardDefinition = CardDefinitionType.from_dictionary(raw_definition)
 		errors.append_array(definition.validate())
+		errors.append_array(EffectResolver.validate_effects(definition.effects, definition.definition_id))
 		if definitions.has(definition.definition_id):
 			errors.append("Duplicate definition_id: %s" % definition.definition_id)
 		else:
@@ -55,3 +56,10 @@ func load_pack(path: String) -> PackedStringArray:
 
 func get_definition(definition_id: StringName) -> CardDefinition:
 	return definitions.get(definition_id) as CardDefinition
+
+
+func to_public_dictionary() -> Dictionary:
+	var result: Dictionary = {}
+	for definition_id: Variant in definitions:
+		result[str(definition_id)] = (definitions[definition_id] as CardDefinition).to_dictionary()
+	return result

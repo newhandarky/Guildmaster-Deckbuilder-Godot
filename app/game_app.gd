@@ -15,6 +15,7 @@ func _ready() -> void:
 	player_token.selected.connect(_on_entity_selected)
 	enemy_token.selected.connect(_on_entity_selected)
 	hud.end_phase_requested.connect(_on_end_phase_requested)
+	hud.equip_item_requested.connect(_on_equip_item_requested)
 	hud.skip_animation_requested.connect(animation_director.skip_all)
 	session.state_changed.connect(hud.update_state)
 	session.events_committed.connect(_on_events_committed)
@@ -37,6 +38,10 @@ func _on_entity_selected(entity_id: StringName, display_name: String, details: S
 
 func _on_end_phase_requested() -> void:
 	session.end_phase()
+
+
+func _on_equip_item_requested(card_instance_id: StringName, target_card_id: StringName) -> void:
+	session.equip_item(card_instance_id, target_card_id)
 
 
 func _on_events_committed(events: Array[Dictionary]) -> void:

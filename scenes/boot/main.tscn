@@ -178,7 +178,7 @@ layout_mode = 0
 offset_left = 24.0
 offset_top = 24.0
 offset_right = 310.0
-offset_bottom = 206.0
+offset_bottom = 236.0
 theme_override_styles/panel = SubResource("Style_panel")
 
 [node name="Status" type="VBoxContainer" parent="Interface/HUD/StatusPanel"]
@@ -215,6 +215,13 @@ unique_name_in_owner = true
 layout_mode = 2
 theme_override_colors/font_color = Color(0.6, 0.75, 0.84, 1)
 text = "Revision 0"
+
+[node name="ResourceLabel" type="Label" parent="Interface/HUD/StatusPanel/Status"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.95, 0.78, 0.26, 1)
+theme_override_font_sizes/font_size = 16
+text = "隊伍戰力：6　購買力：4"
 
 [node name="DetailPanel" type="PanelContainer" parent="Interface/HUD"]
 unique_name_in_owner = true
@@ -290,3 +297,45 @@ theme_override_font_sizes/font_size = 15
 text = "點擊 Token，或結束階段測試事件管線。"
 vertical_alignment = 1
 autowrap_mode = 2
+
+[node name="HandPanel" type="PanelContainer" parent="Interface/HUD"]
+layout_mode = 0
+anchor_left = 1.0
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = -550.0
+offset_top = -342.0
+offset_right = -24.0
+offset_bottom = -24.0
+grow_horizontal = 0
+grow_vertical = 0
+theme_override_styles/panel = SubResource("Style_panel")
+
+[node name="Hand" type="VBoxContainer" parent="Interface/HUD/HandPanel"]
+layout_mode = 2
+theme_override_constants/separation = 7
+
+[node name="HandTitle" type="Label" parent="Interface/HUD/HandPanel/Hand"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.95, 0.78, 0.26, 1)
+theme_override_font_sizes/font_size = 20
+text = "手牌與合法操作"
+
+[node name="HandSummary" type="Label" parent="Interface/HUD/HandPanel/Hand"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.72, 0.88, 1, 1)
+text = "目前手牌：5 張"
+
+[node name="HandScroll" type="ScrollContainer" parent="Interface/HUD/HandPanel/Hand"]
+custom_minimum_size = Vector2(0, 232)
+layout_mode = 2
+size_flags_vertical = 3
+horizontal_scroll_mode = 0
+
+[node name="HandActions" type="VBoxContainer" parent="Interface/HUD/HandPanel/Hand/HandScroll"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 5
