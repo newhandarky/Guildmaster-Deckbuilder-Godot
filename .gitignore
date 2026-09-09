@@ -1,0 +1,11 @@
+.godot/
+.DS_Store
+builds/*
+!builds/.gitkeep
+*.tmp
+*.log
+.env
+.env.*
+!.env.example
+
+/docs/

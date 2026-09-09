@@ -1,0 +1,43 @@
+{
+  "manifest": {
+    "pack_id": "base:vertical-slice",
+    "version": "0.1.0",
+    "includes_custom_adventurers": false
+  },
+  "definitions": [
+    {
+      "definition_id": "base:starter/adventurer-01",
+      "display_name": "起始近戰冒險者",
+      "card_type": "starter",
+      "copies": 1,
+      "combat": 1,
+      "tags": ["adventurer", "starter", "melee"],
+      "effects": [],
+      "presentation_id": "base:presentation/starter-melee"
+    },
+    {
+      "definition_id": "base:monster/monster-01",
+      "display_name": "骷髏戰士",
+      "card_type": "monster",
+      "copies": 3,
+      "combat": 5,
+      "purchase_power": null,
+      "honor": null,
+      "tags": ["enemy", "monster", "cycle_anchor"],
+      "effects": [
+        {"op": "grant_purchase_power", "amount": 4, "optional": true}
+      ],
+      "presentation_id": "base:presentation/monster-skeleton"
+    },
+    {
+      "definition_id": "base:starter/summoning-stone",
+      "display_name": "召喚石",
+      "card_type": "starter",
+      "copies": 4,
+      "purchase_power": 1,
+      "tags": ["resource", "starter"],
+      "effects": [],
+      "presentation_id": "base:presentation/summoning-stone"
+    }
+  ]
+}

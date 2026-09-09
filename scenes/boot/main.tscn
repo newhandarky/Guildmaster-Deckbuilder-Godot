@@ -1,0 +1,285 @@
+[gd_scene load_steps=15 format=3]
+
+[ext_resource type="Script" path="res://app/game_app.gd" id="1_app"]
+[ext_resource type="Script" path="res://presentation/table_3d/selectable_token.gd" id="2_token"]
+[ext_resource type="Script" path="res://presentation/animation/animation_director.gd" id="3_animation"]
+[ext_resource type="Script" path="res://presentation/hud_2d/game_hud.gd" id="4_hud"]
+
+[sub_resource type="Environment" id="Environment_main"]
+background_mode = 1
+background_color = Color(0.025, 0.04, 0.065, 1)
+ambient_light_source = 3
+ambient_light_color = Color(0.35, 0.46, 0.62, 1)
+ambient_light_energy = 0.55
+tonemap_mode = 2
+
+[sub_resource type="StandardMaterial3D" id="Material_table"]
+albedo_color = Color(0.16, 0.075, 0.035, 1)
+metallic = 0.05
+roughness = 0.82
+
+[sub_resource type="BoxMesh" id="Mesh_table"]
+material = SubResource("Material_table")
+size = Vector3(10, 0.35, 6)
+
+[sub_resource type="StandardMaterial3D" id="Material_ring"]
+transparency = 1
+shading_mode = 0
+albedo_color = Color(0.18, 0.72, 1, 0.55)
+emission_enabled = true
+emission = Color(0.12, 0.55, 1, 1)
+emission_energy_multiplier = 2.2
+
+[sub_resource type="TorusMesh" id="Mesh_ring"]
+material = SubResource("Material_ring")
+inner_radius = 1.4
+outer_radius = 1.48
+rings = 32
+ring_segments = 10
+
+[sub_resource type="CapsuleMesh" id="Mesh_player"]
+radius = 0.62
+height = 1.75
+radial_segments = 20
+rings = 8
+
+[sub_resource type="CapsuleShape3D" id="Shape_player"]
+radius = 0.62
+height = 1.75
+
+[sub_resource type="BoxMesh" id="Mesh_enemy"]
+size = Vector3(1.35, 1.45, 1.35)
+
+[sub_resource type="BoxShape3D" id="Shape_enemy"]
+size = Vector3(1.35, 1.45, 1.35)
+
+[sub_resource type="StyleBoxFlat" id="Style_panel"]
+bg_color = Color(0.035, 0.055, 0.078, 0.94)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(0.16, 0.68, 0.88, 0.75)
+corner_radius_top_left = 10
+corner_radius_top_right = 10
+corner_radius_bottom_right = 10
+corner_radius_bottom_left = 10
+content_margin_left = 18.0
+content_margin_top = 14.0
+content_margin_right = 18.0
+content_margin_bottom = 14.0
+
+[sub_resource type="StyleBoxFlat" id="Style_button"]
+bg_color = Color(0.08, 0.22, 0.31, 0.96)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.2, 0.7, 0.92, 0.8)
+corner_radius_top_left = 8
+corner_radius_top_right = 8
+corner_radius_bottom_right = 8
+corner_radius_bottom_left = 8
+
+[sub_resource type="StyleBoxFlat" id="Style_button_focus"]
+bg_color = Color(0.11, 0.32, 0.43, 1)
+border_width_left = 3
+border_width_top = 3
+border_width_right = 3
+border_width_bottom = 3
+border_color = Color(0.95, 0.78, 0.26, 1)
+corner_radius_top_left = 8
+corner_radius_top_right = 8
+corner_radius_bottom_right = 8
+corner_radius_bottom_left = 8
+
+[node name="Main" type="Node"]
+script = ExtResource("1_app")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_main")
+
+[node name="KeyLight" type="DirectionalLight3D" parent="."]
+rotation_degrees = Vector3(-52, -28, 0)
+light_color = Color(1, 0.79, 0.58, 1)
+light_energy = 1.35
+shadow_enabled = true
+
+[node name="FillLight" type="OmniLight3D" parent="."]
+position = Vector3(0, 3.5, 1.5)
+light_color = Color(0.2, 0.58, 1, 1)
+light_energy = 5.0
+omni_range = 9.0
+
+[node name="Camera3D" type="Camera3D" parent="."]
+position = Vector3(0, 7.3, 8.4)
+rotation_degrees = Vector3(-40, 0, 0)
+current = true
+fov = 48.0
+
+[node name="Table" type="MeshInstance3D" parent="."]
+position = Vector3(0, -0.35, 0)
+mesh = SubResource("Mesh_table")
+
+[node name="BattleRing" type="MeshInstance3D" parent="."]
+position = Vector3(0, -0.14, -0.5)
+mesh = SubResource("Mesh_ring")
+
+[node name="PlayerToken" type="Area3D" parent="."]
+unique_name_in_owner = true
+position = Vector3(-2.2, 0.72, 0.9)
+script = ExtResource("2_token")
+entity_id = &"card-starter-melee-01"
+display_name = "起始近戰冒險者"
+details = "基礎版 Vertical Slice\n職業：近戰\n印刷戰力：1\n目前位於玩家隊伍。"
+base_color = Color(0.93, 0.28, 0.16, 1)
+
+[node name="Mesh" type="MeshInstance3D" parent="PlayerToken"]
+mesh = SubResource("Mesh_player")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="PlayerToken"]
+shape = SubResource("Shape_player")
+
+[node name="EnemyToken" type="Area3D" parent="."]
+unique_name_in_owner = true
+position = Vector3(2.2, 0.72, -0.8)
+rotation_degrees = Vector3(0, 28, 0)
+script = ExtResource("2_token")
+entity_id = &"card-monster-skeleton-01"
+display_name = "骷髏戰士"
+details = "基礎魔物\n需求戰力：5\n擊敗獎勵：可選擇獲得 4 購買力\n擊敗後回到魔物循環底部。"
+base_color = Color(0.48, 0.82, 0.93, 1)
+
+[node name="Mesh" type="MeshInstance3D" parent="EnemyToken"]
+mesh = SubResource("Mesh_enemy")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="EnemyToken"]
+shape = SubResource("Shape_enemy")
+
+[node name="AnimationDirector" type="Node" parent="."]
+unique_name_in_owner = true
+script = ExtResource("3_animation")
+
+[node name="Interface" type="CanvasLayer" parent="."]
+
+[node name="HUD" type="Control" parent="Interface"]
+unique_name_in_owner = true
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+script = ExtResource("4_hud")
+
+[node name="StatusPanel" type="PanelContainer" parent="Interface/HUD"]
+layout_mode = 0
+offset_left = 24.0
+offset_top = 24.0
+offset_right = 310.0
+offset_bottom = 176.0
+theme_override_styles/panel = SubResource("Style_panel")
+
+[node name="Status" type="VBoxContainer" parent="Interface/HUD/StatusPanel"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="Title" type="Label" parent="Interface/HUD/StatusPanel/Status"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.95, 0.78, 0.26, 1)
+theme_override_font_sizes/font_size = 22
+text = "GUILDMASTER"
+
+[node name="RoundLabel" type="Label" parent="Interface/HUD/StatusPanel/Status"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 18
+text = "回合 1"
+
+[node name="PhaseLabel" type="Label" parent="Interface/HUD/StatusPanel/Status"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 18
+text = "階段：第一行動"
+
+[node name="RevisionLabel" type="Label" parent="Interface/HUD/StatusPanel/Status"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.6, 0.75, 0.84, 1)
+text = "Revision 0"
+
+[node name="DetailPanel" type="PanelContainer" parent="Interface/HUD"]
+unique_name_in_owner = true
+layout_mode = 0
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -354.0
+offset_top = 24.0
+offset_right = -24.0
+offset_bottom = 238.0
+grow_horizontal = 0
+theme_override_styles/panel = SubResource("Style_panel")
+
+[node name="Details" type="VBoxContainer" parent="Interface/HUD/DetailPanel"]
+layout_mode = 2
+theme_override_constants/separation = 9
+
+[node name="DetailTitle" type="Label" parent="Interface/HUD/DetailPanel/Details"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.95, 0.78, 0.26, 1)
+theme_override_font_sizes/font_size = 22
+text = "選取項目"
+
+[node name="DetailBody" type="Label" parent="Interface/HUD/DetailPanel/Details"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_font_sizes/font_size = 16
+text = "點擊桌上的 Token 查看規則資訊。"
+autowrap_mode = 2
+
+[node name="BottomBar" type="PanelContainer" parent="Interface/HUD"]
+layout_mode = 0
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_left = 24.0
+offset_top = -94.0
+offset_right = 706.0
+offset_bottom = -24.0
+grow_vertical = 0
+theme_override_styles/panel = SubResource("Style_panel")
+
+[node name="Actions" type="HBoxContainer" parent="Interface/HUD/BottomBar"]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="EndPhaseButton" type="Button" parent="Interface/HUD/BottomBar/Actions"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(180, 48)
+layout_mode = 2
+theme_override_font_sizes/font_size = 17
+theme_override_styles/normal = SubResource("Style_button")
+theme_override_styles/focus = SubResource("Style_button_focus")
+text = "結束目前階段"
+
+[node name="SkipButton" type="Button" parent="Interface/HUD/BottomBar/Actions"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(160, 48)
+layout_mode = 2
+theme_override_font_sizes/font_size = 17
+theme_override_styles/normal = SubResource("Style_button")
+theme_override_styles/focus = SubResource("Style_button_focus")
+text = "跳過動畫  [Space]"
+
+[node name="EventLabel" type="Label" parent="Interface/HUD/BottomBar/Actions"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(260, 0)
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.7, 0.86, 0.95, 1)
+theme_override_font_sizes/font_size = 15
+text = "點擊 Token，或結束階段測試事件管線。"
+vertical_alignment = 1
+autowrap_mode = 2
