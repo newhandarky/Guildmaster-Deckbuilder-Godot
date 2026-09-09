@@ -28,6 +28,12 @@ func _run() -> void:
 	_test_equipment_replacement()
 	_test_effect_resolution_fifo()
 	_test_equipment_survives_rest()
+	_test_supply_setup_and_determinism()
+	_test_purchase_and_rest_refill()
+	_test_purchase_rejection_is_atomic()
+	_test_supply_depletion_event_once()
+	_test_play_adventurer_capacity_and_equipment_departure()
+	_test_use_item_draw_and_rest_cleanup()
 	_test_turn_rotation()
 	_test_session_turn_integration()
 	_test_zone_move_service()
@@ -49,7 +55,7 @@ func _test_content_pack() -> void:
 	var registry := ContentRegistry.new()
 	var errors := registry.load_pack("res://content/packs/base_vertical_slice.json")
 	_expect(errors.is_empty(), "base content pack should validate: %s" % "; ".join(errors))
-	_expect(registry.definitions.size() == 8, "vertical slice should load eight base definitions")
+	_expect(registry.definitions.size() == 14, "vertical slice should load fourteen base definitions")
 	_expect(not registry.definitions.has(&"custom:adventurer/melee-01"), "custom adventurers must stay disabled")
 	_expect(not registry.pack_fingerprint.is_empty(), "content pack should expose a deterministic fingerprint")
 
@@ -60,7 +66,7 @@ func _test_content_pack_reload() -> void:
 	var first_fingerprint := registry.pack_fingerprint
 	var second_errors := registry.load_pack("res://content/packs/base_vertical_slice.json")
 	_expect(first_errors.is_empty() and second_errors.is_empty(), "content pack should be safely reloadable")
-	_expect(registry.definitions.size() == 8, "content reload must not retain duplicate definitions")
+	_expect(registry.definitions.size() == 14, "content reload must not retain duplicate definitions")
 	_expect(registry.pack_fingerprint == first_fingerprint, "same content should keep the same fingerprint")
 
 
@@ -86,7 +92,7 @@ func _test_two_player_state() -> void:
 
 func _test_official_starting_setup() -> void:
 	var state := GameStateData.create_vertical_slice()
-	_expect(state.cards.size() == 21, "two-player setup should create 20 player cards and one monster")
+	_expect(state.cards.size() == 35, "setup should create player cards, one monster, and fourteen market cards")
 	for player_id: StringName in state.turn_order:
 		var player := state.players[player_id] as PlayerStateData
 		var party := state.zones[player.zone_ids[&"party"]] as ZoneData
@@ -355,6 +361,210 @@ func _test_equipment_survives_rest() -> void:
 	var resources := ResourceService.evaluate_player(state, &"p1", definitions)
 	_expect(int(resources.get("combat", 0)) == 7 and int(resources.get("purchase_power", 0)) == 4, "printed party, equipment, and hand resources should remain derivable after rest")
 	_expect(InvariantService.validate(state).is_empty(), "rest with persistent equipment should satisfy invariants")
+
+
+func _test_supply_setup_and_determinism() -> void:
+	var first := GameStateData.create_vertical_slice(223)
+	var second := GameStateData.create_vertical_slice(223)
+	for row_id: StringName in [SupplyService.RECRUIT_ROW_ID, SupplyService.SHOP_ROW_ID]:
+		var first_row := first.zones[row_id] as ZoneData
+		var second_row := second.zones[row_id] as ZoneData
+		_expect(first_row.card_instance_ids.size() == 3, "supply row %s should start with three cards" % row_id)
+		_expect(first_row.card_instance_ids == second_row.card_instance_ids, "same seed should produce the same %s order" % row_id)
+	_expect((first.zones[SupplyService.RECRUIT_DECK_ID] as ZoneData).card_instance_ids.size() == 3, "recruit deck should retain three vertical-slice cards")
+	_expect((first.zones[SupplyService.SHOP_DECK_ID] as ZoneData).card_instance_ids.size() == 5, "shop deck should retain five vertical-slice cards")
+	_expect(InvariantService.validate(first).is_empty(), "initial supply should satisfy invariants")
+
+
+func _test_purchase_and_rest_refill() -> void:
+	var definitions := _load_definitions()
+	var state := _advance_to_purchase(GameStateData.create_vertical_slice(227), definitions, "cmd-buy-setup")
+	if state == null:
+		return
+	var legal := RulesEngine.get_legal_commands(state, &"p1", definitions)
+	var buy_command: Dictionary = {}
+	for command: Dictionary in legal:
+		if command.get("type") == "BUY_CARD" and command.get("source_row_id") == str(SupplyService.RECRUIT_ROW_ID):
+			buy_command = command
+			break
+	_expect(not buy_command.is_empty(), "purchase phase should expose an affordable recruit")
+	if buy_command.is_empty():
+		return
+	var purchased_id := StringName(buy_command.get("card_instance_id", ""))
+	var row_before := (state.zones[SupplyService.RECRUIT_ROW_ID] as ZoneData).card_instance_ids.size()
+	var result := RulesEngine.dispatch(state, _command_envelope(state, buy_command, "cmd-buy-card"), definitions)
+	_expect(bool(result.get("ok", false)), "legal BUY_CARD should dispatch")
+	if not bool(result.get("ok", false)):
+		return
+	state = result["state"] as GameStateData
+	var purchased_card := state.cards[purchased_id] as Dictionary
+	var player := state.players[&"p1"] as PlayerStateData
+	_expect(StringName(purchased_card.get("owner_id", "")) == &"p1", "purchased card should gain the buyer as owner")
+	_expect(ZoneService.find_card_zone(state, purchased_id) == &"p1:discard-pile", "purchased card should enter buyer discard")
+	_expect((state.zones[SupplyService.RECRUIT_ROW_ID] as ZoneData).card_instance_ids.size() == row_before - 1, "purchase must not refill the public row immediately")
+	_expect(player.spent_purchase_power == int(buy_command.get("effective_cost", 0)), "purchase should track spent power separately")
+
+	var to_rest := RulesEngine.dispatch(state, _end_phase_envelope(state, "cmd-enter-rest"), definitions)
+	_expect(bool(to_rest.get("ok", false)), "purchase phase should advance to rest")
+	if not bool(to_rest.get("ok", false)):
+		return
+	state = to_rest["state"] as GameStateData
+	var rest_result := RulesEngine.dispatch(state, _end_phase_envelope(state, "cmd-finish-rest"), definitions)
+	_expect(bool(rest_result.get("ok", false)), "rest should refill supplies")
+	if not bool(rest_result.get("ok", false)):
+		return
+	state = rest_result["state"] as GameStateData
+	_expect((state.zones[SupplyService.RECRUIT_ROW_ID] as ZoneData).card_instance_ids.size() == 3, "rest should refill recruit row to three")
+	_expect((state.players[&"p1"] as PlayerStateData).spent_purchase_power == 0, "rest should clear spent purchase power")
+	_expect(InvariantService.validate(state).is_empty(), "purchase and refill should preserve invariants")
+
+
+func _test_purchase_rejection_is_atomic() -> void:
+	var definitions := _load_definitions()
+	var wrong_phase := GameStateData.create_vertical_slice(229)
+	var row := wrong_phase.zones[SupplyService.RECRUIT_ROW_ID] as ZoneData
+	var command := {
+		"type": "BUY_CARD",
+		"card_instance_id": str(row.card_instance_ids[0]),
+		"source_row_id": str(SupplyService.RECRUIT_ROW_ID),
+	}
+	var wrong_hash := CanonicalJson.sha256(wrong_phase.to_dictionary())
+	var wrong_result := RulesEngine.dispatch(wrong_phase, _command_envelope(wrong_phase, command, "cmd-buy-wrong-phase"), definitions)
+	_expect(str(wrong_result.get("error", "")) == "wrong_phase", "BUY_CARD should be purchase-phase only")
+	_expect(CanonicalJson.sha256(wrong_phase.to_dictionary()) == wrong_hash, "wrong-phase purchase must be atomic")
+
+	var poor_state := _advance_to_purchase(GameStateData.create_vertical_slice(233), definitions, "cmd-poor-setup")
+	if poor_state == null:
+		return
+	(poor_state.players[&"p1"] as PlayerStateData).spent_purchase_power = 4
+	var poor_row := poor_state.zones[SupplyService.RECRUIT_ROW_ID] as ZoneData
+	var poor_command := {
+		"type": "BUY_CARD",
+		"card_instance_id": str(poor_row.card_instance_ids[0]),
+		"source_row_id": str(SupplyService.RECRUIT_ROW_ID),
+	}
+	var poor_hash := CanonicalJson.sha256(poor_state.to_dictionary())
+	var poor_result := RulesEngine.dispatch(poor_state, _command_envelope(poor_state, poor_command, "cmd-too-expensive"), definitions)
+	_expect(str(poor_result.get("error", "")) == "insufficient_purchase_power", "unaffordable card should be rejected")
+	_expect(CanonicalJson.sha256(poor_state.to_dictionary()) == poor_hash, "failed purchase must preserve the state hash")
+
+
+func _test_supply_depletion_event_once() -> void:
+	var state := GameStateData.create_vertical_slice(239)
+	var row := state.zones[SupplyService.RECRUIT_ROW_ID] as ZoneData
+	for card_instance_id: StringName in row.card_instance_ids.duplicate():
+		ZoneService.move_card(state, card_instance_id, SupplyService.RECRUIT_ROW_ID, &"p1:discard-pile")
+	var events: Array[Dictionary] = []
+	var error := SupplyService.refill_row(state, SupplyService.RECRUIT_DECK_ID, SupplyService.RECRUIT_ROW_ID, 3, events)
+	_expect(error.is_empty(), "supply depletion fixture should refill")
+	_expect(_events_contain(events, "supply_deck_depleted"), "drawing the final public supply card should announce depletion")
+	var second_events: Array[Dictionary] = []
+	SupplyService.refill_row(state, SupplyService.RECRUIT_DECK_ID, SupplyService.RECRUIT_ROW_ID, 3, second_events)
+	_expect(not _events_contain(second_events, "supply_deck_depleted"), "depletion should not be announced repeatedly")
+
+
+func _test_play_adventurer_capacity_and_equipment_departure() -> void:
+	var definitions := _load_definitions()
+	var state := GameStateData.create_vertical_slice(241)
+	var equip_result := RulesEngine.dispatch(
+		state,
+		_equip_item_envelope(
+			state,
+			&"card-p1-spirit-crystal-01",
+			&"card-p1-starter-adventurer-01",
+			"cmd-party-fixture-equip"
+		),
+		definitions
+	)
+	_expect(bool(equip_result.get("ok", false)), "party fixture should equip the outgoing adventurer")
+	if not bool(equip_result.get("ok", false)):
+		return
+	state = equip_result["state"] as GameStateData
+	var recruit_id := _find_instance_by_definition(state, &"base:adventurer/adventurer-09")
+	_expect(not recruit_id.is_empty(), "party fixture should find an official recruit")
+	if recruit_id.is_empty():
+		return
+	var source_zone := ZoneService.find_card_zone(state, recruit_id)
+	var move_result := ZoneService.move_card(state, recruit_id, source_zone, &"p1:hand")
+	_expect(bool(move_result.get("ok", false)), "party fixture should move the recruit into hand")
+	(state.cards[recruit_id] as Dictionary)["owner_id"] = "p1"
+	var result := RulesEngine.dispatch(
+		state,
+		_command_envelope(state, {
+			"type": "PLAY_ADVENTURER",
+			"card_instance_id": str(recruit_id),
+		}, "cmd-play-adventurer"),
+		definitions
+	)
+	_expect(bool(result.get("ok", false)), "official adventurer should join during an action phase")
+	if not bool(result.get("ok", false)):
+		return
+	var played := result["state"] as GameStateData
+	var party := played.zones[&"p1:party"] as ZoneData
+	_expect(party.card_instance_ids.size() == 5, "party capacity should remain five")
+	_expect(party.card_instance_ids.back() == recruit_id, "new adventurer should enter at the right edge")
+	_expect(
+		ZoneService.find_card_zone(played, &"card-p1-starter-adventurer-01") == &"p1:discard-pile",
+		"full party should remove its leftmost adventurer"
+	)
+	_expect(
+		ZoneService.find_card_zone(played, &"card-p1-spirit-crystal-01") == &"p1:discard-pile",
+		"equipment should leave with its outgoing adventurer"
+	)
+	var crystal := played.cards[&"card-p1-spirit-crystal-01"] as Dictionary
+	_expect(
+		not (crystal.get("state", {}) as Dictionary).has("equipped_to"),
+		"departing equipment should clear its target link"
+	)
+	_expect(InvariantService.validate(played).is_empty(), "party replacement should preserve invariants")
+
+
+func _test_use_item_draw_and_rest_cleanup() -> void:
+	var definitions := _load_definitions()
+	var state := GameStateData.create_vertical_slice(251)
+	var player := state.players[&"p1"] as PlayerStateData
+	var hand := state.zones[player.zone_ids[&"hand"]] as ZoneData
+	for raw_card_id: Variant in hand.card_instance_ids.duplicate().slice(0, 2):
+		ZoneService.move_card(state, StringName(str(raw_card_id)), &"p1:hand", &"p1:draw-pile")
+	var item_id := _find_instance_by_definition(state, &"base:resource/resource-08")
+	_expect(not item_id.is_empty(), "item fixture should find Sakura Fruit")
+	if item_id.is_empty():
+		return
+	var source_zone := ZoneService.find_card_zone(state, item_id)
+	var move_result := ZoneService.move_card(state, item_id, source_zone, &"p1:hand")
+	_expect(bool(move_result.get("ok", false)), "item fixture should move Sakura Fruit into hand")
+	(state.cards[item_id] as Dictionary)["owner_id"] = "p1"
+	var result := RulesEngine.dispatch(
+		state,
+		_command_envelope(state, {
+			"type": "USE_ITEM",
+			"card_instance_id": str(item_id),
+		}, "cmd-use-item"),
+		definitions
+	)
+	_expect(bool(result.get("ok", false)), "Sakura Fruit should be usable during an action phase")
+	if not bool(result.get("ok", false)):
+		return
+	state = result["state"] as GameStateData
+	_expect(ZoneService.find_card_zone(state, item_id) == &"p1:play-area", "used item should remain in play area until rest")
+	_expect((state.zones[&"p1:hand"] as ZoneData).card_instance_ids.size() == 5, "Sakura Fruit should draw two cards")
+	var resolved_draw := false
+	for event: Dictionary in result["events"]:
+		if event.get("type") == "effect_resolved" and event.get("op") == "draw":
+			resolved_draw = int(event.get("drawn_count", 0)) == 2
+	_expect(resolved_draw, "item draw should use the shared effect resolver")
+	for index in 5:
+		var phase_result := RulesEngine.dispatch(
+			state,
+			_end_phase_envelope(state, "cmd-item-rest-%d" % index),
+			definitions
+		)
+		_expect(bool(phase_result.get("ok", false)), "item rest phase %d should dispatch" % index)
+		if not bool(phase_result.get("ok", false)):
+			return
+		state = phase_result["state"] as GameStateData
+	_expect(ZoneService.find_card_zone(state, item_id) != &"p1:play-area", "rest should clean used items from play area")
+	_expect(InvariantService.validate(state).is_empty(), "item use and rest should preserve invariants")
 
 
 func _test_turn_rotation() -> void:
@@ -663,6 +873,43 @@ func _load_definitions() -> Dictionary:
 	var errors := registry.load_pack("res://content/packs/base_vertical_slice.json")
 	_expect(errors.is_empty(), "test content definitions should load: %s" % "; ".join(errors))
 	return registry.definitions.duplicate()
+
+
+func _command_envelope(state: GameStateData, command: Dictionary, command_id: String) -> Dictionary:
+	return {
+		"protocol_version": 1,
+		"game_id": str(state.game_id),
+		"command_id": command_id,
+		"actor_id": str(state.active_player_id),
+		"expected_revision": state.revision,
+		"command": command.duplicate(true),
+	}
+
+
+func _find_instance_by_definition(state: GameStateData, definition_id: StringName) -> StringName:
+	for card_instance_id: StringName in state.cards:
+		var card := state.cards[card_instance_id] as Dictionary
+		if StringName(card.get("definition_id", "")) == definition_id:
+			return card_instance_id
+	return &""
+
+
+func _advance_to_purchase(
+	state: GameStateData,
+	definitions: Dictionary,
+	command_prefix: String
+) -> GameStateData:
+	for index in 3:
+		var result := RulesEngine.dispatch(
+			state,
+			_end_phase_envelope(state, "%s-%d" % [command_prefix, index]),
+			definitions
+		)
+		_expect(bool(result.get("ok", false)), "purchase setup phase %d should dispatch" % index)
+		if not bool(result.get("ok", false)):
+			return null
+		state = result["state"] as GameStateData
+	return state
 
 
 func _expect(condition: bool, message: String) -> void:

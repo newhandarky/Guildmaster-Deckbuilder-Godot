@@ -6,6 +6,7 @@ static func validate(state: GameStateData) -> PackedStringArray:
 	var errors := PackedStringArray()
 	_validate_turn_order(state, errors)
 	_validate_players(state, errors)
+	_validate_supply_zones(state, errors)
 	var locations: Dictionary = {}
 	for zone_id: Variant in state.zones:
 		var zone := state.zones[zone_id] as ZoneData
@@ -63,6 +64,23 @@ static func validate(state: GameStateData) -> PackedStringArray:
 	if state.revision < 0 or state.event_cursor < 0:
 		errors.append("Revision and event cursor must not be negative")
 	return errors
+
+
+static func _validate_supply_zones(state: GameStateData, errors: PackedStringArray) -> void:
+	for row_zone_id: StringName in [SupplyService.RECRUIT_ROW_ID, SupplyService.SHOP_ROW_ID]:
+		var row := state.zones.get(row_zone_id) as ZoneData
+		if row == null:
+			errors.append("Missing supply row %s" % row_zone_id)
+		elif row.kind != &"face_up_row" or row.visibility != &"public":
+			errors.append("Supply row %s must be a public face-up row" % row_zone_id)
+		elif row.card_instance_ids.size() > SupplyService.ROW_SIZE:
+			errors.append("Supply row %s exceeds capacity" % row_zone_id)
+	for deck_zone_id: StringName in [SupplyService.RECRUIT_DECK_ID, SupplyService.SHOP_DECK_ID]:
+		var deck := state.zones.get(deck_zone_id) as ZoneData
+		if deck == null:
+			errors.append("Missing supply deck %s" % deck_zone_id)
+		elif deck.kind != &"ordered_deck" or deck.visibility != &"hidden":
+			errors.append("Supply deck %s must be a hidden ordered deck" % deck_zone_id)
 
 
 static func _validate_equipment_attachments(

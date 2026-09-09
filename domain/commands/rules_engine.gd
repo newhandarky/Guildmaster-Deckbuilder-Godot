@@ -24,6 +24,9 @@ static func get_legal_commands(
 		"expected_revision": state.revision,
 	})
 	commands.append_array(EquipmentService.get_legal_commands(state, actor_id, definitions))
+	commands.append_array(PartyService.get_legal_commands(state, actor_id, definitions))
+	commands.append_array(ItemService.get_legal_commands(state, actor_id, definitions))
+	commands.append_array(PurchaseService.get_legal_commands(state, actor_id, definitions))
 	return commands
 
 
@@ -52,6 +55,12 @@ static func dispatch(
 			error = _apply_end_phase(draft, events)
 		&"EQUIP_ITEM":
 			error = EquipmentService.apply(draft, actor_id, command, definitions, events)
+		&"PLAY_ADVENTURER":
+			error = PartyService.apply(draft, actor_id, command, definitions, events)
+		&"USE_ITEM":
+			error = ItemService.apply(draft, actor_id, command, definitions, events)
+		&"BUY_CARD":
+			error = PurchaseService.apply(draft, actor_id, command, definitions, events)
 		_:
 			return _failure("unsupported_command", before_hash)
 	if not error.is_empty():
@@ -110,6 +119,12 @@ static func _validate_command(
 			return ""
 		&"EQUIP_ITEM":
 			return EquipmentService.validate(state, actor_id, command, definitions)
+		&"PLAY_ADVENTURER":
+			return PartyService.validate(state, actor_id, command, definitions)
+		&"USE_ITEM":
+			return ItemService.validate(state, actor_id, command, definitions)
+		&"BUY_CARD":
+			return PurchaseService.validate(state, actor_id, command, definitions)
 		_:
 			return "unsupported_command"
 
@@ -119,6 +134,9 @@ static func _apply_end_phase(state: GameStateData, events: Array[Dictionary]) ->
 	var old_player_id := state.active_player_id
 	var phase_index := PHASES.find(state.phase)
 	if phase_index == PHASES.size() - 1:
+		var supply_error := SupplyService.refill_vertical_slice_rows(state, events)
+		if not supply_error.is_empty():
+			return supply_error
 		var outgoing_player := state.players[old_player_id] as PlayerStateData
 		outgoing_player.reset_turn_scope()
 		events.append({"type": "turn_resources_reset", "player_id": str(old_player_id)})

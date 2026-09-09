@@ -4,6 +4,9 @@ extends Control
 signal end_phase_requested
 signal skip_animation_requested
 signal equip_item_requested(card_instance_id: StringName, target_card_id: StringName)
+signal play_adventurer_requested(card_instance_id: StringName)
+signal use_item_requested(card_instance_id: StringName)
+signal buy_card_requested(card_instance_id: StringName, source_row_id: StringName)
 
 @onready var round_label: Label = %RoundLabel
 @onready var phase_label: Label = %PhaseLabel
@@ -18,6 +21,8 @@ signal equip_item_requested(card_instance_id: StringName, target_card_id: String
 @onready var skip_button: Button = %SkipButton
 @onready var hand_summary: Label = %HandSummary
 @onready var hand_actions: VBoxContainer = %HandActions
+@onready var market_summary: Label = %MarketSummary
+@onready var market_actions: VBoxContainer = %MarketActions
 
 var _cards: Dictionary = {}
 var _definitions: Dictionary = {}
@@ -48,6 +53,7 @@ func update_state(state: Dictionary) -> void:
 		int(resources.get("purchase_power", 0)),
 	]
 	_rebuild_hand(state, active_player_id)
+	_rebuild_market(state)
 
 
 func show_entity(display_name: String, details: String) -> void:
@@ -61,6 +67,22 @@ func show_events(events: Array[Dictionary]) -> void:
 		return
 	for index in range(events.size() - 1, -1, -1):
 		var event := events[index] as Dictionary
+		if event.get("type") == "item_used":
+			event_label.text = "道具已使用：%s" % _card_display_name(
+				str(event.get("card_instance_id", ""))
+			)
+			return
+		if event.get("type") == "adventurer_joined_party":
+			event_label.text = "冒險者加入：%s" % _card_display_name(
+				str(event.get("card_instance_id", ""))
+			)
+			return
+		if event.get("type") == "card_purchased":
+			event_label.text = "購買完成：%s（花費 %d）" % [
+				_card_display_name(str(event.get("card_instance_id", ""))),
+				int(event.get("cost", 0)),
+			]
+			return
 		if event.get("type") == "card_equipped":
 			event_label.text = "裝備已配戴：%s → %s" % [
 				_card_display_name(str(event.get("card_instance_id", ""))),
@@ -125,24 +147,47 @@ func _rebuild_hand(state: Dictionary, active_player_id: String) -> void:
 		card_label.text = _hand_card_text(definition)
 		card_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		hand_actions.add_child(card_label)
+		var simple_action_added := false
 		for raw_command: Variant in legal_commands:
 			if not raw_command is Dictionary:
 				continue
 			var command := raw_command as Dictionary
-			if command.get("type") != "EQUIP_ITEM" or str(command.get("card_instance_id", "")) != card_id:
+			if str(command.get("card_instance_id", "")) != card_id:
 				continue
-			var target_id := str(command.get("target_card_id", ""))
-			var target_card := cards.get(target_id, {}) as Dictionary
-			var target_definition := definitions.get(str(target_card.get("definition_id", "")), {}) as Dictionary
-			var play_button := Button.new()
-			play_button.text = "配戴給 %s" % str(target_definition.get("display_name", target_id))
-			play_button.custom_minimum_size = Vector2(0.0, 36.0)
-			play_button.focus_mode = Control.FOCUS_ALL
-			play_button.pressed.connect(
-				equip_item_requested.emit.bind(StringName(card_id), StringName(target_id))
-			)
-			hand_actions.add_child(play_button)
-			action_buttons.append(play_button)
+			var command_type := str(command.get("type", ""))
+			if command_type == "EQUIP_ITEM":
+				var target_id := str(command.get("target_card_id", ""))
+				var target_card := cards.get(target_id, {}) as Dictionary
+				var target_definition := definitions.get(
+					str(target_card.get("definition_id", "")), {}
+				) as Dictionary
+				var equip_button := Button.new()
+				equip_button.text = "配戴給 %s" % str(
+					target_definition.get("display_name", target_id)
+				)
+				equip_button.custom_minimum_size = Vector2(0.0, 36.0)
+				equip_button.focus_mode = Control.FOCUS_ALL
+				equip_button.pressed.connect(
+					equip_item_requested.emit.bind(StringName(card_id), StringName(target_id))
+				)
+				hand_actions.add_child(equip_button)
+				action_buttons.append(equip_button)
+			elif not simple_action_added and command_type in ["PLAY_ADVENTURER", "USE_ITEM"]:
+				var action_button := Button.new()
+				action_button.text = "加入隊伍" if command_type == "PLAY_ADVENTURER" else "使用"
+				action_button.custom_minimum_size = Vector2(0.0, 36.0)
+				action_button.focus_mode = Control.FOCUS_ALL
+				if command_type == "PLAY_ADVENTURER":
+					action_button.pressed.connect(
+						play_adventurer_requested.emit.bind(StringName(card_id))
+					)
+				else:
+					action_button.pressed.connect(
+						use_item_requested.emit.bind(StringName(card_id))
+					)
+				hand_actions.add_child(action_button)
+				action_buttons.append(action_button)
+				simple_action_added = true
 
 	end_phase_button.focus_neighbor_top = NodePath()
 	skip_button.focus_neighbor_top = NodePath()
@@ -178,3 +223,82 @@ func _card_display_name(card_instance_id: String) -> String:
 	var card := _cards.get(card_instance_id, {}) as Dictionary
 	var definition := _definitions.get(str(card.get("definition_id", "")), {}) as Dictionary
 	return str(definition.get("display_name", card_instance_id))
+
+
+func _rebuild_market(state: Dictionary) -> void:
+	for child: Node in market_actions.get_children():
+		market_actions.remove_child(child)
+		child.queue_free()
+	var zones := state.get("zones", {}) as Dictionary
+	var legal_commands := state.get("legal_commands", []) as Array
+	var market_buttons: Array[Button] = []
+	var row_specs := [
+		["shared:recruit-row", "招募區"],
+		["shared:shop-row", "商店"],
+	]
+	var total_cards := 0
+	for row_spec: Array in row_specs:
+		var row_id := str(row_spec[0])
+		var row := zones.get(row_id, {}) as Dictionary
+		var card_ids := row.get("card_instance_ids", []) as Array
+		total_cards += card_ids.size()
+		var title := Label.new()
+		title.text = "%s（%d/3）" % [str(row_spec[1]), card_ids.size()]
+		title.add_theme_color_override("font_color", Color(0.72, 0.88, 1.0))
+		market_actions.add_child(title)
+		for raw_card_id: Variant in card_ids:
+			var card_id := str(raw_card_id)
+			var definition := _definition_for_instance(card_id)
+			var cost: Variant = definition.get("cost", null)
+			var row_box := HBoxContainer.new()
+			var label := Label.new()
+			label.text = "%s｜費用 %s" % [
+				str(definition.get("display_name", card_id)),
+				"—" if cost == null else str(int(cost)),
+			]
+			label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			row_box.add_child(label)
+			var legal := _find_buy_command(legal_commands, card_id, row_id)
+			if not legal.is_empty():
+				var buy_button := Button.new()
+				buy_button.text = "購買"
+				buy_button.custom_minimum_size = Vector2(78.0, 32.0)
+				buy_button.pressed.connect(
+					buy_card_requested.emit.bind(StringName(card_id), StringName(row_id))
+				)
+				row_box.add_child(buy_button)
+				market_buttons.append(buy_button)
+			market_actions.add_child(row_box)
+	market_summary.text = "公開卡：%d　購買只在購買階段開放" % total_cards
+
+	skip_button.focus_neighbor_right = NodePath()
+	for index in market_buttons.size():
+		var button := market_buttons[index]
+		button.focus_neighbor_top = (
+			skip_button.get_path() if index == 0 else market_buttons[index - 1].get_path()
+		)
+		button.focus_neighbor_bottom = (
+			skip_button.get_path()
+			if index == market_buttons.size() - 1
+			else market_buttons[index + 1].get_path()
+		)
+	if not market_buttons.is_empty():
+		skip_button.focus_neighbor_right = market_buttons[0].get_path()
+		market_buttons[0].focus_neighbor_left = skip_button.get_path()
+
+
+func _definition_for_instance(card_instance_id: String) -> Dictionary:
+	var card := _cards.get(card_instance_id, {}) as Dictionary
+	return _definitions.get(str(card.get("definition_id", "")), {}) as Dictionary
+
+
+func _find_buy_command(commands: Array, card_instance_id: String, row_id: String) -> Dictionary:
+	for raw_command: Variant in commands:
+		if not raw_command is Dictionary:
+			continue
+		var command := raw_command as Dictionary
+		if command.get("type") == "BUY_CARD" \
+				and str(command.get("card_instance_id", "")) == card_instance_id \
+				and str(command.get("source_row_id", "")) == row_id:
+			return command
+	return {}

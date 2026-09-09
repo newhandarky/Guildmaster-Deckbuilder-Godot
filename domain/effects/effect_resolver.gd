@@ -4,6 +4,8 @@ extends RefCounted
 const SUPPORTED_OPERATIONS: Array[StringName] = [
 	&"grant_purchase_power",
 	&"grant_combat",
+	&"draw",
+	&"conditional_combat",
 ]
 
 
@@ -43,6 +45,21 @@ static func resolve(
 				resource_key = &"purchase_power"
 			&"grant_combat":
 				resource_key = &"combat"
+			&"draw":
+				var draw_result := DeckService.draw_cards(state, actor_id, amount, events)
+				if not bool(draw_result.get("ok", false)):
+					return str(draw_result.get("error", "draw_failed"))
+				events.append({
+					"type": "effect_resolved",
+					"actor_id": str(actor_id),
+					"effect_index": index,
+					"op": str(operation),
+					"amount": amount,
+					"drawn_count": int(draw_result.get("drawn_count", 0)),
+				})
+				continue
+			_:
+				return "effect_not_immediately_resolvable: %s" % operation
 		player.turn_resources[resource_key] = int(player.turn_resources.get(resource_key, 0)) + amount
 		events.append({
 			"type": "effect_resolved",

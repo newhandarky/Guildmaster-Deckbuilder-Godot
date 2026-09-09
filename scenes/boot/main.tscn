@@ -254,6 +254,41 @@ theme_override_font_sizes/font_size = 16
 text = "點擊桌上的 Token 查看規則資訊。"
 autowrap_mode = 2
 
+[node name="MarketPanel" type="PanelContainer" parent="Interface/HUD"]
+layout_mode = 0
+offset_left = 330.0
+offset_top = 24.0
+offset_right = 906.0
+offset_bottom = 282.0
+theme_override_styles/panel = SubResource("Style_panel")
+
+[node name="Market" type="VBoxContainer" parent="Interface/HUD/MarketPanel"]
+layout_mode = 2
+theme_override_constants/separation = 5
+
+[node name="MarketTitle" type="Label" parent="Interface/HUD/MarketPanel/Market"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.95, 0.78, 0.26, 1)
+theme_override_font_sizes/font_size = 20
+text = "招募區與商店"
+
+[node name="MarketSummary" type="Label" parent="Interface/HUD/MarketPanel/Market"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.65, 0.78, 0.86, 1)
+text = "公開卡：6"
+
+[node name="MarketScroll" type="ScrollContainer" parent="Interface/HUD/MarketPanel/Market"]
+layout_mode = 2
+size_flags_vertical = 3
+horizontal_scroll_mode = 0
+
+[node name="MarketActions" type="VBoxContainer" parent="Interface/HUD/MarketPanel/Market/MarketScroll"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 3
+
 [node name="BottomBar" type="PanelContainer" parent="Interface/HUD"]
 layout_mode = 0
 anchor_top = 1.0

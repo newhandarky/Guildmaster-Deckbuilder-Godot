@@ -6,8 +6,8 @@ const PlayerStateDataType = preload("res://domain/state/player_state_data.gd")
 
 var schema_version: int = 1
 var game_id: StringName = &"game-demo-001"
-var content_version: String = "0.3.0"
-var ruleset_version: String = "0.3.0"
+var content_version: String = "0.4.0"
+var ruleset_version: String = "0.4.0"
 var seed_value: int = 20260909
 var rng_state: int = 0
 var revision: int = 0
@@ -52,6 +52,7 @@ static func create_vertical_slice(seed: int = 20260909) -> GameStateData:
 	monsters.card_instance_ids.append(&"card-monster-skeleton-01")
 	monsters.metadata = {"cycle_anchor": "card-monster-skeleton-01"}
 	state.zones[monsters.zone_id] = monsters
+	_add_vertical_slice_supplies(state)
 	return state
 
 
@@ -197,6 +198,54 @@ static func _add_official_starting_cards(state: GameStateData, player: PlayerSta
 		"state": {},
 	}
 	hand.card_instance_ids.append(crystal_id)
+
+
+static func _add_vertical_slice_supplies(state: GameStateData) -> void:
+	var recruit_deck := ZoneDataType.new(SupplyService.RECRUIT_DECK_ID, &"ordered_deck", &"hidden")
+	var recruit_row := ZoneDataType.new(SupplyService.RECRUIT_ROW_ID, &"face_up_row", &"public")
+	var shop_deck := ZoneDataType.new(SupplyService.SHOP_DECK_ID, &"ordered_deck", &"hidden")
+	var shop_row := ZoneDataType.new(SupplyService.SHOP_ROW_ID, &"face_up_row", &"public")
+	for zone: ZoneData in [recruit_deck, recruit_row, shop_deck, shop_row]:
+		state.zones[zone.zone_id] = zone
+
+	for definition_id: String in [
+		"base:adventurer/adventurer-09",
+		"base:adventurer/adventurer-10",
+		"base:adventurer/adventurer-15",
+	]:
+		_add_supply_copies(state, recruit_deck, definition_id, 2)
+	for supply_spec: Array in [
+		["base:resource/resource-02", 3],
+		["base:resource/resource-03", 3],
+		["base:resource/resource-08", 2],
+	]:
+		_add_supply_copies(state, shop_deck, str(supply_spec[0]), int(supply_spec[1]))
+
+	var rng := DeterministicRng.new(state.seed_value, state.rng_state)
+	rng.shuffle(recruit_deck.card_instance_ids)
+	rng.shuffle(shop_deck.card_instance_ids)
+	state.rng_state = rng.get_state()
+	for index in SupplyService.ROW_SIZE:
+		recruit_row.card_instance_ids.append(recruit_deck.card_instance_ids.pop_back())
+		shop_row.card_instance_ids.append(shop_deck.card_instance_ids.pop_back())
+
+
+static func _add_supply_copies(
+	state: GameStateData,
+	deck: ZoneData,
+	definition_id: String,
+	count: int
+) -> void:
+	var slug := definition_id.get_slice("/", 1)
+	for copy_number in range(1, count + 1):
+		var instance_id := StringName("card-supply-%s-%02d" % [slug, copy_number])
+		state.cards[instance_id] = {
+			"instance_id": str(instance_id),
+			"definition_id": definition_id,
+			"owner_id": "",
+			"state": {},
+		}
+		deck.card_instance_ids.append(instance_id)
 
 
 static func _string_name_array_to_strings(values: Array[StringName]) -> Array[String]:
