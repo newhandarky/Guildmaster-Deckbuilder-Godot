@@ -4,7 +4,7 @@ var _failures: PackedStringArray = []
 
 
 func _init() -> void:
-	_run()
+	await _run()
 	if _failures.is_empty():
 		print("PASS: Guildmaster vertical-slice smoke suite")
 		quit(0)
@@ -32,6 +32,10 @@ func _run() -> void:
 	_test_purchase_and_rest_refill()
 	_test_purchase_rejection_is_atomic()
 	_test_supply_depletion_event_once()
+	_test_market_refresh_legality_and_commit()
+	_test_market_refresh_rejection_is_atomic()
+	_test_market_refresh_selection_order_is_deterministic()
+	await _test_market_refresh_hud_integration()
 	_test_play_adventurer_capacity_and_equipment_departure()
 	_test_use_item_draw_and_rest_cleanup()
 	_test_turn_rotation()
@@ -461,6 +465,198 @@ func _test_supply_depletion_event_once() -> void:
 	var second_events: Array[Dictionary] = []
 	SupplyService.refill_row(state, SupplyService.RECRUIT_DECK_ID, SupplyService.RECRUIT_ROW_ID, 3, second_events)
 	_expect(not _events_contain(second_events, "supply_deck_depleted"), "depletion should not be announced repeatedly")
+
+
+func _test_market_refresh_legality_and_commit() -> void:
+	var definitions := _load_definitions()
+	var state := _advance_to_purchase(
+		GameStateData.create_vertical_slice(240), definitions, "cmd-refresh-setup"
+	)
+	if state == null:
+		return
+	var legal := RulesEngine.get_legal_commands(state, &"p1", definitions)
+	var refresh_legal: Dictionary = {}
+	for command: Dictionary in legal:
+		if command.get("type") == "REFRESH_MARKET":
+			refresh_legal = command
+			break
+	_expect(not refresh_legal.is_empty(), "purchase phase should expose one market refresh intent")
+	_expect(
+		(refresh_legal.get("discard_card_ids", []) as Array).size() == 5,
+		"refresh intent should expose every owned hand card as a cost choice"
+	)
+	var player := state.players[&"p1"] as PlayerStateData
+	var hand := state.zones[player.zone_ids[&"hand"]] as ZoneData
+	var discard_card_id := hand.card_instance_ids[0]
+	var row := state.zones[SupplyService.RECRUIT_ROW_ID] as ZoneData
+	var selected_ids: Array[StringName] = [row.card_instance_ids[0], row.card_instance_ids[1]]
+	var original_row_size := row.card_instance_ids.size()
+	var command := {
+		"type": "REFRESH_MARKET",
+		"discard_card_id": str(discard_card_id),
+		"row_id": str(SupplyService.RECRUIT_ROW_ID),
+		"card_instance_ids": _string_names_to_strings(selected_ids),
+	}
+	var result := RulesEngine.dispatch(
+		state,
+		_command_envelope(state, command, "cmd-refresh-market"),
+		definitions
+	)
+	_expect(bool(result.get("ok", false)), "valid market refresh should commit")
+	if not bool(result.get("ok", false)):
+		return
+	var refreshed := result["state"] as GameStateData
+	player = refreshed.players[&"p1"] as PlayerStateData
+	_expect(
+		ZoneService.find_card_zone(refreshed, discard_card_id) == player.zone_ids[&"discard_pile"],
+		"refresh should discard exactly one hand card as its cost"
+	)
+	_expect(
+		(refreshed.zones[SupplyService.RECRUIT_ROW_ID] as ZoneData).card_instance_ids.size()
+			== original_row_size,
+		"refresh should replace exactly the number removed from the row"
+	)
+	_expect(bool(player.turn_facts.get(&"market_refreshed", false)), "refresh should record its once-per-turn fact")
+	_expect(_events_contain(result["events"], "market_refreshed"), "refresh should emit a committed event")
+	_expect(InvariantService.validate(refreshed).is_empty(), "market refresh should preserve invariants")
+	var post_legal := RulesEngine.get_legal_commands(refreshed, &"p1", definitions)
+	_expect(not _commands_contain(post_legal, "REFRESH_MARKET"), "second refresh should not remain legal this turn")
+	var refreshed_hand := refreshed.zones[player.zone_ids[&"hand"]] as ZoneData
+	var refreshed_row := refreshed.zones[SupplyService.RECRUIT_ROW_ID] as ZoneData
+	var repeat_command := {
+		"type": "REFRESH_MARKET",
+		"discard_card_id": str(refreshed_hand.card_instance_ids[0]),
+		"row_id": str(SupplyService.RECRUIT_ROW_ID),
+		"card_instance_ids": [str(refreshed_row.card_instance_ids[0])],
+	}
+	var refreshed_hash := CanonicalJson.sha256(refreshed.to_dictionary())
+	var repeat_result := RulesEngine.dispatch(
+		refreshed,
+		_command_envelope(refreshed, repeat_command, "cmd-refresh-market-again"),
+		definitions
+	)
+	_expect(
+		str(repeat_result.get("error", "")) == "market_refresh_already_used",
+		"refresh should be rejected after its once-per-turn use"
+	)
+	_expect(
+		CanonicalJson.sha256(refreshed.to_dictionary()) == refreshed_hash,
+		"rejected repeat refresh must be atomic"
+	)
+
+
+func _test_market_refresh_rejection_is_atomic() -> void:
+	var definitions := _load_definitions()
+	var wrong_phase := GameStateData.create_vertical_slice(242)
+	var hand := wrong_phase.zones[&"p1:hand"] as ZoneData
+	var row := wrong_phase.zones[SupplyService.RECRUIT_ROW_ID] as ZoneData
+	var command := {
+		"type": "REFRESH_MARKET",
+		"discard_card_id": str(hand.card_instance_ids[0]),
+		"row_id": str(SupplyService.RECRUIT_ROW_ID),
+		"card_instance_ids": [str(row.card_instance_ids[0])],
+	}
+	var wrong_phase_hash := CanonicalJson.sha256(wrong_phase.to_dictionary())
+	var wrong_phase_result := RulesEngine.dispatch(
+		wrong_phase,
+		_command_envelope(wrong_phase, command, "cmd-refresh-wrong-phase"),
+		definitions
+	)
+	_expect(str(wrong_phase_result.get("error", "")) == "wrong_phase", "refresh must be purchase-phase only")
+	_expect(
+		CanonicalJson.sha256(wrong_phase.to_dictionary()) == wrong_phase_hash,
+		"wrong-phase refresh must be atomic"
+	)
+
+	var invalid := _advance_to_purchase(
+		GameStateData.create_vertical_slice(244), definitions, "cmd-refresh-invalid-setup"
+	)
+	if invalid == null:
+		return
+	hand = invalid.zones[&"p1:hand"] as ZoneData
+	row = invalid.zones[SupplyService.RECRUIT_ROW_ID] as ZoneData
+	var repeated_id := str(row.card_instance_ids[0])
+	command = {
+		"type": "REFRESH_MARKET",
+		"discard_card_id": str(hand.card_instance_ids[0]),
+		"row_id": str(SupplyService.RECRUIT_ROW_ID),
+		"card_instance_ids": [repeated_id, repeated_id],
+	}
+	var invalid_hash := CanonicalJson.sha256(invalid.to_dictionary())
+	var invalid_result := RulesEngine.dispatch(
+		invalid,
+		_command_envelope(invalid, command, "cmd-refresh-duplicate-card"),
+		definitions
+	)
+	_expect(
+		str(invalid_result.get("error", "")) == "duplicate_refresh_card",
+		"refresh selection must not contain duplicate cards"
+	)
+	_expect(CanonicalJson.sha256(invalid.to_dictionary()) == invalid_hash, "invalid refresh must preserve state")
+
+
+func _test_market_refresh_selection_order_is_deterministic() -> void:
+	var definitions := _load_definitions()
+	var state := _advance_to_purchase(
+		GameStateData.create_vertical_slice(246), definitions, "cmd-refresh-order-setup"
+	)
+	if state == null:
+		return
+	var hand := state.zones[&"p1:hand"] as ZoneData
+	var row := state.zones[SupplyService.SHOP_ROW_ID] as ZoneData
+	var first_id := str(row.card_instance_ids[0])
+	var second_id := str(row.card_instance_ids[1])
+	var base_command := {
+		"type": "REFRESH_MARKET",
+		"discard_card_id": str(hand.card_instance_ids[0]),
+		"row_id": str(SupplyService.SHOP_ROW_ID),
+		"card_instance_ids": [first_id, second_id],
+	}
+	var reversed_command := base_command.duplicate(true)
+	reversed_command["card_instance_ids"] = [second_id, first_id]
+	var first := RulesEngine.dispatch(
+		state,
+		_command_envelope(state, base_command, "cmd-refresh-order"),
+		definitions
+	)
+	var reversed := RulesEngine.dispatch(
+		state,
+		_command_envelope(state, reversed_command, "cmd-refresh-order"),
+		definitions
+	)
+	_expect(bool(first.get("ok", false)) and bool(reversed.get("ok", false)), "both selection orders should refresh")
+	_expect(
+		first.get("after_hash") == reversed.get("after_hash"),
+		"selection click order must not alter deterministic refresh results"
+	)
+
+
+func _test_market_refresh_hud_integration() -> void:
+	var packed := load("res://scenes/boot/main.tscn") as PackedScene
+	var app := packed.instantiate() as GameApp
+	root.add_child(app)
+	await process_frame
+	for index in 3:
+		var result := app.session.end_phase()
+		_expect(bool(result.get("ok", false)), "HUD fixture phase %d should advance" % index)
+	_expect(app.session.state.phase == &"purchase", "HUD fixture should reach purchase phase")
+	var refresh_cost_buttons := 0
+	for child: Node in app.hud.hand_actions.get_children():
+		if child is Button and "刷新代價" in (child as Button).text:
+			refresh_cost_buttons += 1
+	var refresh_selectors := 0
+	var refresh_confirm_buttons := 0
+	for child: Node in app.hud.market_actions.get_children():
+		if child is HBoxContainer:
+			for row_child: Node in child.get_children():
+				if row_child is CheckBox and (row_child as CheckBox).text == "刷新":
+					refresh_selectors += 1
+		elif child is Button and (child as Button).text.begins_with("確認刷新"):
+			refresh_confirm_buttons += 1
+	_expect(refresh_cost_buttons == 5, "purchase HUD should expose each hand card as refresh cost")
+	_expect(refresh_selectors == 6, "purchase HUD should expose all six public cards for refresh")
+	_expect(refresh_confirm_buttons == 2, "purchase HUD should expose one confirmation per row")
+	app.queue_free()
 
 
 func _test_play_adventurer_capacity_and_equipment_departure() -> void:
@@ -894,6 +1090,13 @@ func _find_instance_by_definition(state: GameStateData, definition_id: StringNam
 	return &""
 
 
+func _string_names_to_strings(values: Array[StringName]) -> Array[String]:
+	var result: Array[String] = []
+	for value: StringName in values:
+		result.append(str(value))
+	return result
+
+
 func _advance_to_purchase(
 	state: GameStateData,
 	definitions: Dictionary,
@@ -920,5 +1123,12 @@ func _expect(condition: bool, message: String) -> void:
 func _events_contain(events: Array[Dictionary], event_type: String) -> bool:
 	for event: Dictionary in events:
 		if str(event.get("type", "")) == event_type:
+			return true
+	return false
+
+
+func _commands_contain(commands: Array[Dictionary], command_type: String) -> bool:
+	for command: Dictionary in commands:
+		if str(command.get("type", "")) == command_type:
 			return true
 	return false

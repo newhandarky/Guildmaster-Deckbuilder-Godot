@@ -19,6 +19,7 @@ func _ready() -> void:
 	hud.play_adventurer_requested.connect(_on_play_adventurer_requested)
 	hud.use_item_requested.connect(_on_use_item_requested)
 	hud.buy_card_requested.connect(_on_buy_card_requested)
+	hud.refresh_market_requested.connect(_on_refresh_market_requested)
 	hud.skip_animation_requested.connect(animation_director.skip_all)
 	session.state_changed.connect(hud.update_state)
 	session.events_committed.connect(_on_events_committed)
@@ -57,6 +58,14 @@ func _on_use_item_requested(card_instance_id: StringName) -> void:
 
 func _on_buy_card_requested(card_instance_id: StringName, source_row_id: StringName) -> void:
 	session.buy_card(card_instance_id, source_row_id)
+
+
+func _on_refresh_market_requested(
+	discard_card_id: StringName,
+	row_id: StringName,
+	card_instance_ids: Array[StringName]
+) -> void:
+	session.refresh_market(discard_card_id, row_id, card_instance_ids)
 
 
 func _on_events_committed(events: Array[Dictionary]) -> void:

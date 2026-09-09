@@ -27,6 +27,7 @@ static func get_legal_commands(
 	commands.append_array(PartyService.get_legal_commands(state, actor_id, definitions))
 	commands.append_array(ItemService.get_legal_commands(state, actor_id, definitions))
 	commands.append_array(PurchaseService.get_legal_commands(state, actor_id, definitions))
+	commands.append_array(MarketRefreshService.get_legal_commands(state, actor_id))
 	return commands
 
 
@@ -61,6 +62,8 @@ static func dispatch(
 			error = ItemService.apply(draft, actor_id, command, definitions, events)
 		&"BUY_CARD":
 			error = PurchaseService.apply(draft, actor_id, command, definitions, events)
+		&"REFRESH_MARKET":
+			error = MarketRefreshService.apply(draft, actor_id, command, events)
 		_:
 			return _failure("unsupported_command", before_hash)
 	if not error.is_empty():
@@ -125,6 +128,8 @@ static func _validate_command(
 			return ItemService.validate(state, actor_id, command, definitions)
 		&"BUY_CARD":
 			return PurchaseService.validate(state, actor_id, command, definitions)
+		&"REFRESH_MARKET":
+			return MarketRefreshService.validate(state, actor_id, command)
 		_:
 			return "unsupported_command"
 

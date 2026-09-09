@@ -7,6 +7,11 @@ signal equip_item_requested(card_instance_id: StringName, target_card_id: String
 signal play_adventurer_requested(card_instance_id: StringName)
 signal use_item_requested(card_instance_id: StringName)
 signal buy_card_requested(card_instance_id: StringName, source_row_id: StringName)
+signal refresh_market_requested(
+	discard_card_id: StringName,
+	row_id: StringName,
+	card_instance_ids: Array[StringName]
+)
 
 @onready var round_label: Label = %RoundLabel
 @onready var phase_label: Label = %PhaseLabel
@@ -26,6 +31,11 @@ signal buy_card_requested(card_instance_id: StringName, source_row_id: StringNam
 
 var _cards: Dictionary = {}
 var _definitions: Dictionary = {}
+var _current_state: Dictionary = {}
+var _refresh_revision := -1
+var _refresh_discard_id := &""
+var _refresh_row_id := &""
+var _refresh_selected_ids: Array[StringName] = []
 
 
 func _ready() -> void:
@@ -38,6 +48,11 @@ func _ready() -> void:
 
 
 func update_state(state: Dictionary) -> void:
+	_current_state = state.duplicate(true)
+	var revision := int(state.get("revision", 0))
+	if revision != _refresh_revision:
+		_refresh_revision = revision
+		_clear_refresh_selection()
 	_cards = (state.get("cards", {}) as Dictionary).duplicate(true)
 	_definitions = (state.get("definitions", {}) as Dictionary).duplicate(true)
 	round_label.text = "回合 %d" % int(state.get("round", 1))
@@ -67,6 +82,11 @@ func show_events(events: Array[Dictionary]) -> void:
 		return
 	for index in range(events.size() - 1, -1, -1):
 		var event := events[index] as Dictionary
+		if event.get("type") == "market_refreshed":
+			event_label.text = "市場刷新完成：已更換 %d 張公開卡" % (
+				(event.get("returned_card_ids", []) as Array).size()
+			)
+			return
 		if event.get("type") == "item_used":
 			event_label.text = "道具已使用：%s" % _card_display_name(
 				str(event.get("card_instance_id", ""))
@@ -136,6 +156,7 @@ func _rebuild_hand(state: Dictionary, active_player_id: String) -> void:
 	var cards := state.get("cards", {}) as Dictionary
 	var definitions := state.get("definitions", {}) as Dictionary
 	var legal_commands := state.get("legal_commands", []) as Array
+	var refresh_command := _find_refresh_command(legal_commands)
 	var action_buttons: Array[Button] = []
 	hand_summary.text = "目前手牌：%d 張" % card_ids.size()
 
@@ -147,6 +168,17 @@ func _rebuild_hand(state: Dictionary, active_player_id: String) -> void:
 		card_label.text = _hand_card_text(definition)
 		card_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		hand_actions.add_child(card_label)
+		if card_id in (refresh_command.get("discard_card_ids", []) as Array):
+			var cost_button := Button.new()
+			cost_button.text = (
+				"✓ 已選為刷新代價"
+				if _refresh_discard_id == StringName(card_id)
+				else "選為刷新代價"
+			)
+			cost_button.custom_minimum_size = Vector2(0.0, 34.0)
+			cost_button.pressed.connect(_on_refresh_cost_selected.bind(StringName(card_id)))
+			hand_actions.add_child(cost_button)
+			action_buttons.append(cost_button)
 		var simple_action_added := false
 		for raw_command: Variant in legal_commands:
 			if not raw_command is Dictionary:
@@ -231,6 +263,8 @@ func _rebuild_market(state: Dictionary) -> void:
 		child.queue_free()
 	var zones := state.get("zones", {}) as Dictionary
 	var legal_commands := state.get("legal_commands", []) as Array
+	var refresh_command := _find_refresh_command(legal_commands)
+	var refresh_rows := refresh_command.get("rows", {}) as Dictionary
 	var market_buttons: Array[Button] = []
 	var row_specs := [
 		["shared:recruit-row", "招募區"],
@@ -268,8 +302,35 @@ func _rebuild_market(state: Dictionary) -> void:
 				)
 				row_box.add_child(buy_button)
 				market_buttons.append(buy_button)
+			if card_id in (refresh_rows.get(row_id, []) as Array):
+				var select_button := CheckBox.new()
+				select_button.text = "刷新"
+				select_button.button_pressed = (
+					_refresh_row_id == StringName(row_id)
+					and StringName(card_id) in _refresh_selected_ids
+				)
+				select_button.toggled.connect(
+					_on_refresh_card_toggled.bind(StringName(row_id), StringName(card_id))
+				)
+				row_box.add_child(select_button)
+				market_buttons.append(select_button)
 			market_actions.add_child(row_box)
-	market_summary.text = "公開卡：%d　購買只在購買階段開放" % total_cards
+		if refresh_rows.has(row_id):
+			var selected_count := (
+				_refresh_selected_ids.size() if _refresh_row_id == StringName(row_id) else 0
+			)
+			var confirm_button := Button.new()
+			confirm_button.text = "確認刷新（已選 %d 張）" % selected_count
+			confirm_button.disabled = _refresh_discard_id.is_empty() or selected_count == 0
+			confirm_button.pressed.connect(_on_refresh_confirmed.bind(StringName(row_id)))
+			market_actions.add_child(confirm_button)
+			market_buttons.append(confirm_button)
+	market_summary.text = "公開卡：%d　%s" % [
+		total_cards,
+		"選 1～3 張並從手牌選 1 張作為刷新代價"
+		if not refresh_command.is_empty()
+		else "購買只在購買階段開放",
+	]
 
 	skip_button.focus_neighbor_right = NodePath()
 	for index in market_buttons.size():
@@ -302,3 +363,58 @@ func _find_buy_command(commands: Array, card_instance_id: String, row_id: String
 				and str(command.get("source_row_id", "")) == row_id:
 			return command
 	return {}
+
+
+func _find_refresh_command(commands: Array) -> Dictionary:
+	for raw_command: Variant in commands:
+		if raw_command is Dictionary and (raw_command as Dictionary).get("type") == "REFRESH_MARKET":
+			return raw_command as Dictionary
+	return {}
+
+
+func _on_refresh_cost_selected(card_instance_id: StringName) -> void:
+	_refresh_discard_id = &"" if _refresh_discard_id == card_instance_id else card_instance_id
+	_rerender_card_actions()
+
+
+func _on_refresh_card_toggled(
+	pressed: bool,
+	row_id: StringName,
+	card_instance_id: StringName
+) -> void:
+	if pressed:
+		if _refresh_row_id != row_id:
+			_refresh_row_id = row_id
+			_refresh_selected_ids.clear()
+		if card_instance_id not in _refresh_selected_ids and _refresh_selected_ids.size() < 3:
+			_refresh_selected_ids.append(card_instance_id)
+	else:
+		_refresh_selected_ids.erase(card_instance_id)
+		if _refresh_selected_ids.is_empty():
+			_refresh_row_id = &""
+	_rerender_card_actions()
+
+
+func _on_refresh_confirmed(row_id: StringName) -> void:
+	if _refresh_discard_id.is_empty() or _refresh_row_id != row_id \
+			or _refresh_selected_ids.is_empty():
+		return
+	refresh_market_requested.emit(
+		_refresh_discard_id,
+		row_id,
+		_refresh_selected_ids.duplicate()
+	)
+
+
+func _rerender_card_actions() -> void:
+	if _current_state.is_empty():
+		return
+	var active_player_id := str(_current_state.get("active_player_id", ""))
+	_rebuild_hand(_current_state, active_player_id)
+	_rebuild_market(_current_state)
+
+
+func _clear_refresh_selection() -> void:
+	_refresh_discard_id = &""
+	_refresh_row_id = &""
+	_refresh_selected_ids.clear()

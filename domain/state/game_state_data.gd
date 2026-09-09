@@ -6,8 +6,8 @@ const PlayerStateDataType = preload("res://domain/state/player_state_data.gd")
 
 var schema_version: int = 1
 var game_id: StringName = &"game-demo-001"
-var content_version: String = "0.4.0"
-var ruleset_version: String = "0.4.0"
+var content_version: String = "0.5.0"
+var ruleset_version: String = "0.5.0"
 var seed_value: int = 20260909
 var rng_state: int = 0
 var revision: int = 0

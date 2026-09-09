@@ -6,7 +6,7 @@ signal events_committed(events: Array[Dictionary])
 signal command_rejected(error_code: String)
 
 const CONTENT_PACK_PATH := "res://content/packs/base_vertical_slice.json"
-const RULESET_FINGERPRINT := "ruleset:vertical-slice:0.4.0"
+const RULESET_FINGERPRINT := "ruleset:vertical-slice:0.5.0"
 
 var state: GameStateData
 var content_registry := ContentRegistry.new()
@@ -92,6 +92,32 @@ func buy_card(card_instance_id: StringName, source_row_id: StringName) -> Dictio
 	return submit_command(envelope)
 
 
+func refresh_market(
+	discard_card_id: StringName,
+	row_id: StringName,
+	card_instance_ids: Array[StringName]
+) -> Dictionary:
+	if state == null:
+		return {"ok": false, "error": "session_not_started", "events": []}
+	var selected_ids: Array[String] = []
+	for card_instance_id: StringName in card_instance_ids:
+		selected_ids.append(str(card_instance_id))
+	var envelope := {
+		"protocol_version": 1,
+		"game_id": str(state.game_id),
+		"command_id": "cmd-%06d" % (state.revision + 1),
+		"actor_id": str(state.active_player_id),
+		"expected_revision": state.revision,
+		"command": {
+			"type": "REFRESH_MARKET",
+			"discard_card_id": str(discard_card_id),
+			"row_id": str(row_id),
+			"card_instance_ids": selected_ids,
+		},
+	}
+	return submit_command(envelope)
+
+
 func _card_command_envelope(command_type: StringName, card_instance_id: StringName) -> Dictionary:
 	return {
 		"protocol_version": 1,
@@ -126,7 +152,7 @@ func snapshot() -> Dictionary:
 		return {}
 	return {
 		"snapshot_schema_version": 1,
-		"app_version": "0.4.0",
+		"app_version": "0.5.0",
 		"content_fingerprint": content_registry.pack_fingerprint,
 		"ruleset_fingerprint": RULESET_FINGERPRINT,
 		"state": state.to_dictionary(),
