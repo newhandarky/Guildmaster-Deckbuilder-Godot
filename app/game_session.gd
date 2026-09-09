@@ -22,8 +22,11 @@ func start_new_game(seed_value: int = 20260909) -> PackedStringArray:
 	return errors
 
 
-func get_legal_commands(actor_id: StringName = &"p1") -> Array[Dictionary]:
-	return RulesEngine.get_legal_commands(state, actor_id)
+func get_legal_commands(actor_id: StringName = &"") -> Array[Dictionary]:
+	if state == null:
+		return []
+	var resolved_actor_id := state.active_player_id if actor_id.is_empty() else actor_id
+	return RulesEngine.get_legal_commands(state, resolved_actor_id)
 
 
 func end_phase() -> Dictionary:
@@ -56,6 +59,8 @@ func submit_command(envelope: Dictionary) -> Dictionary:
 
 
 func snapshot() -> Dictionary:
+	if state == null:
+		return {}
 	return {
 		"snapshot_schema_version": 1,
 		"app_version": "0.1.0",

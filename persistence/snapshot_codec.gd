@@ -53,6 +53,10 @@ static func _validate_state_shape(state_data: Dictionary) -> String:
 		return "cards must be a Dictionary"
 	if not state_data.get("zones", {}) is Dictionary:
 		return "zones must be a Dictionary"
+	if not state_data.get("players", {}) is Dictionary:
+		return "players must be a Dictionary"
+	if not state_data.get("turn_order", []) is Array:
+		return "turn_order must be an Array"
 	if not state_data.get("effect_state", {}) is Dictionary:
 		return "effect_state must be a Dictionary"
 	if not state_data.get("processed_command_ids", []) is Array:
@@ -60,6 +64,13 @@ static func _validate_state_shape(state_data: Dictionary) -> String:
 	for card: Variant in (state_data.get("cards", {}) as Dictionary).values():
 		if not card is Dictionary:
 			return "every card must be a Dictionary"
+	for player: Variant in (state_data.get("players", {}) as Dictionary).values():
+		if not player is Dictionary:
+			return "every player must be a Dictionary"
+		var player_data := player as Dictionary
+		for field_name: String in ["zone_ids", "turn_resources", "turn_bonuses", "counters", "module_state", "turn_facts"]:
+			if not player_data.get(field_name, {}) is Dictionary:
+				return "player %s must be a Dictionary" % field_name
 	for zone: Variant in (state_data.get("zones", {}) as Dictionary).values():
 		if not zone is Dictionary:
 			return "every zone must be a Dictionary"

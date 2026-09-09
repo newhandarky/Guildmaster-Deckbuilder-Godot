@@ -178,7 +178,7 @@ layout_mode = 0
 offset_left = 24.0
 offset_top = 24.0
 offset_right = 310.0
-offset_bottom = 176.0
+offset_bottom = 206.0
 theme_override_styles/panel = SubResource("Style_panel")
 
 [node name="Status" type="VBoxContainer" parent="Interface/HUD/StatusPanel"]
@@ -202,6 +202,13 @@ unique_name_in_owner = true
 layout_mode = 2
 theme_override_font_sizes/font_size = 18
 text = "階段：第一行動"
+
+[node name="ActivePlayerLabel" type="Label" parent="Interface/HUD/StatusPanel/Status"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.72, 0.88, 1, 1)
+theme_override_font_sizes/font_size = 17
+text = "目前玩家：玩家一"
 
 [node name="RevisionLabel" type="Label" parent="Interface/HUD/StatusPanel/Status"]
 unique_name_in_owner = true

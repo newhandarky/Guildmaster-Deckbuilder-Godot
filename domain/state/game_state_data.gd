@@ -2,6 +2,7 @@ class_name GameStateData
 extends RefCounted
 
 const ZoneDataType = preload("res://domain/state/zone_data.gd")
+const PlayerStateDataType = preload("res://domain/state/player_state_data.gd")
 
 var schema_version: int = 1
 var game_id: StringName = &"game-demo-001"
@@ -15,6 +16,8 @@ var round_number: int = 1
 var phase: StringName = &"action1"
 var starting_player_id: StringName = &"p1"
 var active_player_id: StringName = &"p1"
+var turn_order: Array[StringName] = []
+var players: Dictionary = {}
 var cards: Dictionary = {}
 var zones: Dictionary = {}
 var effect_state: Dictionary = {}
@@ -26,11 +29,24 @@ static func create_vertical_slice(seed: int = 20260909) -> GameStateData:
 	var state := GameStateData.new()
 	state.seed_value = seed
 	state.rng_state = seed
+	var player_one := PlayerStateDataType.create(&"p1", 0, "玩家一")
+	var player_two := PlayerStateDataType.create(&"p2", 1, "玩家二")
+	state.turn_order = [&"p1", &"p2"]
+	state.players = {
+		player_one.player_id: player_one,
+		player_two.player_id: player_two,
+	}
 	state.cards = {
 		&"card-starter-melee-01": {
 			"instance_id": "card-starter-melee-01",
 			"definition_id": "base:starter/adventurer-01",
 			"owner_id": "p1",
+			"state": {},
+		},
+		&"card-starter-melee-02": {
+			"instance_id": "card-starter-melee-02",
+			"definition_id": "base:starter/adventurer-01",
+			"owner_id": "p2",
 			"state": {},
 		},
 		&"card-monster-skeleton-01": {
@@ -40,15 +56,15 @@ static func create_vertical_slice(seed: int = 20260909) -> GameStateData:
 			"state": {"target_id": "target-monster-01"},
 		},
 	}
-	var party := ZoneDataType.new(&"p1:party", &"party", &"public")
-	party.card_instance_ids.append(&"card-starter-melee-01")
+	for player_id: StringName in state.turn_order:
+		var player := state.players[player_id] as PlayerStateData
+		_add_player_zones(state, player)
+	(state.zones[&"p1:party"] as ZoneData).card_instance_ids.append(&"card-starter-melee-01")
+	(state.zones[&"p2:party"] as ZoneData).card_instance_ids.append(&"card-starter-melee-02")
 	var monsters := ZoneDataType.new(&"shared:monster-row", &"face_up_row", &"public")
 	monsters.card_instance_ids.append(&"card-monster-skeleton-01")
 	monsters.metadata = {"cycle_anchor": "card-monster-skeleton-01"}
-	state.zones = {
-		party.zone_id: party,
-		monsters.zone_id: monsters,
-	}
+	state.zones[monsters.zone_id] = monsters
 	return state
 
 
@@ -66,6 +82,12 @@ static func from_dictionary(data: Dictionary) -> GameStateData:
 	state.phase = StringName(data.get("phase", "action1"))
 	state.starting_player_id = StringName(data.get("starting_player_id", ""))
 	state.active_player_id = StringName(data.get("active_player_id", ""))
+	for player_id: Variant in data.get("turn_order", []):
+		state.turn_order.append(StringName(str(player_id)))
+	var serialized_players := data.get("players", {}) as Dictionary
+	for player_id: Variant in serialized_players:
+		var player := PlayerStateDataType.from_dictionary(serialized_players[player_id])
+		state.players[player.player_id] = player
 	var serialized_cards := data.get("cards", {}) as Dictionary
 	for card_id: Variant in serialized_cards:
 		state.cards[StringName(str(card_id))] = (serialized_cards[card_id] as Dictionary).duplicate(true)
@@ -94,6 +116,9 @@ func clone_state() -> GameStateData:
 	copy.phase = phase
 	copy.starting_player_id = starting_player_id
 	copy.active_player_id = active_player_id
+	copy.turn_order.assign(turn_order)
+	for player_id: Variant in players:
+		copy.players[player_id] = (players[player_id] as PlayerStateData).clone_player()
 	copy.cards = cards.duplicate(true)
 	for zone_id: Variant in zones:
 		copy.zones[zone_id] = (zones[zone_id] as ZoneData).clone_zone()
@@ -104,6 +129,9 @@ func clone_state() -> GameStateData:
 
 
 func to_dictionary() -> Dictionary:
+	var serialized_players: Dictionary = {}
+	for player_id: Variant in players:
+		serialized_players[str(player_id)] = (players[player_id] as PlayerStateData).to_dictionary()
 	var serialized_zones: Dictionary = {}
 	for zone_id: Variant in zones:
 		serialized_zones[str(zone_id)] = (zones[zone_id] as ZoneData).to_dictionary()
@@ -123,9 +151,34 @@ func to_dictionary() -> Dictionary:
 		"phase": str(phase),
 		"starting_player_id": str(starting_player_id),
 		"active_player_id": str(active_player_id),
+		"turn_order": _string_name_array_to_strings(turn_order),
+		"players": serialized_players,
 		"cards": serialized_cards,
 		"zones": serialized_zones,
 		"effect_state": effect_state.duplicate(true),
 		"event_cursor": event_cursor,
 		"processed_command_ids": processed_command_ids.duplicate(),
 	}
+
+
+static func _add_player_zones(state: GameStateData, player: PlayerStateData) -> void:
+	var zone_kinds := {
+		&"draw_pile": &"ordered_deck",
+		&"hand": &"hand",
+		&"discard_pile": &"discard_pile",
+		&"party": &"party",
+		&"play_area": &"play_area",
+		&"bonds": &"bonds",
+	}
+	for zone_key: StringName in PlayerStateData.REQUIRED_ZONE_KEYS:
+		var visibility: StringName = &"owner_only" if zone_key in [&"draw_pile", &"hand", &"bonds"] else &"public"
+		var zone := ZoneDataType.new(player.zone_ids[zone_key], zone_kinds[zone_key], visibility)
+		zone.metadata = {"owner_id": str(player.player_id)}
+		state.zones[zone.zone_id] = zone
+
+
+static func _string_name_array_to_strings(values: Array[StringName]) -> Array[String]:
+	var result: Array[String] = []
+	for value: StringName in values:
+		result.append(str(value))
+	return result

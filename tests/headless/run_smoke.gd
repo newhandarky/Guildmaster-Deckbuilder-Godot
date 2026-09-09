@@ -18,13 +18,20 @@ func _run() -> void:
 	_test_content_pack()
 	_test_content_pack_reload()
 	_test_initial_invariants()
+	_test_two_player_state()
+	_test_player_invariant_guards()
 	_test_legal_command_and_dispatch()
 	_test_command_legality_guards()
+	_test_turn_rotation()
+	_test_session_turn_integration()
+	_test_zone_move_service()
 	_test_duplicate_command_guard()
 	_test_twenty_blank_rounds()
+	_test_twenty_round_determinism()
 	_test_stale_command_rollback()
 	_test_snapshot_round_trip()
 	_test_snapshot_rejection_paths()
+	_test_canonical_integer_numbers()
 	_test_seeded_rng()
 	_test_rng_state_restore()
 
@@ -54,6 +61,36 @@ func _test_initial_invariants() -> void:
 	_expect(errors.is_empty(), "initial state should satisfy invariants: %s" % "; ".join(errors))
 
 
+func _test_two_player_state() -> void:
+	var state := GameStateData.create_vertical_slice()
+	_expect(state.turn_order == [&"p1", &"p2"], "vertical slice should use a stable two-player turn order")
+	_expect(state.players.size() == 2, "vertical slice should create two players")
+	for player_id: StringName in state.turn_order:
+		var player := state.players[player_id] as PlayerStateData
+		_expect(player != null, "turn-order player %s should exist" % player_id)
+		if player == null:
+			continue
+		for zone_key: StringName in PlayerStateData.REQUIRED_ZONE_KEYS:
+			_expect(player.zone_ids.has(zone_key), "player %s should reference %s" % [player_id, zone_key])
+			_expect(state.zones.has(player.zone_ids.get(zone_key)), "player %s zone %s should exist" % [player_id, zone_key])
+
+
+func _test_player_invariant_guards() -> void:
+	var wrong_seat := GameStateData.create_vertical_slice()
+	(wrong_seat.players[&"p2"] as PlayerStateData).seat_index = 0
+	_expect(not InvariantService.validate(wrong_seat).is_empty(), "duplicate player seats must fail invariants")
+
+	var shared_zone := GameStateData.create_vertical_slice()
+	var player_one := shared_zone.players[&"p1"] as PlayerStateData
+	player_one.zone_ids[&"hand"] = player_one.zone_ids[&"draw_pile"]
+	_expect(not InvariantService.validate(shared_zone).is_empty(), "player zone references must be unique")
+
+	var exposed_hand := GameStateData.create_vertical_slice()
+	(exposed_hand.zones[&"p1:hand"] as ZoneData).visibility = &"public"
+	_expect(not InvariantService.validate(exposed_hand).is_empty(), "private hand zone must not become public")
+	_expect(RulesEngine.get_legal_commands(exposed_hand, &"p1").is_empty(), "invalid state must expose no legal commands")
+
+
 func _test_legal_command_and_dispatch() -> void:
 	var state := GameStateData.create_vertical_slice()
 	var legal := RulesEngine.get_legal_commands(state, &"p1")
@@ -80,6 +117,78 @@ func _test_command_legality_guards() -> void:
 	var pending_result := RulesEngine.dispatch(pending, _end_phase_envelope(pending, "cmd-pending"))
 	_expect(str(pending_result.get("error", "")) == "effects_pending", "dispatcher must enforce pending-effect legality")
 
+	var wrong_actor := GameStateData.create_vertical_slice()
+	var wrong_actor_envelope := _end_phase_envelope(wrong_actor, "cmd-wrong-actor")
+	wrong_actor_envelope["actor_id"] = "p2"
+	var wrong_actor_result := RulesEngine.dispatch(wrong_actor, wrong_actor_envelope)
+	_expect(str(wrong_actor_result.get("error", "")) == "wrong_actor", "non-active player command must be rejected")
+
+
+func _test_turn_rotation() -> void:
+	var state := GameStateData.create_vertical_slice()
+	var player_two := state.players[&"p2"] as PlayerStateData
+	player_two.turn_resources["combat"] = 7
+	player_two.turn_bonuses["test"] = true
+	for index in 5:
+		var result := RulesEngine.dispatch(state, _end_phase_envelope(state, "cmd-p1-%d" % index))
+		_expect(bool(result.get("ok", false)), "player one phase %d should advance" % index)
+		if not bool(result.get("ok", false)):
+			return
+		state = result["state"] as GameStateData
+	_expect(state.active_player_id == &"p2", "rest should advance from player one to player two")
+	_expect(state.phase == &"action1", "new player should begin at action1")
+	_expect(state.round_number == 1, "round should not increase before returning to starting player")
+	player_two = state.players[&"p2"] as PlayerStateData
+	_expect(int(player_two.turn_resources.get("combat", -1)) == 0, "new active player's turn resources should reset")
+	_expect(player_two.turn_bonuses.is_empty(), "new active player's turn bonuses should reset")
+
+	for index in 5:
+		var result := RulesEngine.dispatch(state, _end_phase_envelope(state, "cmd-p2-%d" % index))
+		_expect(bool(result.get("ok", false)), "player two phase %d should advance" % index)
+		if not bool(result.get("ok", false)):
+			return
+		state = result["state"] as GameStateData
+	_expect(state.active_player_id == &"p1", "player two rest should return to starting player")
+	_expect(state.round_number == 2, "round should increase only when starting player becomes active")
+
+
+func _test_session_turn_integration() -> void:
+	var session := GameSession.new()
+	var errors := session.start_new_game(91)
+	_expect(errors.is_empty(), "session should start a two-player game")
+	if not errors.is_empty():
+		return
+	for index in 5:
+		var result := session.end_phase()
+		_expect(bool(result.get("ok", false)), "session should advance player-one phase %d" % index)
+	_expect(session.state.active_player_id == &"p2", "session should expose player two after player one rests")
+	var legal := session.get_legal_commands()
+	_expect(legal.size() == 1 and legal[0].get("actor_id") == "p2", "session default legal query should follow active player")
+
+
+func _test_zone_move_service() -> void:
+	var state := GameStateData.create_vertical_slice()
+	var before_hash := CanonicalJson.sha256(state.to_dictionary())
+	var invalid := ZoneService.move_card(
+		state,
+		&"card-starter-melee-01",
+		&"p1:party",
+		&"p1:discard-pile",
+		9
+	)
+	_expect(str(invalid.get("error", "")) == "invalid_insert_index", "invalid zone move should fail before mutation")
+	_expect(CanonicalJson.sha256(state.to_dictionary()) == before_hash, "invalid zone move must be atomic")
+
+	var moved := ZoneService.move_card(
+		state,
+		&"card-starter-melee-01",
+		&"p1:party",
+		&"p1:discard-pile"
+	)
+	_expect(bool(moved.get("ok", false)), "valid zone move should succeed")
+	_expect(ZoneService.find_card_zone(state, &"card-starter-melee-01") == &"p1:discard-pile", "zone lookup should reflect committed move")
+	_expect(InvariantService.validate(state).is_empty(), "valid zone move should preserve invariants")
+
 
 func _test_duplicate_command_guard() -> void:
 	var state := GameStateData.create_vertical_slice()
@@ -94,14 +203,30 @@ func _test_duplicate_command_guard() -> void:
 
 func _test_twenty_blank_rounds() -> void:
 	var state := GameStateData.create_vertical_slice()
-	for index in 100:
+	for index in 200:
 		var result := RulesEngine.dispatch(state, _end_phase_envelope(state, "cmd-round-%03d" % index))
 		_expect(bool(result.get("ok", false)), "blank-round command %d should succeed" % index)
 		if not bool(result.get("ok", false)):
 			return
 		state = result["state"] as GameStateData
-	_expect(state.round_number == 21, "100 phase transitions should complete 20 blank rounds")
-	_expect(state.revision == 100, "each blank phase transition should commit one revision")
+	_expect(state.round_number == 21, "200 phase transitions should complete 20 two-player rounds")
+	_expect(state.revision == 200, "each blank phase transition should commit one revision")
+	_expect(state.active_player_id == &"p1" and state.phase == &"action1", "20 rounds should end at the starting-player boundary")
+
+
+func _test_twenty_round_determinism() -> void:
+	var first := GameStateData.create_vertical_slice(301)
+	var second := GameStateData.create_vertical_slice(301)
+	for index in 200:
+		var command_id := "cmd-deterministic-%03d" % index
+		var first_result := RulesEngine.dispatch(first, _end_phase_envelope(first, command_id))
+		var second_result := RulesEngine.dispatch(second, _end_phase_envelope(second, command_id))
+		if not bool(first_result.get("ok", false)) or not bool(second_result.get("ok", false)):
+			_expect(false, "deterministic run should dispatch command %d" % index)
+			return
+		first = first_result["state"] as GameStateData
+		second = second_result["state"] as GameStateData
+	_expect(CanonicalJson.sha256(first.to_dictionary()) == CanonicalJson.sha256(second.to_dictionary()), "same seed and commands should produce the same 20-round hash")
 
 
 func _test_stale_command_rollback() -> void:
@@ -123,6 +248,8 @@ func _test_snapshot_round_trip() -> void:
 	_expect(bool(decoded.get("ok", false)), "snapshot should decode: %s" % decoded)
 	if bool(decoded.get("ok", false)):
 		var restored := decoded["state"] as GameStateData
+		_expect(restored.players.size() == 2, "snapshot should preserve both players")
+		_expect(restored.turn_order == state.turn_order, "snapshot should preserve turn order")
 		_expect(
 			CanonicalJson.sha256(restored.to_dictionary()) == CanonicalJson.sha256(state.to_dictionary()),
 			"snapshot round trip should preserve state hash"
@@ -146,6 +273,17 @@ func _test_snapshot_rejection_paths() -> void:
 	malformed["state_hash"] = CanonicalJson.sha256(malformed_state)
 	var malformed_result := SnapshotCodec.decode(CanonicalJson.stringify(malformed))
 	_expect(str(malformed_result.get("error", "")) == "invalid_state", "snapshot must reject malformed nested data safely")
+
+
+func _test_canonical_integer_numbers() -> void:
+	_expect(
+		CanonicalJson.sha256({"value": 7}) == CanonicalJson.sha256({"value": 7.0}),
+		"canonical JSON should normalize integral numbers parsed from JSON"
+	)
+	_expect(
+		CanonicalJson.sha256({"value": 7.5}) != CanonicalJson.sha256({"value": 7}),
+		"canonical JSON should preserve non-integral numbers"
+	)
 
 
 func _test_seeded_rng() -> void:

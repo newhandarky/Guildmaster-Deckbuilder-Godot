@@ -6,6 +6,8 @@ const PHASES: Array[StringName] = [&"action1", &"combat", &"action2", &"purchase
 
 static func get_legal_commands(state: GameStateData, actor_id: StringName) -> Array[Dictionary]:
 	var commands: Array[Dictionary] = []
+	if not InvariantService.validate(state).is_empty():
+		return commands
 	if state.status != &"active":
 		return commands
 	if actor_id != state.active_player_id:
@@ -91,19 +93,34 @@ static func _validate_command(state: GameStateData, command: Dictionary) -> Stri
 
 static func _apply_end_phase(state: GameStateData, events: Array[Dictionary]) -> void:
 	var old_phase := state.phase
+	var old_player_id := state.active_player_id
 	var phase_index := PHASES.find(state.phase)
 	if phase_index == PHASES.size() - 1:
 		state.phase = PHASES[0]
-		state.round_number += 1
+		var player_index := state.turn_order.find(state.active_player_id)
+		state.active_player_id = state.turn_order[(player_index + 1) % state.turn_order.size()]
+		var next_player := state.players[state.active_player_id] as PlayerStateData
+		next_player.reset_turn_scope()
+		if state.active_player_id == state.starting_player_id:
+			state.round_number += 1
 	else:
 		state.phase = PHASES[phase_index + 1]
 	events.append({
 		"type": "phase_changed",
-		"actor_id": str(state.active_player_id),
+		"actor_id": str(old_player_id),
 		"from_phase": str(old_phase),
 		"to_phase": str(state.phase),
 		"round": state.round_number,
 	})
+	if old_player_id != state.active_player_id:
+		events.append({
+			"type": "active_player_changed",
+			"from_player_id": str(old_player_id),
+			"to_player_id": str(state.active_player_id),
+			"round": state.round_number,
+		})
+		if state.active_player_id == state.starting_player_id:
+			events.append({"type": "round_started", "round": state.round_number})
 
 
 static func _failure(code: String, state_hash: String) -> Dictionary:

@@ -26,4 +26,8 @@ static func _canonicalize(value: Variant) -> Variant:
 		return result
 	if value is StringName:
 		return str(value)
+	if value is float:
+		var number := value as float
+		if is_finite(number) and number == floor(number):
+			return int(number)
 	return value

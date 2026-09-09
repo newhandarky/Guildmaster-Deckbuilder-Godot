@@ -6,6 +6,7 @@ signal skip_animation_requested
 
 @onready var round_label: Label = %RoundLabel
 @onready var phase_label: Label = %PhaseLabel
+@onready var active_player_label: Label = %ActivePlayerLabel
 @onready var revision_label: Label = %RevisionLabel
 @onready var detail_panel: PanelContainer = %DetailPanel
 @onready var detail_title: Label = %DetailTitle
@@ -27,6 +28,10 @@ func _ready() -> void:
 func update_state(state: Dictionary) -> void:
 	round_label.text = "回合 %d" % int(state.get("round", 1))
 	phase_label.text = "階段：%s" % _localized_phase(str(state.get("phase", "")))
+	var active_player_id := str(state.get("active_player_id", ""))
+	var players := state.get("players", {}) as Dictionary
+	var active_player := players.get(active_player_id, {}) as Dictionary
+	active_player_label.text = "目前玩家：%s" % str(active_player.get("display_name", active_player_id))
 	revision_label.text = "Revision %d" % int(state.get("revision", 0))
 
 
@@ -39,12 +44,20 @@ func show_entity(display_name: String, details: String) -> void:
 func show_events(events: Array[Dictionary]) -> void:
 	if events.is_empty():
 		return
-	var event: Dictionary = events.back()
-	if event.get("type") == "phase_changed":
-		event_label.text = "%s → %s" % [
-			_localized_phase(str(event.get("from_phase", ""))),
-			_localized_phase(str(event.get("to_phase", ""))),
-		]
+	for index in range(events.size() - 1, -1, -1):
+		var event := events[index] as Dictionary
+		if event.get("type") == "active_player_changed":
+			event_label.text = "%s 結束回合 → %s 開始" % [
+				str(event.get("from_player_id", "")),
+				str(event.get("to_player_id", "")),
+			]
+			return
+		if event.get("type") == "phase_changed":
+			event_label.text = "%s → %s" % [
+				_localized_phase(str(event.get("from_phase", ""))),
+				_localized_phase(str(event.get("to_phase", ""))),
+			]
+			return
 
 
 func show_error(error_code: String) -> void:
