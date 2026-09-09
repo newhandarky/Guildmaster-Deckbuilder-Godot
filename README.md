@@ -24,11 +24,11 @@ godot --headless --path . --script res://tests/headless/run_smoke.gd
 
 ## 架構邊界
 
-- `domain/`：兩位玩家、純資料規則、集中式 Zone 移動、命令、RNG、invariants；不得依賴 Node 或 Presentation。
+- `domain/`：兩位玩家、純資料規則、集中式 Zone／牌庫服務、命令、RNG、invariants；不得依賴 Node 或 Presentation。
 - `content/`：基礎版 CardDefinition 與 Content Pack；不含自定義冒險者。
 - `app/`：GameSession 與應用程式協調。
 - `presentation/`：3D 桌面、HUD、動畫；只呈現已提交結果。
 - `scenes/`：可執行場景。
 - `tests/`：headless 規則與整合測試。
 
-第一個 vertical slice 使用 placeholder 資產證明：內容載入 → 兩位玩家五階段輪替 → Legal Commands → transaction → events → 3D／2D 呈現 → Snapshot/hash。
+第一個 vertical slice 使用 placeholder 資產證明：官方起始配置 → 兩位玩家五階段輪替 → 休息棄牌／洗牌／抽牌 → Legal Commands → transaction → events → 3D／2D 呈現 → Snapshot/hash。

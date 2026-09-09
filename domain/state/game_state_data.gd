@@ -6,8 +6,8 @@ const PlayerStateDataType = preload("res://domain/state/player_state_data.gd")
 
 var schema_version: int = 1
 var game_id: StringName = &"game-demo-001"
-var content_version: String = "0.1.0"
-var ruleset_version: String = "0.1.0"
+var content_version: String = "0.2.0"
+var ruleset_version: String = "0.2.0"
 var seed_value: int = 20260909
 var rng_state: int = 0
 var revision: int = 0
@@ -28,7 +28,7 @@ var processed_command_ids: Array[String] = []
 static func create_vertical_slice(seed: int = 20260909) -> GameStateData:
 	var state := GameStateData.new()
 	state.seed_value = seed
-	state.rng_state = seed
+	state.rng_state = DeterministicRng.new(seed).get_state()
 	var player_one := PlayerStateDataType.create(&"p1", 0, "玩家一")
 	var player_two := PlayerStateDataType.create(&"p2", 1, "玩家二")
 	state.turn_order = [&"p1", &"p2"]
@@ -37,18 +37,6 @@ static func create_vertical_slice(seed: int = 20260909) -> GameStateData:
 		player_two.player_id: player_two,
 	}
 	state.cards = {
-		&"card-starter-melee-01": {
-			"instance_id": "card-starter-melee-01",
-			"definition_id": "base:starter/adventurer-01",
-			"owner_id": "p1",
-			"state": {},
-		},
-		&"card-starter-melee-02": {
-			"instance_id": "card-starter-melee-02",
-			"definition_id": "base:starter/adventurer-01",
-			"owner_id": "p2",
-			"state": {},
-		},
 		&"card-monster-skeleton-01": {
 			"instance_id": "card-monster-skeleton-01",
 			"definition_id": "base:monster/monster-01",
@@ -59,8 +47,7 @@ static func create_vertical_slice(seed: int = 20260909) -> GameStateData:
 	for player_id: StringName in state.turn_order:
 		var player := state.players[player_id] as PlayerStateData
 		_add_player_zones(state, player)
-	(state.zones[&"p1:party"] as ZoneData).card_instance_ids.append(&"card-starter-melee-01")
-	(state.zones[&"p2:party"] as ZoneData).card_instance_ids.append(&"card-starter-melee-02")
+		_add_official_starting_cards(state, player)
 	var monsters := ZoneDataType.new(&"shared:monster-row", &"face_up_row", &"public")
 	monsters.card_instance_ids.append(&"card-monster-skeleton-01")
 	monsters.metadata = {"cycle_anchor": "card-monster-skeleton-01"}
@@ -144,7 +131,8 @@ func to_dictionary() -> Dictionary:
 		"content_version": content_version,
 		"ruleset_version": ruleset_version,
 		"seed": seed_value,
-		"rng_state": rng_state,
+		# JSON numbers are doubles, so encode the 64-bit RNG state losslessly.
+		"rng_state": str(rng_state),
 		"revision": revision,
 		"status": str(status),
 		"round": round_number,
@@ -175,6 +163,39 @@ static func _add_player_zones(state: GameStateData, player: PlayerStateData) -> 
 		var zone := ZoneDataType.new(player.zone_ids[zone_key], zone_kinds[zone_key], visibility)
 		zone.metadata = {"owner_id": str(player.player_id)}
 		state.zones[zone.zone_id] = zone
+
+
+static func _add_official_starting_cards(state: GameStateData, player: PlayerStateData) -> void:
+	var party := state.zones[player.zone_ids[&"party"]] as ZoneData
+	for starter_number in range(1, 6):
+		var suffix := "%02d" % starter_number
+		var instance_id := StringName("card-%s-starter-adventurer-%s" % [player.player_id, suffix])
+		state.cards[instance_id] = {
+			"instance_id": str(instance_id),
+			"definition_id": "base:starter/adventurer-%s" % suffix,
+			"owner_id": str(player.player_id),
+			"state": {},
+		}
+		party.card_instance_ids.append(instance_id)
+
+	var hand := state.zones[player.zone_ids[&"hand"]] as ZoneData
+	for stone_number in range(1, 5):
+		var instance_id := StringName("card-%s-summoning-stone-%02d" % [player.player_id, stone_number])
+		state.cards[instance_id] = {
+			"instance_id": str(instance_id),
+			"definition_id": "base:starter/summoning-stone",
+			"owner_id": str(player.player_id),
+			"state": {},
+		}
+		hand.card_instance_ids.append(instance_id)
+	var crystal_id := StringName("card-%s-spirit-crystal-01" % player.player_id)
+	state.cards[crystal_id] = {
+		"instance_id": str(crystal_id),
+		"definition_id": "base:starter/spirit-crystal",
+		"owner_id": str(player.player_id),
+		"state": {},
+	}
+	hand.card_instance_ids.append(crystal_id)
 
 
 static func _string_name_array_to_strings(values: Array[StringName]) -> Array[String]:

@@ -4,10 +4,10 @@ extends RefCounted
 var _rng := RandomNumberGenerator.new()
 
 
-func _init(seed_value: int = 1, saved_state: int = 0) -> void:
+func _init(seed_value: int = 1, saved_state: Variant = null) -> void:
 	_rng.seed = seed_value
-	if saved_state != 0:
-		_rng.state = saved_state
+	if saved_state != null:
+		_rng.state = int(saved_state)
 
 
 func roll_die(sides: int = 6) -> int:

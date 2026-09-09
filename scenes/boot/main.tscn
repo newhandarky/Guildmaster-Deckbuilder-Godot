@@ -129,9 +129,9 @@ mesh = SubResource("Mesh_ring")
 unique_name_in_owner = true
 position = Vector3(-2.2, 0.72, 0.9)
 script = ExtResource("2_token")
-entity_id = &"card-starter-melee-01"
-display_name = "起始近戰冒險者"
-details = "基礎版 Vertical Slice\n職業：近戰\n印刷戰力：1\n目前位於玩家隊伍。"
+entity_id = &"card-p1-starter-adventurer-01"
+display_name = "麥娜"
+details = "基礎版起始冒險者\n職業：輔助\n印刷戰力：1\n目前位於玩家一的隊伍。"
 base_color = Color(0.93, 0.28, 0.16, 1)
 
 [node name="Mesh" type="MeshInstance3D" parent="PlayerToken"]

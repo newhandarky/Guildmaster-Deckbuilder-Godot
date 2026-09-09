@@ -19,12 +19,16 @@ func _run() -> void:
 	_test_content_pack_reload()
 	_test_initial_invariants()
 	_test_two_player_state()
+	_test_official_starting_setup()
 	_test_player_invariant_guards()
 	_test_legal_command_and_dispatch()
 	_test_command_legality_guards()
 	_test_turn_rotation()
 	_test_session_turn_integration()
 	_test_zone_move_service()
+	_test_rest_cleanup_and_draw()
+	_test_draw_reshuffle_boundaries()
+	_test_seeded_shuffle_order()
 	_test_duplicate_command_guard()
 	_test_twenty_blank_rounds()
 	_test_twenty_round_determinism()
@@ -40,7 +44,7 @@ func _test_content_pack() -> void:
 	var registry := ContentRegistry.new()
 	var errors := registry.load_pack("res://content/packs/base_vertical_slice.json")
 	_expect(errors.is_empty(), "base content pack should validate: %s" % "; ".join(errors))
-	_expect(registry.definitions.size() == 3, "vertical slice should load three definitions")
+	_expect(registry.definitions.size() == 8, "vertical slice should load eight base definitions")
 	_expect(not registry.definitions.has(&"custom:adventurer/melee-01"), "custom adventurers must stay disabled")
 	_expect(not registry.pack_fingerprint.is_empty(), "content pack should expose a deterministic fingerprint")
 
@@ -51,7 +55,7 @@ func _test_content_pack_reload() -> void:
 	var first_fingerprint := registry.pack_fingerprint
 	var second_errors := registry.load_pack("res://content/packs/base_vertical_slice.json")
 	_expect(first_errors.is_empty() and second_errors.is_empty(), "content pack should be safely reloadable")
-	_expect(registry.definitions.size() == 3, "content reload must not retain duplicate definitions")
+	_expect(registry.definitions.size() == 8, "content reload must not retain duplicate definitions")
 	_expect(registry.pack_fingerprint == first_fingerprint, "same content should keep the same fingerprint")
 
 
@@ -73,6 +77,30 @@ func _test_two_player_state() -> void:
 		for zone_key: StringName in PlayerStateData.REQUIRED_ZONE_KEYS:
 			_expect(player.zone_ids.has(zone_key), "player %s should reference %s" % [player_id, zone_key])
 			_expect(state.zones.has(player.zone_ids.get(zone_key)), "player %s zone %s should exist" % [player_id, zone_key])
+
+
+func _test_official_starting_setup() -> void:
+	var state := GameStateData.create_vertical_slice()
+	_expect(state.cards.size() == 21, "two-player setup should create 20 player cards and one monster")
+	for player_id: StringName in state.turn_order:
+		var player := state.players[player_id] as PlayerStateData
+		var party := state.zones[player.zone_ids[&"party"]] as ZoneData
+		var hand := state.zones[player.zone_ids[&"hand"]] as ZoneData
+		var draw_pile := state.zones[player.zone_ids[&"draw_pile"]] as ZoneData
+		var discard_pile := state.zones[player.zone_ids[&"discard_pile"]] as ZoneData
+		_expect(party.card_instance_ids.size() == 5, "player %s should start with five adventurers in party" % player_id)
+		_expect(hand.card_instance_ids.size() == 5, "player %s should start with five cards in hand" % player_id)
+		_expect(draw_pile.card_instance_ids.is_empty(), "official setup should not shuffle starting hand into draw pile")
+		_expect(discard_pile.card_instance_ids.is_empty(), "official setup should start with an empty discard pile")
+		var stone_count := 0
+		var crystal_count := 0
+		for card_instance_id: StringName in hand.card_instance_ids:
+			var definition_id := str((state.cards[card_instance_id] as Dictionary).get("definition_id", ""))
+			if definition_id == "base:starter/summoning-stone":
+				stone_count += 1
+			elif definition_id == "base:starter/spirit-crystal":
+				crystal_count += 1
+		_expect(stone_count == 4 and crystal_count == 1, "official starting hand should contain four stones and one crystal")
 
 
 func _test_player_invariant_guards() -> void:
@@ -171,7 +199,7 @@ func _test_zone_move_service() -> void:
 	var before_hash := CanonicalJson.sha256(state.to_dictionary())
 	var invalid := ZoneService.move_card(
 		state,
-		&"card-starter-melee-01",
+		&"card-p1-starter-adventurer-01",
 		&"p1:party",
 		&"p1:discard-pile",
 		9
@@ -181,13 +209,77 @@ func _test_zone_move_service() -> void:
 
 	var moved := ZoneService.move_card(
 		state,
-		&"card-starter-melee-01",
+		&"card-p1-starter-adventurer-01",
 		&"p1:party",
 		&"p1:discard-pile"
 	)
 	_expect(bool(moved.get("ok", false)), "valid zone move should succeed")
-	_expect(ZoneService.find_card_zone(state, &"card-starter-melee-01") == &"p1:discard-pile", "zone lookup should reflect committed move")
+	_expect(ZoneService.find_card_zone(state, &"card-p1-starter-adventurer-01") == &"p1:discard-pile", "zone lookup should reflect committed move")
 	_expect(InvariantService.validate(state).is_empty(), "valid zone move should preserve invariants")
+
+
+func _test_rest_cleanup_and_draw() -> void:
+	var state := GameStateData.create_vertical_slice(113)
+	var final_events: Array[Dictionary] = []
+	for index in 5:
+		var result := RulesEngine.dispatch(state, _end_phase_envelope(state, "cmd-rest-%d" % index))
+		_expect(bool(result.get("ok", false)), "rest setup phase %d should dispatch" % index)
+		if not bool(result.get("ok", false)):
+			return
+		state = result["state"] as GameStateData
+		final_events = result["events"]
+	var player_one := state.players[&"p1"] as PlayerStateData
+	var hand := state.zones[player_one.zone_ids[&"hand"]] as ZoneData
+	var draw_pile := state.zones[player_one.zone_ids[&"draw_pile"]] as ZoneData
+	var discard_pile := state.zones[player_one.zone_ids[&"discard_pile"]] as ZoneData
+	_expect(hand.card_instance_ids.size() == 5, "rest should draw five cards for the outgoing player")
+	_expect(draw_pile.card_instance_ids.is_empty() and discard_pile.card_instance_ids.is_empty(), "five-card starting cycle should be fully drawn after reshuffle")
+	_expect(_events_contain(final_events, "discard_reshuffled"), "first rest should reshuffle the discarded starting hand")
+	_expect(_events_contain(final_events, "hand_restocked"), "rest should emit a hand_restocked event")
+	_expect(InvariantService.validate(state).is_empty(), "rest cleanup and draw should preserve invariants")
+
+
+func _test_draw_reshuffle_boundaries() -> void:
+	var exact_draw := GameStateData.create_vertical_slice(127)
+	var player := exact_draw.players[&"p1"] as PlayerStateData
+	var hand := exact_draw.zones[player.zone_ids[&"hand"]] as ZoneData
+	var original_hand := hand.card_instance_ids.duplicate()
+	for card_instance_id: StringName in original_hand:
+		ZoneService.move_card(exact_draw, card_instance_id, player.zone_ids[&"hand"], player.zone_ids[&"discard_pile"])
+	var top_card := StringName(original_hand[0])
+	ZoneService.move_card(exact_draw, top_card, player.zone_ids[&"discard_pile"], player.zone_ids[&"draw_pile"])
+	var rng_before := exact_draw.rng_state
+	var exact_events: Array[Dictionary] = []
+	var exact_result := DeckService.draw_cards(exact_draw, &"p1", 1, exact_events)
+	_expect(int(exact_result.get("drawn_count", 0)) == 1, "draw should take the final draw-pile card")
+	_expect(not _events_contain(exact_events, "discard_reshuffled"), "drawing the final available card must not reshuffle early")
+	_expect(exact_draw.rng_state == rng_before, "draw without shuffle must not consume RNG")
+
+	var shortage := GameStateData.create_vertical_slice(131)
+	var shortage_events: Array[Dictionary] = []
+	var cleanup_error := DeckService.discard_hand_and_play_area(shortage, &"p1", shortage_events)
+	_expect(cleanup_error.is_empty(), "shortage fixture cleanup should succeed")
+	var shortage_result := DeckService.draw_cards(shortage, &"p1", 9, shortage_events)
+	_expect(bool(shortage_result.get("ok", false)), "short draw should finish without fabricating cards")
+	_expect(int(shortage_result.get("drawn_count", 0)) == 5, "draw should return only physically available cards")
+	_expect(InvariantService.validate(shortage).is_empty(), "short draw should preserve invariants")
+
+
+func _test_seeded_shuffle_order() -> void:
+	var first := GameStateData.create_vertical_slice(149)
+	var second := GameStateData.create_vertical_slice(149)
+	var first_events: Array[Dictionary] = []
+	var second_events: Array[Dictionary] = []
+	DeckService.discard_hand_and_play_area(first, &"p1", first_events)
+	DeckService.discard_hand_and_play_area(second, &"p1", second_events)
+	DeckService.draw_cards(first, &"p1", 5, first_events)
+	DeckService.draw_cards(second, &"p1", 5, second_events)
+	var first_player := first.players[&"p1"] as PlayerStateData
+	var second_player := second.players[&"p1"] as PlayerStateData
+	var first_hand := first.zones[first_player.zone_ids[&"hand"]] as ZoneData
+	var second_hand := second.zones[second_player.zone_ids[&"hand"]] as ZoneData
+	_expect(first_hand.card_instance_ids == second_hand.card_instance_ids, "same seed should produce the same shuffled hand order")
+	_expect(first.rng_state == second.rng_state, "same shuffle should preserve identical RNG state")
 
 
 func _test_duplicate_command_guard() -> void:
@@ -246,6 +338,9 @@ func _test_snapshot_round_trip() -> void:
 	var encoded := SnapshotCodec.encode(state, "content:test", "rules:test")
 	var decoded := SnapshotCodec.decode(encoded)
 	_expect(bool(decoded.get("ok", false)), "snapshot should decode: %s" % decoded)
+	if bool(decoded.get("ok", false)):
+		var restored := decoded.get("state") as GameStateData
+		_expect(restored != null and restored.rng_state == state.rng_state, "snapshot should preserve exact RNG state")
 	if bool(decoded.get("ok", false)):
 		var restored := decoded["state"] as GameStateData
 		_expect(restored.players.size() == 2, "snapshot should preserve both players")
@@ -324,3 +419,10 @@ func _end_phase_envelope(state: GameStateData, command_id: String = "cmd-test") 
 func _expect(condition: bool, message: String) -> void:
 	if not condition:
 		_failures.append(message)
+
+
+func _events_contain(events: Array[Dictionary], event_type: String) -> bool:
+	for event: Dictionary in events:
+		if str(event.get("type", "")) == event_type:
+			return true
+	return false

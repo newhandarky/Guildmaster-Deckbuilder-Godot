@@ -1,19 +1,59 @@
 {
   "manifest": {
     "pack_id": "base:vertical-slice",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "includes_custom_adventurers": false
   },
   "definitions": [
     {
       "definition_id": "base:starter/adventurer-01",
-      "display_name": "起始近戰冒險者",
+      "display_name": "麥娜",
       "card_type": "starter",
       "copies": 1,
       "combat": 1,
+      "tags": ["adventurer", "starter", "support"],
+      "effects": [],
+      "presentation_id": "base:presentation/starter-support"
+    },
+    {
+      "definition_id": "base:starter/adventurer-02",
+      "display_name": "慕莎",
+      "card_type": "starter",
+      "copies": 1,
+      "combat": 2,
       "tags": ["adventurer", "starter", "melee"],
       "effects": [],
       "presentation_id": "base:presentation/starter-melee"
+    },
+    {
+      "definition_id": "base:starter/adventurer-03",
+      "display_name": "卡儂",
+      "card_type": "starter",
+      "copies": 1,
+      "combat": 1,
+      "tags": ["adventurer", "starter", "mage"],
+      "effects": [],
+      "presentation_id": "base:presentation/starter-mage"
+    },
+    {
+      "definition_id": "base:starter/adventurer-04",
+      "display_name": "修爾蒂",
+      "card_type": "starter",
+      "copies": 1,
+      "combat": 1,
+      "tags": ["adventurer", "starter", "tank"],
+      "effects": [],
+      "presentation_id": "base:presentation/starter-tank"
+    },
+    {
+      "definition_id": "base:starter/adventurer-05",
+      "display_name": "辛芙妮",
+      "card_type": "starter",
+      "copies": 1,
+      "combat": 1,
+      "tags": ["adventurer", "starter", "ranged"],
+      "effects": [],
+      "presentation_id": "base:presentation/starter-ranged"
     },
     {
       "definition_id": "base:monster/monster-01",
@@ -38,6 +78,16 @@
       "tags": ["resource", "starter"],
       "effects": [],
       "presentation_id": "base:presentation/summoning-stone"
+    },
+    {
+      "definition_id": "base:starter/spirit-crystal",
+      "display_name": "精靈結晶",
+      "card_type": "equipment",
+      "copies": 1,
+      "combat": 1,
+      "tags": ["equipment", "starter"],
+      "effects": [],
+      "presentation_id": "base:presentation/spirit-crystal"
     }
   ]
 }

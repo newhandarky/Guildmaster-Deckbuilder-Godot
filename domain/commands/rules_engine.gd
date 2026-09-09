@@ -39,9 +39,11 @@ static func dispatch(state: GameStateData, envelope: Dictionary) -> Dictionary:
 	var events: Array[Dictionary] = []
 	match StringName(command.get("type", "")):
 		&"END_PHASE":
-			_apply_end_phase(draft, events)
+			error = _apply_end_phase(draft, events)
 		_:
 			return _failure("unsupported_command", before_hash)
+	if not error.is_empty():
+		return _failure(error, before_hash)
 
 	var invariant_errors := InvariantService.validate(draft)
 	if not invariant_errors.is_empty():
@@ -91,11 +93,14 @@ static func _validate_command(state: GameStateData, command: Dictionary) -> Stri
 	return ""
 
 
-static func _apply_end_phase(state: GameStateData, events: Array[Dictionary]) -> void:
+static func _apply_end_phase(state: GameStateData, events: Array[Dictionary]) -> String:
 	var old_phase := state.phase
 	var old_player_id := state.active_player_id
 	var phase_index := PHASES.find(state.phase)
 	if phase_index == PHASES.size() - 1:
+		var rest_error := DeckService.restock_hand(state, old_player_id, 5, events)
+		if not rest_error.is_empty():
+			return rest_error
 		state.phase = PHASES[0]
 		var player_index := state.turn_order.find(state.active_player_id)
 		state.active_player_id = state.turn_order[(player_index + 1) % state.turn_order.size()]
@@ -121,6 +126,7 @@ static func _apply_end_phase(state: GameStateData, events: Array[Dictionary]) ->
 		})
 		if state.active_player_id == state.starting_player_id:
 			events.append({"type": "round_started", "round": state.round_number})
+	return ""
 
 
 static func _failure(code: String, state_hash: String) -> Dictionary:

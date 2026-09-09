@@ -63,9 +63,9 @@ func snapshot() -> Dictionary:
 		return {}
 	return {
 		"snapshot_schema_version": 1,
-		"app_version": "0.1.0",
+		"app_version": "0.2.0",
 		"content_fingerprint": content_registry.pack_fingerprint,
-		"ruleset_fingerprint": "ruleset:vertical-slice:0.1.0",
+		"ruleset_fingerprint": "ruleset:vertical-slice:0.2.0",
 		"state": state.to_dictionary(),
 		"state_hash": CanonicalJson.sha256(state.to_dictionary()),
 	}
