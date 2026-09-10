@@ -144,7 +144,7 @@ static func apply(
 	for effect: Dictionary in definition.effects:
 		if StringName(effect.get("timing", "on_play")) == &"on_play":
 			on_play_effects.append(effect)
-	return EffectResolver.resolve(state, actor_id, on_play_effects, events)
+	return EffectResolver.resolve(state, actor_id, on_play_effects, events, definitions)
 
 
 static func _definition_for_card(

@@ -85,7 +85,7 @@ static func apply(
 	for effect: Dictionary in definition.effects:
 		if StringName(effect.get("timing", "")) == &"on_use":
 			use_effects.append(effect)
-	var effect_error := EffectResolver.resolve(state, actor_id, use_effects, events)
+	var effect_error := EffectResolver.resolve(state, actor_id, use_effects, events, definitions)
 	if not effect_error.is_empty():
 		return effect_error
 	events.append({

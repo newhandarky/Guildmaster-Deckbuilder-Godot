@@ -257,12 +257,25 @@ static func _validate_effect_state(state: GameStateData, errors: PackedStringArr
 	var destination_zone_id := StringName(choice.get("destination_zone_id", ""))
 	var player := state.players.get(actor_id) as PlayerStateData
 	if player != null:
-		if source_zone_key not in [&"hand", &"discard_pile"]:
-			errors.append("Pending choice has an unsupported source zone key")
-		elif source_zone_id != StringName(player.zone_ids.get(source_zone_key, &"")):
-			errors.append("Pending choice source must belong to the actor")
-		if destination_zone_id != StringName(player.zone_ids.get(&"removed", &"")):
-			errors.append("Pending choice destination must be the actor removed zone")
+		match StringName(choice.get("op", "")):
+			&"choose_remove_card":
+				if source_zone_key not in [&"hand", &"discard_pile"]:
+					errors.append("Pending removal has an unsupported source zone key")
+				elif source_zone_id != StringName(player.zone_ids.get(source_zone_key, &"")):
+					errors.append("Pending removal source must belong to the actor")
+				if destination_zone_id != StringName(player.zone_ids.get(&"removed", &"")):
+					errors.append("Pending removal destination must be the actor removed zone")
+			&"choose_gain_card":
+				if source_zone_key != &"recruit_row" \
+						or source_zone_id != SupplyService.RECRUIT_ROW_ID:
+					errors.append("Pending gain source must be the recruit row")
+				if destination_zone_id != StringName(player.zone_ids.get(&"discard_pile", &"")):
+					errors.append("Pending gain destination must be the actor discard pile")
+				if int(choice.get("max_cost", -1)) < 0 \
+						or StringName(choice.get("required_tag", "")) != &"adventurer":
+					errors.append("Pending gain filter is invalid")
+			_:
+				errors.append("Unsupported pending choice operation")
 	if not choice.get("eligible_card_ids", []) is Array:
 		errors.append("Pending choice eligible cards must be an Array")
 		return
@@ -275,6 +288,10 @@ static func _validate_effect_state(state: GameStateData, errors: PackedStringArr
 		eligible_seen[card_instance_id] = true
 		if ZoneService.find_card_zone(state, card_instance_id) != source_zone_id:
 			errors.append("Pending choice card %s is not in its source zone" % card_instance_id)
+		elif StringName(choice.get("op", "")) == &"choose_gain_card":
+			var card := state.cards.get(card_instance_id) as Dictionary
+			if card == null or not StringName(card.get("owner_id", "")).is_empty():
+				errors.append("Pending gain card %s must be unowned" % card_instance_id)
 	var minimum := int(choice.get("min_selections", -1))
 	var maximum := int(choice.get("max_selections", -1))
 	if minimum < 0 or maximum < minimum or maximum > 1:

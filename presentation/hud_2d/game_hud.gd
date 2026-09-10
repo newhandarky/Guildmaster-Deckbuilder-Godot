@@ -97,14 +97,18 @@ func show_events(events: Array[Dictionary]) -> void:
 			]
 			return
 		if event.get("type") == "choice_resolved":
-			event_label.text = (
-				"已略過移除"
-				if bool(event.get("skipped", false))
-				else "已從%s移除：%s" % [
+			var operation := StringName(event.get("op", ""))
+			if bool(event.get("skipped", false)):
+				event_label.text = "已略過%s" % _choice_action_label(operation)
+			elif operation == &"choose_gain_card":
+				event_label.text = "已從招募區取得：%s" % _card_display_name(
+					str(event.get("card_instance_id", ""))
+				)
+			else:
+				event_label.text = "已從%s移除：%s" % [
 					_localized_choice_source(StringName(event.get("source_zone_key", ""))),
 					_card_display_name(str(event.get("card_instance_id", ""))),
 				]
-			)
 			return
 		if event.get("type") == "market_refreshed":
 			event_label.text = "市場刷新完成：已更換 %d 張公開卡" % (
@@ -214,19 +218,21 @@ func _rebuild_hand(state: Dictionary, active_player_id: String) -> void:
 		hand_actions.add_child(card_label)
 		var choice_command := _find_choice_for_card(choice_commands, card_id)
 		if not choice_command.is_empty():
-			var remove_button := Button.new()
-			remove_button.text = "從%s移除此牌" % choice_source_label
-			remove_button.custom_minimum_size = Vector2(0.0, 36.0)
-			remove_button.focus_mode = Control.FOCUS_ALL
-			remove_button.pressed.connect(
+			var choice_button := Button.new()
+			choice_button.text = _choice_button_text(
+				StringName(effect_state.get("op", "")), choice_source_label
+			)
+			choice_button.custom_minimum_size = Vector2(0.0, 36.0)
+			choice_button.focus_mode = Control.FOCUS_ALL
+			choice_button.pressed.connect(
 				resolve_choice_requested.emit.bind(
 					str(choice_command.get("choice_id", "")),
 					StringName(card_id),
 					false
 				)
 			)
-			hand_actions.add_child(remove_button)
-			action_buttons.append(remove_button)
+			hand_actions.add_child(choice_button)
+			action_buttons.append(choice_button)
 		if card_id in (refresh_command.get("discard_card_ids", []) as Array):
 			var cost_button := Button.new()
 			cost_button.text = (
@@ -283,7 +289,9 @@ func _rebuild_hand(state: Dictionary, active_player_id: String) -> void:
 	var skip_choice := _find_skip_choice(choice_commands)
 	if not skip_choice.is_empty():
 		var skip_choice_button := Button.new()
-		skip_choice_button.text = "略過移除"
+		skip_choice_button.text = "略過%s" % _choice_action_label(
+			StringName(effect_state.get("op", ""))
+		)
 		skip_choice_button.custom_minimum_size = Vector2(0.0, 36.0)
 		skip_choice_button.focus_mode = Control.FOCUS_ALL
 		skip_choice_button.pressed.connect(
@@ -339,7 +347,18 @@ func _localized_choice_source(source_zone_key: StringName) -> String:
 	return {
 		&"hand": "自己的手牌",
 		&"discard_pile": "自己的棄牌堆",
+		&"recruit_row": "招募區",
 	}.get(source_zone_key, "選擇來源區")
+
+
+func _choice_action_label(operation: StringName) -> String:
+	return "取得" if operation == &"choose_gain_card" else "移除"
+
+
+func _choice_button_text(operation: StringName, source_label: String) -> String:
+	if operation == &"choose_gain_card":
+		return "從%s取得此牌" % source_label
+	return "從%s移除此牌" % source_label
 
 
 func _card_display_name(card_instance_id: String) -> String:

@@ -1,7 +1,7 @@
 {
   "manifest": {
     "pack_id": "base:vertical-slice",
-    "version": "0.9.0",
+    "version": "0.10.0",
     "includes_custom_adventurers": false
   },
   "definitions": [
@@ -142,6 +142,30 @@
         }
       ],
       "presentation_id": "base:presentation/monster-automaton-warrior"
+    },
+    {
+      "definition_id": "base:monster/monster-12",
+      "display_name": "石像鬼",
+      "card_type": "monster",
+      "copies": 2,
+      "combat": 6,
+      "purchase_power": 2,
+      "honor": 4,
+      "tags": [
+        "enemy",
+        "monster"
+      ],
+      "effects": [
+        {
+          "op": "choose_gain_card",
+          "amount": 1,
+          "source_zone_id": "shared:recruit-row",
+          "required_tag": "adventurer",
+          "max_cost": 4,
+          "timing": "on_defeat"
+        }
+      ],
+      "presentation_id": "base:presentation/monster-gargoyle"
     },
     {
       "definition_id": "base:starter/summoning-stone",

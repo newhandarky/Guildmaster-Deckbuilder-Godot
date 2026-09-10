@@ -68,7 +68,7 @@ static func dispatch(
 		&"REFRESH_MARKET":
 			error = MarketRefreshService.apply(draft, actor_id, command, events)
 		&"RESOLVE_CHOICE":
-			error = ChoiceService.apply(draft, actor_id, command, events)
+			error = ChoiceService.apply(draft, actor_id, command, events, definitions)
 		_:
 			return _failure("unsupported_command", before_hash)
 	if not error.is_empty():
@@ -122,7 +122,7 @@ static func _validate_command(
 		return "game_not_active"
 	if not state.effect_state.is_empty():
 		if StringName(command.get("type", "")) == &"RESOLVE_CHOICE":
-			return ChoiceService.validate(state, actor_id, command)
+			return ChoiceService.validate(state, actor_id, command, definitions)
 		return "effects_pending"
 	match StringName(command.get("type", "")):
 		&"END_PHASE":

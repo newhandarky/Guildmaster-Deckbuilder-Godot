@@ -6,8 +6,8 @@ const PlayerStateDataType = preload("res://domain/state/player_state_data.gd")
 
 var schema_version: int = 1
 var game_id: StringName = &"game-demo-001"
-var content_version: String = "0.9.0"
-var ruleset_version: String = "0.9.0"
+var content_version: String = "0.10.0"
+var ruleset_version: String = "0.10.0"
 var seed_value: int = 20260909
 var rng_state: int = 0
 var revision: int = 0
@@ -103,6 +103,18 @@ static func create_vertical_slice(seed: int = 20260909) -> GameStateData:
 			"owner_id": "",
 			"state": {"target_id": "target-monster-11-02"},
 		},
+		&"card-monster-gargoyle-01": {
+			"instance_id": "card-monster-gargoyle-01",
+			"definition_id": "base:monster/monster-12",
+			"owner_id": "",
+			"state": {"target_id": "target-monster-12-01"},
+		},
+		&"card-monster-gargoyle-02": {
+			"instance_id": "card-monster-gargoyle-02",
+			"definition_id": "base:monster/monster-12",
+			"owner_id": "",
+			"state": {"target_id": "target-monster-12-02"},
+		},
 	}
 	for player_id: StringName in state.turn_order:
 		var player := state.players[player_id] as PlayerStateData
@@ -123,6 +135,8 @@ static func create_vertical_slice(seed: int = 20260909) -> GameStateData:
 		&"card-monster-automaton-archer-02",
 		&"card-monster-automaton-warrior-01",
 		&"card-monster-automaton-warrior-02",
+		&"card-monster-gargoyle-01",
+		&"card-monster-gargoyle-02",
 	])
 	var monster_rng := DeterministicRng.new(state.seed_value, state.rng_state)
 	monster_rng.shuffle(monster_cycle.card_instance_ids)

@@ -34,6 +34,7 @@ func _run() -> void:
 	_test_standard_monster_claim_and_draw_rewards()
 	_test_automaton_archer_pending_choice()
 	_test_automaton_warrior_discard_choice()
+	_test_gargoyle_recruit_choice()
 	_test_combat_rejection_is_atomic()
 	_test_combat_equipment_departure()
 	_test_supply_setup_and_determinism()
@@ -47,6 +48,7 @@ func _run() -> void:
 	await _test_combat_hud_integration()
 	await _test_pending_choice_hud_integration()
 	await _test_discard_choice_hud_integration()
+	await _test_gargoyle_choice_hud_integration()
 	_test_play_adventurer_capacity_and_equipment_departure()
 	_test_use_item_draw_and_rest_cleanup()
 	_test_turn_rotation()
@@ -70,12 +72,18 @@ func _test_content_pack() -> void:
 	var registry := ContentRegistry.new()
 	var errors := registry.load_pack("res://content/packs/base_vertical_slice.json")
 	_expect(errors.is_empty(), "base content pack should validate: %s" % "; ".join(errors))
-	_expect(registry.definitions.size() == 18, "vertical slice should load eighteen base definitions")
+	_expect(registry.definitions.size() == 19, "vertical slice should load nineteen base definitions")
 	var warrior := registry.definitions.get(&"base:monster/monster-11") as CardDefinition
 	_expect(
 		warrior != null and warrior.copies == 2 and warrior.combat == 4 \
 				and warrior.purchase_power == 2 and warrior.honor == 3,
 		"automaton warrior should use the confirmed 2 copies and 4/2/3 values"
+	)
+	var gargoyle := registry.definitions.get(&"base:monster/monster-12") as CardDefinition
+	_expect(
+		gargoyle != null and gargoyle.copies == 2 and gargoyle.combat == 6 \
+				and gargoyle.purchase_power == 2 and gargoyle.honor == 4,
+		"gargoyle should use the confirmed 2 copies and 6/2/4 values"
 	)
 	_expect(not registry.definitions.has(&"custom:adventurer/melee-01"), "custom adventurers must stay disabled")
 	_expect(not registry.pack_fingerprint.is_empty(), "content pack should expose a deterministic fingerprint")
@@ -87,7 +95,7 @@ func _test_content_pack_reload() -> void:
 	var first_fingerprint := registry.pack_fingerprint
 	var second_errors := registry.load_pack("res://content/packs/base_vertical_slice.json")
 	_expect(first_errors.is_empty() and second_errors.is_empty(), "content pack should be safely reloadable")
-	_expect(registry.definitions.size() == 18, "content reload must not retain duplicate definitions")
+	_expect(registry.definitions.size() == 19, "content reload must not retain duplicate definitions")
 	_expect(registry.pack_fingerprint == first_fingerprint, "same content should keep the same fingerprint")
 
 
@@ -113,7 +121,7 @@ func _test_two_player_state() -> void:
 
 func _test_official_starting_setup() -> void:
 	var state := GameStateData.create_vertical_slice()
-	_expect(state.cards.size() == 45, "setup should create player cards, eleven monsters, and fourteen market cards")
+	_expect(state.cards.size() == 47, "setup should create player cards, thirteen monsters, and fourteen market cards")
 	for player_id: StringName in state.turn_order:
 		var player := state.players[player_id] as PlayerStateData
 		var party := state.zones[player.zone_ids[&"party"]] as ZoneData
@@ -408,7 +416,7 @@ func _test_monster_supply_setup_and_anchor() -> void:
 	var row := state.zones[SupplyService.MONSTER_ROW_ID] as ZoneData
 	var cycle := state.zones[SupplyService.MONSTER_CYCLE_ID] as ZoneData
 	_expect(row.card_instance_ids.size() == 3, "vertical slice should reveal three monsters")
-	_expect(cycle.card_instance_ids.size() == 8, "vertical slice cycle should retain eight monsters")
+	_expect(cycle.card_instance_ids.size() == 10, "vertical slice cycle should retain ten monsters")
 	_expect(
 		row.card_instance_ids == [
 			&"card-monster-skeleton-01",
@@ -1129,6 +1137,271 @@ func _test_automaton_warrior_discard_choice() -> void:
 		)
 
 
+func _test_gargoyle_recruit_choice() -> void:
+	var definitions := _load_definitions()
+	var no_candidate := GameStateData.create_vertical_slice(251)
+	var empty_row := no_candidate.zones[SupplyService.RECRUIT_ROW_ID] as ZoneData
+	for raw_card_id: Variant in empty_row.card_instance_ids.duplicate():
+		var move_result := ZoneService.move_card(
+			no_candidate,
+			StringName(str(raw_card_id)),
+			SupplyService.RECRUIT_ROW_ID,
+			SupplyService.RECRUIT_DECK_ID
+		)
+		_expect(bool(move_result.get("ok", false)), "empty recruit fixture should move row cards")
+	var no_candidate_events: Array[Dictionary] = []
+	var no_candidate_error := EffectResolver.resolve(
+		no_candidate,
+		&"p1",
+		[{
+			"op": "choose_gain_card",
+			"amount": 1,
+			"source_zone_id": str(SupplyService.RECRUIT_ROW_ID),
+			"required_tag": "adventurer",
+			"max_cost": 4,
+		}],
+		no_candidate_events,
+		definitions
+	)
+	_expect(no_candidate_error.is_empty(), "empty recruit reward should resolve cleanly")
+	_expect(no_candidate.effect_state.is_empty(), "empty recruit row must not create pending choice")
+	_expect(
+		no_candidate_events.size() == 1 \
+				and no_candidate_events[0].get("reason") == "no_eligible_candidates",
+		"empty recruit reward should emit a deterministic no-candidate resolution"
+	)
+	var filter_state := GameStateData.create_vertical_slice(252)
+	var filter_row := filter_state.zones[SupplyService.RECRUIT_ROW_ID] as ZoneData
+	var expensive_id := filter_row.card_instance_ids[0]
+	var expensive_card := filter_state.cards[expensive_id] as Dictionary
+	var expensive_definition_id := StringName(expensive_card.get("definition_id", ""))
+	var filtered_definitions := definitions.duplicate()
+	var expensive_definition := (
+		definitions[expensive_definition_id] as CardDefinition
+	).duplicate(true) as CardDefinition
+	expensive_definition.cost = 5
+	filtered_definitions[expensive_definition_id] = expensive_definition
+	var filter_events: Array[Dictionary] = []
+	var filter_error := EffectResolver.resolve(
+		filter_state,
+		&"p1",
+		[{
+			"op": "choose_gain_card",
+			"amount": 1,
+			"source_zone_id": str(SupplyService.RECRUIT_ROW_ID),
+			"required_tag": "adventurer",
+			"max_cost": 4,
+		}],
+		filter_events,
+		filtered_definitions
+	)
+	_expect(filter_error.is_empty(), "gargoyle cost filter fixture should resolve")
+	_expect(
+		str(expensive_id) not in (filter_state.effect_state.get("eligible_card_ids", []) as Array),
+		"gargoyle must exclude recruit definitions costing more than four"
+	)
+
+	var state := GameStateData.create_vertical_slice(253)
+	var gargoyle_id := &"card-monster-gargoyle-01"
+	var expose_error := _expose_monster(
+		state, gargoyle_id, &"card-monster-rabbit-demon-01"
+	)
+	_expect(expose_error.is_empty(), "gargoyle fixture should expose the target: %s" % expose_error)
+	if not expose_error.is_empty():
+		return
+	var phase_result := RulesEngine.dispatch(
+		state,
+		_end_phase_envelope(state, "cmd-gargoyle-combat-setup"),
+		definitions
+	)
+	_expect(bool(phase_result.get("ok", false)), "gargoyle fixture should enter combat")
+	if not bool(phase_result.get("ok", false)):
+		return
+	state = phase_result["state"] as GameStateData
+	var preview := CombatService.preview_attack(state, &"p1", gargoyle_id, definitions)
+	_expect(bool(preview.get("legal", false)), "gargoyle should be attackable by the full party")
+	_expect(
+		preview.get("reward_summary") \
+				== "取得招募區 1 張費用不超過 4 的冒險者、取得此卡（購買力 2／榮譽 4）",
+		"gargoyle preview should describe its exact recruit reward"
+	)
+	_expect(
+		bool(preview.get("deferred_choice", false)) \
+				and not bool(preview.get("optional_reward", true)),
+		"gargoyle should defer a mandatory recruit choice"
+	)
+	var attack_envelope := _command_envelope(state, {
+		"type": "ATTACK_TARGET",
+		"target_card_id": str(gargoyle_id),
+		"claim_optional_reward": true,
+	}, "cmd-attack-gargoyle")
+	var attack_result := RulesEngine.dispatch(state, attack_envelope, definitions)
+	var repeated_attack := RulesEngine.dispatch(state.clone_state(), attack_envelope, definitions)
+	_expect(bool(attack_result.get("ok", false)), "gargoyle attack should create a pending choice")
+	_expect(
+		attack_result.get("after_hash") == repeated_attack.get("after_hash"),
+		"identical gargoyle attacks should produce the same pending-state hash"
+	)
+	if not bool(attack_result.get("ok", false)):
+		return
+	var pending := attack_result["state"] as GameStateData
+	var player := pending.players[&"p1"] as PlayerStateData
+	var recruit_row := pending.zones[SupplyService.RECRUIT_ROW_ID] as ZoneData
+	var eligible := pending.effect_state.get("eligible_card_ids", []) as Array
+	_expect(
+		StringName(pending.effect_state.get("op", "")) == &"choose_gain_card" \
+				and StringName(pending.effect_state.get("source_zone_id", "")) \
+				== SupplyService.RECRUIT_ROW_ID \
+				and StringName(pending.effect_state.get("destination_zone_id", "")) \
+				== player.zone_ids[&"discard_pile"],
+		"gargoyle pending choice should lock recruit-row to own-discard movement"
+	)
+	_expect(
+		eligible == _string_names_to_strings(recruit_row.card_instance_ids),
+		"gargoyle should lock exactly the current legal recruit-row cards"
+	)
+	for raw_card_id: Variant in eligible:
+		var card_id := StringName(str(raw_card_id))
+		var card := pending.cards[card_id] as Dictionary
+		var definition := definitions.get(
+			StringName(card.get("definition_id", ""))
+		) as CardDefinition
+		_expect(
+			definition != null and &"adventurer" in definition.tags \
+					and int(definition.cost) <= 4,
+			"gargoyle candidates must be adventurers costing at most four"
+		)
+	var choice_commands := RulesEngine.get_legal_commands(pending, &"p1", definitions)
+	_expect(
+		choice_commands.size() == eligible.size(),
+		"gargoyle legal commands should contain one command per eligible recruit"
+	)
+	var has_skip := false
+	for command: Dictionary in choice_commands:
+		has_skip = has_skip or bool(command.get("skip", false))
+	_expect(not has_skip, "mandatory gargoyle reward must not expose a skip command")
+
+	var snapshot := SnapshotCodec.encode(pending, "content-gargoyle", "rules-gargoyle")
+	var decoded := SnapshotCodec.decode(snapshot, "content-gargoyle", "rules-gargoyle")
+	_expect(bool(decoded.get("ok", false)), "gargoyle pending choice should survive snapshot restore")
+	if bool(decoded.get("ok", false)):
+		_expect(
+			CanonicalJson.stringify((decoded["state"] as GameStateData).effect_state) \
+					== CanonicalJson.stringify(pending.effect_state),
+			"gargoyle snapshot should preserve its locked candidates and filters"
+		)
+
+	var choice_id := str(pending.effect_state.get("choice_id", ""))
+	var pending_hash := CanonicalJson.sha256(pending.to_dictionary())
+	var wrong_source := RulesEngine.dispatch(
+		pending,
+		_command_envelope(pending, {
+			"type": "RESOLVE_CHOICE",
+			"choice_id": choice_id,
+			"card_instance_id": "card-p1-summoning-stone-01",
+			"skip": false,
+		}, "cmd-gargoyle-wrong-source"),
+		definitions
+	)
+	_expect(
+		str(wrong_source.get("error", "")) == "ineligible_choice_card",
+		"gargoyle choice must reject cards outside the locked recruit row"
+	)
+	_expect(
+		CanonicalJson.sha256(pending.to_dictionary()) == pending_hash,
+		"wrong-source gargoyle choice must remain atomic"
+	)
+
+	var selected_card_id := StringName(str(eligible[0]))
+	var tampered := pending.clone_state()
+	var tamper_move := ZoneService.move_card(
+		tampered,
+		selected_card_id,
+		SupplyService.RECRUIT_ROW_ID,
+		SupplyService.RECRUIT_DECK_ID
+	)
+	_expect(bool(tamper_move.get("ok", false)), "gargoyle tamper fixture should move a candidate")
+	var tampered_hash := CanonicalJson.sha256(tampered.to_dictionary())
+	var tampered_result := RulesEngine.dispatch(
+		tampered,
+		_command_envelope(tampered, {
+			"type": "RESOLVE_CHOICE",
+			"choice_id": choice_id,
+			"card_instance_id": str(selected_card_id),
+			"skip": false,
+		}, "cmd-gargoyle-stale-candidate"),
+		definitions
+	)
+	_expect(
+		str(tampered_result.get("error", "")).begins_with("invalid_state:"),
+		"dispatch should reject a recruit candidate moved after choice creation"
+	)
+	_expect(
+		tampered_result.get("before_hash") == tampered_hash \
+				and tampered_result.get("after_hash") == tampered_hash \
+				and CanonicalJson.sha256(tampered.to_dictionary()) == tampered_hash,
+		"stale gargoyle choice rejection must remain atomic"
+	)
+
+	var resolve_envelope := _command_envelope(pending, {
+		"type": "RESOLVE_CHOICE",
+		"choice_id": choice_id,
+		"card_instance_id": str(selected_card_id),
+		"skip": false,
+	}, "cmd-resolve-gargoyle-choice")
+	var resolve_result := RulesEngine.dispatch(pending, resolve_envelope, definitions)
+	var repeated_pending := repeated_attack["state"] as GameStateData
+	var repeated_resolve := RulesEngine.dispatch(
+		repeated_pending, resolve_envelope, definitions
+	)
+	_expect(bool(resolve_result.get("ok", false)), "eligible recruit should resolve gargoyle reward")
+	_expect(
+		resolve_result.get("after_hash") == repeated_resolve.get("after_hash"),
+		"identical gargoyle choices should produce the same committed hash"
+	)
+	if bool(resolve_result.get("ok", false)):
+		var resolved := resolve_result["state"] as GameStateData
+		_expect(resolved.effect_state.is_empty(), "gargoyle resolution should clear pending state")
+		_expect(
+			ZoneService.find_card_zone(resolved, selected_card_id) \
+					== player.zone_ids[&"discard_pile"] \
+					and StringName((resolved.cards[selected_card_id] as Dictionary).get("owner_id", "")) \
+					== &"p1",
+			"gargoyle reward should move the recruit to the winner discard and assign ownership"
+		)
+		_expect(
+			(resolved.zones[SupplyService.RECRUIT_ROW_ID] as ZoneData).card_instance_ids.size() == 2,
+			"gargoyle reward should leave refill to the rest phase"
+		)
+		var resolved_events := resolve_result.get("events", []) as Array
+		_expect(
+			resolved_events.size() == 3 \
+					and (resolved_events[0] as Dictionary).get("reason") == "reward_card_gained" \
+					and (resolved_events[1] as Dictionary).get("type") == "choice_resolved" \
+					and (resolved_events[2] as Dictionary).get("type") == "effect_resolved",
+			"gargoyle events should order gain, choice, then effect completion"
+		)
+		_expect(InvariantService.validate(resolved).is_empty(), "gargoyle reward should preserve invariants")
+		var after_reward := resolved
+		for phase_index in 4:
+			var phase_advance := RulesEngine.dispatch(
+				after_reward,
+				_end_phase_envelope(
+					after_reward, "cmd-gargoyle-rest-refill-%d" % phase_index
+				),
+				definitions
+			)
+			_expect(bool(phase_advance.get("ok", false)), "gargoyle refill fixture should advance")
+			if not bool(phase_advance.get("ok", false)):
+				break
+			after_reward = phase_advance["state"] as GameStateData
+		_expect(
+			(after_reward.zones[SupplyService.RECRUIT_ROW_ID] as ZoneData) \
+					.card_instance_ids.size() == SupplyService.ROW_SIZE,
+			"rest phase should refill the recruit taken by gargoyle"
+		)
+
+
 func _test_combat_rejection_is_atomic() -> void:
 	var definitions := _load_definitions()
 	var wrong_phase := GameStateData.create_vertical_slice(227)
@@ -1636,6 +1909,60 @@ func _test_discard_choice_hud_integration() -> void:
 		_expect(
 			(app.session.state.zones[&"p1:removed"] as ZoneData).card_instance_ids.size() == 1,
 			"discard choice HUD should remove exactly one selected card"
+		)
+	app.queue_free()
+
+
+func _test_gargoyle_choice_hud_integration() -> void:
+	var packed := load("res://scenes/boot/main.tscn") as PackedScene
+	var app := packed.instantiate() as GameApp
+	root.add_child(app)
+	await process_frame
+	var expose_error := _expose_monster(
+		app.session.state,
+		&"card-monster-gargoyle-01",
+		&"card-monster-rabbit-demon-01"
+	)
+	_expect(expose_error.is_empty(), "gargoyle HUD fixture should expose the target")
+	var phase_result := app.session.end_phase()
+	_expect(bool(phase_result.get("ok", false)), "gargoyle HUD should enter combat")
+	var attack_result := app.session.attack_target(&"card-monster-gargoyle-01", true)
+	_expect(bool(attack_result.get("ok", false)), "gargoyle HUD should create recruit choice")
+	await process_frame
+	var gain_buttons: Array[Button] = []
+	var skip_buttons := 0
+	for child: Node in app.hud.hand_actions.get_children():
+		if child is Button and (child as Button).text == "從招募區取得此牌":
+			gain_buttons.append(child as Button)
+		elif child is Button and (child as Button).text.begins_with("略過"):
+			skip_buttons += 1
+	_expect(gain_buttons.size() == 3, "gargoyle HUD should show each eligible recruit")
+	_expect(skip_buttons == 0, "mandatory gargoyle HUD must not show a skip action")
+	_expect(app.hud.hand_title.text == "待處理選擇", "gargoyle choice should use pending title")
+	_expect(
+		"從招募區取得 1 張費用不超過 4 的冒險者" in app.hud.hand_summary.text \
+				and "來源：招募區（3 張）" in app.hud.hand_summary.text,
+		"gargoyle HUD should show the complete prompt and public source"
+	)
+	if gain_buttons.size() == 3:
+		_expect(
+			gain_buttons[0].focus_neighbor_top == gain_buttons[2].get_path() \
+					and gain_buttons[2].focus_neighbor_bottom == gain_buttons[0].get_path(),
+			"gargoyle choice should trap and wrap keyboard focus"
+		)
+		var selected_id := StringName(
+			(app.session.state.effect_state.get("eligible_card_ids", []) as Array)[0]
+		)
+		gain_buttons[0].pressed.emit()
+		await process_frame
+		_expect(app.session.state.effect_state.is_empty(), "gargoyle HUD should submit selection")
+		_expect(
+			ZoneService.find_card_zone(app.session.state, selected_id) == &"p1:discard-pile",
+			"gargoyle HUD should move the chosen recruit into own discard"
+		)
+		_expect(
+			app.hud.event_label.text.begins_with("已從招募區取得："),
+			"gargoyle HUD should announce the committed recruit gain"
 		)
 	app.queue_free()
 

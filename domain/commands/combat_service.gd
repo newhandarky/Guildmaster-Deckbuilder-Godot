@@ -100,7 +100,7 @@ static func preview_attack(
 	for effect: Dictionary in target_definition.effects:
 		if StringName(effect.get("timing", "")) == &"on_defeat":
 			var operation := StringName(effect.get("op", ""))
-			if operation == &"choose_remove_card":
+			if operation in [&"choose_remove_card", &"choose_gain_card"]:
 				deferred_choice = true
 			else:
 				optional_reward = optional_reward or bool(effect.get("optional", false))
@@ -114,6 +114,10 @@ static func preview_attack(
 						_source_zone_label(StringName(effect.get("source_zone_key", ""))),
 						int(effect.get("amount", 0)),
 					])
+				&"choose_gain_card":
+					reward_parts.append("取得招募區 1 張費用不超過 %d 的冒險者" % int(
+						effect.get("max_cost", 0)
+					))
 	var returns_to_cycle := &"cycle_anchor" in target_definition.tags
 	if not returns_to_cycle:
 		reward_parts.append("取得此卡（購買力 %s／榮譽 %s）" % [
@@ -202,7 +206,9 @@ static func apply(
 			var reward_effect := effect.duplicate(true)
 			reward_effect["source_card_instance_id"] = str(target_card_id)
 			reward_effects.append(reward_effect)
-	var effect_error := EffectResolver.resolve(state, actor_id, reward_effects, events)
+	var effect_error := EffectResolver.resolve(
+		state, actor_id, reward_effects, events, definitions
+	)
 	if not effect_error.is_empty():
 		return effect_error
 	var supply_error: String
