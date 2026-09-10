@@ -1,7 +1,7 @@
 {
   "manifest": {
     "pack_id": "base:vertical-slice",
-    "version": "0.10.0",
+    "version": "0.11.0",
     "includes_custom_adventurers": false
   },
   "definitions": [
@@ -166,6 +166,27 @@
         }
       ],
       "presentation_id": "base:presentation/monster-gargoyle"
+    },
+    {
+      "definition_id": "base:monster/monster-13",
+      "display_name": "火元素",
+      "card_type": "monster",
+      "copies": 2,
+      "combat": 4,
+      "purchase_power": 1,
+      "honor": 3,
+      "tags": [
+        "enemy",
+        "monster"
+      ],
+      "effects": [
+        {
+          "op": "discard_hand_and_draw",
+          "timing": "on_defeat",
+          "optional": true
+        }
+      ],
+      "presentation_id": "base:presentation/monster-fire-elemental"
     },
     {
       "definition_id": "base:starter/summoning-stone",

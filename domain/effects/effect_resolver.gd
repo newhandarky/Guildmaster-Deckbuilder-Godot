@@ -5,6 +5,7 @@ const SUPPORTED_OPERATIONS: Array[StringName] = [
 	&"grant_purchase_power",
 	&"grant_combat",
 	&"draw",
+	&"discard_hand_and_draw",
 	&"conditional_combat",
 	&"choose_remove_card",
 	&"choose_gain_card",
@@ -78,6 +79,48 @@ static func resolve(
 					"op": str(operation),
 					"amount": amount,
 					"drawn_count": int(draw_result.get("drawn_count", 0)),
+				})
+				continue
+			&"discard_hand_and_draw":
+				var hand_zone_id := StringName(player.zone_ids.get(&"hand", &""))
+				var discard_zone_id := StringName(player.zone_ids.get(&"discard_pile", &""))
+				var draw_zone_id := StringName(player.zone_ids.get(&"draw_pile", &""))
+				var hand := state.zones.get(hand_zone_id) as ZoneData
+				var discard := state.zones.get(discard_zone_id) as ZoneData
+				var draw_pile := state.zones.get(draw_zone_id) as ZoneData
+				if hand == null or discard == null or draw_pile == null:
+					return "missing_player_card_zone"
+				var locked_card_ids := hand.card_instance_ids.duplicate()
+				var locked_count := locked_card_ids.size()
+				events.append({
+					"type": "hand_redraw_started",
+					"actor_id": str(actor_id),
+					"locked_card_ids": _string_name_array_to_strings(locked_card_ids),
+					"locked_count": locked_count,
+				})
+				for card_instance_id: StringName in locked_card_ids:
+					var move_result := ZoneService.move_card(
+						state, card_instance_id, hand_zone_id, discard_zone_id
+					)
+					if not bool(move_result.get("ok", false)):
+						return str(move_result.get("error", "hand_redraw_discard_failed"))
+					var move_event := (move_result.get("event", {}) as Dictionary).duplicate(true)
+					move_event["reason"] = "hand_redraw_discard"
+					events.append(move_event)
+				var redraw_result := DeckService.draw_cards(
+					state, actor_id, locked_count, events
+				)
+				if not bool(redraw_result.get("ok", false)):
+					return str(redraw_result.get("error", "hand_redraw_draw_failed"))
+				if int(redraw_result.get("drawn_count", 0)) != locked_count:
+					return "hand_redraw_count_mismatch"
+				events.append({
+					"type": "effect_resolved",
+					"actor_id": str(actor_id),
+					"effect_index": index,
+					"op": str(operation),
+					"discarded_count": locked_count,
+					"drawn_count": int(redraw_result.get("drawn_count", 0)),
 				})
 				continue
 			&"choose_remove_card":
@@ -229,3 +272,10 @@ static func _definition_for_card(
 	if card == null:
 		return null
 	return definitions.get(StringName(card.get("definition_id", ""))) as CardDefinition
+
+
+static func _string_name_array_to_strings(values: Array[StringName]) -> Array[String]:
+	var result: Array[String] = []
+	for value: StringName in values:
+		result.append(str(value))
+	return result

@@ -35,6 +35,7 @@ func _run() -> void:
 	_test_automaton_archer_pending_choice()
 	_test_automaton_warrior_discard_choice()
 	_test_gargoyle_recruit_choice()
+	_test_fire_elemental_hand_redraw()
 	_test_combat_rejection_is_atomic()
 	_test_combat_equipment_departure()
 	_test_supply_setup_and_determinism()
@@ -49,6 +50,7 @@ func _run() -> void:
 	await _test_pending_choice_hud_integration()
 	await _test_discard_choice_hud_integration()
 	await _test_gargoyle_choice_hud_integration()
+	await _test_fire_elemental_hud_integration()
 	_test_play_adventurer_capacity_and_equipment_departure()
 	_test_use_item_draw_and_rest_cleanup()
 	_test_turn_rotation()
@@ -72,7 +74,7 @@ func _test_content_pack() -> void:
 	var registry := ContentRegistry.new()
 	var errors := registry.load_pack("res://content/packs/base_vertical_slice.json")
 	_expect(errors.is_empty(), "base content pack should validate: %s" % "; ".join(errors))
-	_expect(registry.definitions.size() == 19, "vertical slice should load nineteen base definitions")
+	_expect(registry.definitions.size() == 20, "vertical slice should load twenty base definitions")
 	var warrior := registry.definitions.get(&"base:monster/monster-11") as CardDefinition
 	_expect(
 		warrior != null and warrior.copies == 2 and warrior.combat == 4 \
@@ -85,6 +87,13 @@ func _test_content_pack() -> void:
 				and gargoyle.purchase_power == 2 and gargoyle.honor == 4,
 		"gargoyle should use the confirmed 2 copies and 6/2/4 values"
 	)
+	var fire_elemental := registry.definitions.get(&"base:monster/monster-13") as CardDefinition
+	_expect(
+		fire_elemental != null and fire_elemental.copies == 2 \
+				and fire_elemental.combat == 4 and fire_elemental.purchase_power == 1 \
+				and fire_elemental.honor == 3,
+		"fire elemental should use the confirmed 2 copies and 4/1/3 values"
+	)
 	_expect(not registry.definitions.has(&"custom:adventurer/melee-01"), "custom adventurers must stay disabled")
 	_expect(not registry.pack_fingerprint.is_empty(), "content pack should expose a deterministic fingerprint")
 
@@ -95,7 +104,7 @@ func _test_content_pack_reload() -> void:
 	var first_fingerprint := registry.pack_fingerprint
 	var second_errors := registry.load_pack("res://content/packs/base_vertical_slice.json")
 	_expect(first_errors.is_empty() and second_errors.is_empty(), "content pack should be safely reloadable")
-	_expect(registry.definitions.size() == 19, "content reload must not retain duplicate definitions")
+	_expect(registry.definitions.size() == 20, "content reload must not retain duplicate definitions")
 	_expect(registry.pack_fingerprint == first_fingerprint, "same content should keep the same fingerprint")
 
 
@@ -121,7 +130,7 @@ func _test_two_player_state() -> void:
 
 func _test_official_starting_setup() -> void:
 	var state := GameStateData.create_vertical_slice()
-	_expect(state.cards.size() == 47, "setup should create player cards, thirteen monsters, and fourteen market cards")
+	_expect(state.cards.size() == 49, "setup should create player cards, fifteen monsters, and fourteen market cards")
 	for player_id: StringName in state.turn_order:
 		var player := state.players[player_id] as PlayerStateData
 		var party := state.zones[player.zone_ids[&"party"]] as ZoneData
@@ -416,7 +425,7 @@ func _test_monster_supply_setup_and_anchor() -> void:
 	var row := state.zones[SupplyService.MONSTER_ROW_ID] as ZoneData
 	var cycle := state.zones[SupplyService.MONSTER_CYCLE_ID] as ZoneData
 	_expect(row.card_instance_ids.size() == 3, "vertical slice should reveal three monsters")
-	_expect(cycle.card_instance_ids.size() == 10, "vertical slice cycle should retain ten monsters")
+	_expect(cycle.card_instance_ids.size() == 12, "vertical slice cycle should retain twelve monsters")
 	_expect(
 		row.card_instance_ids == [
 			&"card-monster-skeleton-01",
@@ -1402,6 +1411,296 @@ func _test_gargoyle_recruit_choice() -> void:
 		)
 
 
+func _test_fire_elemental_hand_redraw() -> void:
+	var definitions := _load_definitions()
+	var fire_id := &"card-monster-fire-elemental-01"
+	var state := GameStateData.create_vertical_slice(259)
+	var expose_error := _expose_monster(
+		state, fire_id, &"card-monster-rabbit-demon-01"
+	)
+	_expect(expose_error.is_empty(), "fire elemental fixture should expose the target")
+	if not expose_error.is_empty():
+		return
+	var phase_result := RulesEngine.dispatch(
+		state,
+		_end_phase_envelope(state, "cmd-fire-elemental-combat-setup"),
+		definitions
+	)
+	_expect(bool(phase_result.get("ok", false)), "fire elemental fixture should enter combat")
+	if not bool(phase_result.get("ok", false)):
+		return
+	state = phase_result["state"] as GameStateData
+	var player := state.players[&"p1"] as PlayerStateData
+	var hand := state.zones[player.zone_ids[&"hand"]] as ZoneData
+	var original_hand := hand.card_instance_ids.duplicate()
+	var original_rng_state := state.rng_state
+	var preview := CombatService.preview_attack(state, &"p1", fire_id, definitions)
+	_expect(bool(preview.get("legal", false)), "fire elemental should be attackable")
+	_expect(
+		preview.get("reward_summary") \
+				== "可棄掉全部手牌，再抽相同張數、取得此卡（購買力 1／榮譽 3）",
+		"fire elemental preview should show the complete optional redraw reward"
+	)
+	_expect(
+		bool(preview.get("optional_reward", false)) \
+				and not bool(preview.get("deferred_choice", true)),
+		"fire elemental should use the immediate ATTACK_TARGET optional reward flow"
+	)
+	var fire_commands: Array[Dictionary] = []
+	for command: Dictionary in RulesEngine.get_legal_commands(state, &"p1", definitions):
+		if StringName(command.get("target_card_id", "")) == fire_id:
+			fire_commands.append(command)
+	_expect(fire_commands.size() == 2, "fire elemental should expose execute and skip attacks")
+	var has_execute := false
+	var has_skip := false
+	for command: Dictionary in fire_commands:
+		has_execute = has_execute or bool(command.get("claim_optional_reward", false))
+		has_skip = has_skip or not bool(command.get("claim_optional_reward", true))
+	_expect(has_execute and has_skip, "fire elemental legal commands should include both reward choices")
+
+	var attack_envelope := _command_envelope(state, {
+		"type": "ATTACK_TARGET",
+		"target_card_id": str(fire_id),
+		"claim_optional_reward": true,
+	}, "cmd-attack-fire-elemental")
+	var attack_result := RulesEngine.dispatch(state, attack_envelope, definitions)
+	var repeated_attack := RulesEngine.dispatch(state.clone_state(), attack_envelope, definitions)
+	_expect(bool(attack_result.get("ok", false)), "fire elemental redraw attack should commit")
+	_expect(
+		attack_result.get("after_hash") == repeated_attack.get("after_hash"),
+		"identical fire elemental redraws should produce the same committed hash"
+	)
+	if not bool(attack_result.get("ok", false)):
+		return
+	var redrawn := attack_result["state"] as GameStateData
+	player = redrawn.players[&"p1"] as PlayerStateData
+	_expect(redrawn.effect_state.is_empty(), "fire elemental must not create pending state")
+	_expect(
+		(redrawn.zones[player.zone_ids[&"hand"]] as ZoneData).card_instance_ids.size() \
+				== original_hand.size(),
+		"fire elemental should redraw exactly the locked hand count"
+	)
+	var events := attack_result.get("events", []) as Array
+	var start_index := -1
+	var first_discard_index := -1
+	var last_discard_index := -1
+	var reshuffle_index := -1
+	var first_draw_index := -1
+	var last_draw_index := -1
+	var effect_index := -1
+	var claim_index := -1
+	var locked_ids: Array = []
+	var redraw_discard_count := 0
+	var redraw_draw_count := 0
+	for index in events.size():
+		var event := events[index] as Dictionary
+		if event.get("type") == "hand_redraw_started":
+			start_index = index
+			locked_ids = event.get("locked_card_ids", []) as Array
+		elif event.get("reason") == "hand_redraw_discard":
+			if first_discard_index < 0:
+				first_discard_index = index
+			last_discard_index = index
+			redraw_discard_count += 1
+		elif event.get("type") == "discard_reshuffled":
+			reshuffle_index = index
+		elif event.get("reason") == "draw":
+			if first_draw_index < 0:
+				first_draw_index = index
+			last_draw_index = index
+			redraw_draw_count += 1
+		elif event.get("type") == "effect_resolved" \
+				and event.get("op") == "discard_hand_and_draw":
+			effect_index = index
+		elif event.get("reason") == "defeated_monster_claimed":
+			claim_index = index
+	_expect(
+		locked_ids == _string_names_to_strings(original_hand),
+		"fire elemental should lock the complete current hand before moving cards"
+	)
+	_expect(
+		redraw_discard_count == original_hand.size() \
+				and redraw_draw_count == original_hand.size(),
+		"fire elemental must discard and draw the full locked count"
+	)
+	_expect(
+		start_index >= 0 and start_index < first_discard_index \
+				and last_discard_index < reshuffle_index \
+				and reshuffle_index < first_draw_index \
+				and last_draw_index < effect_index and effect_index < claim_index,
+		"fire elemental events should order lock, all discards, reshuffle, draws, effect, and claim"
+	)
+	_expect(redrawn.rng_state != original_rng_state, "fire elemental reshuffle should advance seeded RNG")
+	_expect(InvariantService.validate(redrawn).is_empty(), "fire elemental redraw should preserve invariants")
+	var snapshot := SnapshotCodec.encode(redrawn, "content-fire", "rules-fire")
+	var decoded := SnapshotCodec.decode(snapshot, "content-fire", "rules-fire")
+	_expect(bool(decoded.get("ok", false)), "fire elemental result should survive snapshot restore")
+	if bool(decoded.get("ok", false)):
+		_expect(
+			CanonicalJson.sha256((decoded["state"] as GameStateData).to_dictionary()) \
+					== CanonicalJson.sha256(redrawn.to_dictionary()),
+			"fire elemental snapshot should preserve its deterministic state hash"
+		)
+
+	var skip_result := RulesEngine.dispatch(
+		state,
+		_command_envelope(state, {
+			"type": "ATTACK_TARGET",
+			"target_card_id": str(fire_id),
+			"claim_optional_reward": false,
+		}, "cmd-skip-fire-elemental-reward"),
+		definitions
+	)
+	_expect(bool(skip_result.get("ok", false)), "fire elemental redraw should be skippable")
+	if bool(skip_result.get("ok", false)):
+		var skipped := skip_result["state"] as GameStateData
+		_expect(
+			(skipped.zones[&"p1:hand"] as ZoneData).card_instance_ids == original_hand,
+			"skipping fire elemental should preserve the complete hand"
+		)
+		_expect(skipped.rng_state == original_rng_state, "skipping redraw must not consume RNG")
+		_expect(
+			not _events_contain(skip_result.get("events", []) as Array, "hand_redraw_started"),
+			"skipping fire elemental should not begin the redraw operation"
+		)
+
+	var empty_hand_state := GameStateData.create_vertical_slice(261)
+	_expose_monster(empty_hand_state, fire_id, &"card-monster-rabbit-demon-01")
+	var empty_player := empty_hand_state.players[&"p1"] as PlayerStateData
+	var empty_hand := empty_hand_state.zones[empty_player.zone_ids[&"hand"]] as ZoneData
+	for card_id: StringName in empty_hand.card_instance_ids.duplicate():
+		var move_result := ZoneService.move_card(
+			empty_hand_state,
+			card_id,
+			empty_player.zone_ids[&"hand"],
+			empty_player.zone_ids[&"draw_pile"]
+		)
+		_expect(bool(move_result.get("ok", false)), "empty-hand fixture should move each hand card")
+	phase_result = RulesEngine.dispatch(
+		empty_hand_state,
+		_end_phase_envelope(empty_hand_state, "cmd-fire-empty-combat-setup"),
+		definitions
+	)
+	if not bool(phase_result.get("ok", false)):
+		_expect(false, "empty-hand fire fixture should enter combat")
+		return
+	empty_hand_state = phase_result["state"] as GameStateData
+	var empty_result := RulesEngine.dispatch(
+		empty_hand_state,
+		_command_envelope(empty_hand_state, {
+			"type": "ATTACK_TARGET",
+			"target_card_id": str(fire_id),
+			"claim_optional_reward": true,
+		}, "cmd-fire-empty-redraw"),
+		definitions
+	)
+	_expect(bool(empty_result.get("ok", false)), "zero-card fire redraw should complete stably")
+	if bool(empty_result.get("ok", false)):
+		var empty_redrawn := empty_result["state"] as GameStateData
+		_expect(empty_redrawn.effect_state.is_empty(), "zero-card redraw must not create pending state")
+		_expect(
+			(empty_redrawn.zones[&"p1:hand"] as ZoneData).card_instance_ids.is_empty(),
+			"zero-card redraw should keep the hand empty"
+		)
+		var empty_events := empty_result.get("events", []) as Array
+		var empty_started := false
+		var empty_resolved := false
+		for event: Dictionary in empty_events:
+			if event.get("type") == "hand_redraw_started":
+				empty_started = int(event.get("locked_count", -1)) == 0
+			elif event.get("type") == "effect_resolved" \
+					and event.get("op") == "discard_hand_and_draw":
+				empty_resolved = int(event.get("discarded_count", -1)) == 0 \
+						and int(event.get("drawn_count", -1)) == 0
+		_expect(empty_started and empty_resolved, "zero-card redraw should emit stable zero counts")
+		_expect(
+			not _events_contain(empty_events, "discard_reshuffled"),
+			"zero-card redraw should not trigger an unnecessary reshuffle"
+		)
+
+	var boundary := GameStateData.create_vertical_slice(263)
+	var boundary_player := boundary.players[&"p1"] as PlayerStateData
+	var boundary_hand := boundary.zones[boundary_player.zone_ids[&"hand"]] as ZoneData
+	for index in 2:
+		var boundary_card_id := boundary_hand.card_instance_ids[0]
+		ZoneService.move_card(
+			boundary,
+			boundary_card_id,
+			boundary_player.zone_ids[&"hand"],
+			boundary_player.zone_ids[&"draw_pile"]
+		)
+	var repeated_boundary := boundary.clone_state()
+	var boundary_effects: Array[Dictionary] = [{"op": "discard_hand_and_draw"}]
+	var boundary_events: Array[Dictionary] = []
+	var repeated_boundary_events: Array[Dictionary] = []
+	var boundary_error := EffectResolver.resolve(
+		boundary, &"p1", boundary_effects, boundary_events, definitions
+	)
+	var repeated_boundary_error := EffectResolver.resolve(
+		repeated_boundary, &"p1", boundary_effects, repeated_boundary_events, definitions
+	)
+	_expect(
+		boundary_error.is_empty() and repeated_boundary_error.is_empty(),
+		"fire redraw should cross a partially depleted draw-pile boundary"
+	)
+	_expect(
+		CanonicalJson.sha256(boundary.to_dictionary()) \
+				== CanonicalJson.sha256(repeated_boundary.to_dictionary()),
+		"partial draw-pile redraw should use deterministic reshuffle order"
+	)
+	var boundary_reshuffles := 0
+	for event: Dictionary in boundary_events:
+		if event.get("type") == "discard_reshuffled":
+			boundary_reshuffles += 1
+	_expect(boundary_reshuffles == 1, "partial draw pile should reshuffle exactly once when exhausted")
+	_expect(
+		(boundary.zones[boundary_player.zone_ids[&"hand"]] as ZoneData).card_instance_ids.size() == 3,
+		"partial-boundary redraw should restore the locked three-card hand"
+	)
+
+	var failing_state := GameStateData.create_vertical_slice(265)
+	_expose_monster(failing_state, fire_id, &"card-monster-rabbit-demon-01")
+	phase_result = RulesEngine.dispatch(
+		failing_state,
+		_end_phase_envelope(failing_state, "cmd-fire-failure-combat-setup"),
+		definitions
+	)
+	if not bool(phase_result.get("ok", false)):
+		_expect(false, "fire failure fixture should enter combat")
+		return
+	failing_state = phase_result["state"] as GameStateData
+	var invalid_definitions := definitions.duplicate()
+	var invalid_fire := (
+		definitions[&"base:monster/monster-13"] as CardDefinition
+	).duplicate(true) as CardDefinition
+	invalid_fire.effects = [{
+		"op": "unsupported_fire_reward",
+		"timing": "on_defeat",
+		"optional": true,
+	}]
+	invalid_definitions[&"base:monster/monster-13"] = invalid_fire
+	var failing_hash := CanonicalJson.sha256(failing_state.to_dictionary())
+	var failure_result := RulesEngine.dispatch(
+		failing_state,
+		_command_envelope(failing_state, {
+			"type": "ATTACK_TARGET",
+			"target_card_id": str(fire_id),
+			"claim_optional_reward": true,
+		}, "cmd-fire-invalid-effect"),
+		invalid_definitions
+	)
+	_expect(
+		str(failure_result.get("error", "")).begins_with("invalid_effect:"),
+		"invalid fire operation should reject dispatch after draft combat work"
+	)
+	_expect(
+		failure_result.get("before_hash") == failing_hash \
+				and failure_result.get("after_hash") == failing_hash \
+				and CanonicalJson.sha256(failing_state.to_dictionary()) == failing_hash,
+		"failed fire elemental dispatch must remain atomic"
+	)
+
+
 func _test_combat_rejection_is_atomic() -> void:
 	var definitions := _load_definitions()
 	var wrong_phase := GameStateData.create_vertical_slice(227)
@@ -1963,6 +2262,59 @@ func _test_gargoyle_choice_hud_integration() -> void:
 		_expect(
 			app.hud.event_label.text.begins_with("已從招募區取得："),
 			"gargoyle HUD should announce the committed recruit gain"
+		)
+	app.queue_free()
+
+
+func _test_fire_elemental_hud_integration() -> void:
+	var packed := load("res://scenes/boot/main.tscn") as PackedScene
+	var app := packed.instantiate() as GameApp
+	root.add_child(app)
+	await process_frame
+	var expose_error := _expose_monster(
+		app.session.state,
+		&"card-monster-fire-elemental-01",
+		&"card-monster-rabbit-demon-01"
+	)
+	_expect(expose_error.is_empty(), "fire elemental HUD fixture should expose the target")
+	var phase_result := app.session.end_phase()
+	_expect(bool(phase_result.get("ok", false)), "fire elemental HUD should enter combat")
+	await process_frame
+	var reward_button: Button
+	var skip_reward_button: Button
+	var inside_fire_actions := false
+	for child: Node in app.hud.market_actions.get_children():
+		if child is Label:
+			var label_text := (child as Label).text
+			if label_text.begins_with("火元素｜"):
+				inside_fire_actions = true
+			elif inside_fire_actions:
+				break
+		elif inside_fire_actions and child is Button:
+			var button := child as Button
+			if "棄掉全部手牌，再抽相同張數" in button.text:
+				reward_button = button
+			elif button.text == "討伐並略過獎勵":
+				skip_reward_button = button
+	_expect(reward_button != null, "fire elemental HUD should expose the redraw action")
+	_expect(skip_reward_button != null, "fire elemental HUD should expose the skip action")
+	if reward_button != null:
+		_expect(
+			"取得此卡（購買力 1／榮譽 3）" in reward_button.text,
+			"fire elemental execute action should display the complete reward"
+		)
+	if reward_button != null and skip_reward_button != null:
+		_expect(
+			reward_button.focus_neighbor_bottom == skip_reward_button.get_path() \
+					and skip_reward_button.focus_neighbor_top == reward_button.get_path(),
+			"fire elemental execute and skip actions should remain in keyboard focus order"
+		)
+		reward_button.pressed.emit()
+		await process_frame
+		_expect(app.session.state.effect_state.is_empty(), "fire elemental HUD action should commit directly")
+		_expect(
+			(app.session.state.zones[&"p1:hand"] as ZoneData).card_instance_ids.size() == 5,
+			"fire elemental HUD execution should restore the locked hand size"
 		)
 	app.queue_free()
 

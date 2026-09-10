@@ -109,6 +109,8 @@ static func preview_attack(
 					reward_parts.append("+%d 購買力" % int(effect.get("amount", 0)))
 				&"draw":
 					reward_parts.append("抽 %d 張" % int(effect.get("amount", 0)))
+				&"discard_hand_and_draw":
+					reward_parts.append("可棄掉全部手牌，再抽相同張數")
 				&"choose_remove_card":
 					reward_parts.append("可從%s移除 %d 張" % [
 						_source_zone_label(StringName(effect.get("source_zone_key", ""))),
