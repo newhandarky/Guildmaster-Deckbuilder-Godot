@@ -75,8 +75,13 @@ static func validate(
 			var definition := _definition_for_card(state, definitions, card_instance_id)
 			if definition == null or definition.cost == null:
 				return "choice_card_missing_definition"
-			var required_tag := StringName(choice.get("required_tag", ""))
-			if not required_tag.is_empty() and required_tag not in definition.tags:
+			var allowed_card_types := _normalized_allowed_tags(
+				choice.get("allowed_card_types", [])
+			)
+			if allowed_card_types.is_empty() or definition.card_type not in allowed_card_types:
+				return "choice_card_wrong_type"
+			var allowed_tags := _normalized_allowed_tags(choice.get("allowed_tags", []))
+			if allowed_tags.is_empty() or not _definition_has_any_tag(definition, allowed_tags):
 				return "choice_card_wrong_type"
 			if int(definition.cost) > int(choice.get("max_cost", -1)):
 				return "choice_card_cost_exceeded"
@@ -148,3 +153,24 @@ static func _definition_for_card(
 	if card == null:
 		return null
 	return definitions.get(StringName(card.get("definition_id", ""))) as CardDefinition
+
+
+static func _normalized_allowed_tags(raw_tags: Variant) -> Array[StringName]:
+	var result: Array[StringName] = []
+	if not raw_tags is Array:
+		return result
+	for raw_tag: Variant in raw_tags:
+		var tag := StringName(str(raw_tag))
+		if not tag.is_empty() and tag not in result:
+			result.append(tag)
+	return result
+
+
+static func _definition_has_any_tag(
+	definition: CardDefinition,
+	allowed_tags: Array[StringName]
+) -> bool:
+	for tag: StringName in allowed_tags:
+		if tag in definition.tags:
+			return true
+	return false

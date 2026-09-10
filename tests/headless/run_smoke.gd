@@ -35,6 +35,7 @@ func _run() -> void:
 	_test_automaton_archer_pending_choice()
 	_test_automaton_warrior_discard_choice()
 	_test_gargoyle_recruit_choice()
+	_test_public_row_gain_monsters()
 	_test_fire_elemental_hand_redraw()
 	_test_combat_rejection_is_atomic()
 	_test_combat_equipment_departure()
@@ -50,6 +51,7 @@ func _run() -> void:
 	await _test_pending_choice_hud_integration()
 	await _test_discard_choice_hud_integration()
 	await _test_gargoyle_choice_hud_integration()
+	await _test_shop_gain_choice_hud_integration()
 	await _test_fire_elemental_hud_integration()
 	_test_play_adventurer_capacity_and_equipment_departure()
 	_test_use_item_draw_and_rest_cleanup()
@@ -74,7 +76,25 @@ func _test_content_pack() -> void:
 	var registry := ContentRegistry.new()
 	var errors := registry.load_pack("res://content/packs/base_vertical_slice.json")
 	_expect(errors.is_empty(), "base content pack should validate: %s" % "; ".join(errors))
-	_expect(registry.definitions.size() == 20, "vertical slice should load twenty base definitions")
+	_expect(registry.definitions.size() == 23, "vertical slice should load twenty-three base definitions")
+	var arcane_slime := registry.definitions.get(&"base:monster/monster-04") as CardDefinition
+	_expect(
+		arcane_slime != null and arcane_slime.copies == 3 and arcane_slime.combat == 5 \
+				and arcane_slime.purchase_power == 2 and arcane_slime.honor == 4,
+		"arcane slime should use the confirmed 3 copies and 5/2/4 values"
+	)
+	var goblin_thief := registry.definitions.get(&"base:monster/monster-07") as CardDefinition
+	_expect(
+		goblin_thief != null and goblin_thief.copies == 2 and goblin_thief.combat == 5 \
+				and goblin_thief.purchase_power == 2 and goblin_thief.honor == 4,
+		"goblin thief should use the confirmed 2 copies and 5/2/4 values"
+	)
+	var ogre := registry.definitions.get(&"base:monster/monster-08") as CardDefinition
+	_expect(
+		ogre != null and ogre.copies == 2 and ogre.combat == 6 \
+				and ogre.purchase_power == 2 and ogre.honor == 4,
+		"ogre should use the confirmed 2 copies and 6/2/4 values"
+	)
 	var warrior := registry.definitions.get(&"base:monster/monster-11") as CardDefinition
 	_expect(
 		warrior != null and warrior.copies == 2 and warrior.combat == 4 \
@@ -104,7 +124,7 @@ func _test_content_pack_reload() -> void:
 	var first_fingerprint := registry.pack_fingerprint
 	var second_errors := registry.load_pack("res://content/packs/base_vertical_slice.json")
 	_expect(first_errors.is_empty() and second_errors.is_empty(), "content pack should be safely reloadable")
-	_expect(registry.definitions.size() == 20, "content reload must not retain duplicate definitions")
+	_expect(registry.definitions.size() == 23, "content reload must not retain duplicate definitions")
 	_expect(registry.pack_fingerprint == first_fingerprint, "same content should keep the same fingerprint")
 
 
@@ -130,7 +150,7 @@ func _test_two_player_state() -> void:
 
 func _test_official_starting_setup() -> void:
 	var state := GameStateData.create_vertical_slice()
-	_expect(state.cards.size() == 49, "setup should create player cards, fifteen monsters, and fourteen market cards")
+	_expect(state.cards.size() == 56, "setup should create player cards, twenty-two monsters, and fourteen market cards")
 	for player_id: StringName in state.turn_order:
 		var player := state.players[player_id] as PlayerStateData
 		var party := state.zones[player.zone_ids[&"party"]] as ZoneData
@@ -425,7 +445,7 @@ func _test_monster_supply_setup_and_anchor() -> void:
 	var row := state.zones[SupplyService.MONSTER_ROW_ID] as ZoneData
 	var cycle := state.zones[SupplyService.MONSTER_CYCLE_ID] as ZoneData
 	_expect(row.card_instance_ids.size() == 3, "vertical slice should reveal three monsters")
-	_expect(cycle.card_instance_ids.size() == 12, "vertical slice cycle should retain twelve monsters")
+	_expect(cycle.card_instance_ids.size() == 19, "vertical slice cycle should retain nineteen monsters")
 	_expect(
 		row.card_instance_ids == [
 			&"card-monster-skeleton-01",
@@ -1166,7 +1186,8 @@ func _test_gargoyle_recruit_choice() -> void:
 			"op": "choose_gain_card",
 			"amount": 1,
 			"source_zone_id": str(SupplyService.RECRUIT_ROW_ID),
-			"required_tag": "adventurer",
+			"allowed_card_types": ["adventurer"],
+			"allowed_tags": ["adventurer"],
 			"max_cost": 4,
 		}],
 		no_candidate_events,
@@ -1198,7 +1219,8 @@ func _test_gargoyle_recruit_choice() -> void:
 			"op": "choose_gain_card",
 			"amount": 1,
 			"source_zone_id": str(SupplyService.RECRUIT_ROW_ID),
-			"required_tag": "adventurer",
+			"allowed_card_types": ["adventurer"],
+			"allowed_tags": ["adventurer"],
 			"max_cost": 4,
 		}],
 		filter_events,
@@ -1409,6 +1431,458 @@ func _test_gargoyle_recruit_choice() -> void:
 					.card_instance_ids.size() == SupplyService.ROW_SIZE,
 			"rest phase should refill the recruit taken by gargoyle"
 		)
+
+
+func _test_public_row_gain_monsters() -> void:
+	var base_definitions := _load_definitions()
+	var monster_specs := [
+		{
+			"name": "arcane slime",
+			"monster_id": &"card-monster-arcane-slime-01",
+			"source_zone_id": SupplyService.RECRUIT_ROW_ID,
+			"source_zone_key": &"recruit_row",
+			"allowed_card_types": ["adventurer"],
+			"allowed_tags": ["adventurer"],
+			"max_cost": 3,
+			"expected_eligible": [
+				"card-supply-adventurer-09-01",
+				"card-supply-adventurer-15-01",
+			],
+		},
+		{
+			"name": "goblin thief",
+			"monster_id": &"card-monster-goblin-thief-01",
+			"source_zone_id": SupplyService.SHOP_ROW_ID,
+			"source_zone_key": &"shop_row",
+			"allowed_card_types": ["item", "equipment"],
+			"allowed_tags": ["item", "equipment"],
+			"max_cost": 3,
+			"expected_eligible": ["card-supply-resource-08-01"],
+		},
+		{
+			"name": "ogre",
+			"monster_id": &"card-monster-ogre-01",
+			"source_zone_id": SupplyService.SHOP_ROW_ID,
+			"source_zone_key": &"shop_row",
+			"allowed_card_types": ["item", "equipment"],
+			"allowed_tags": ["item", "equipment"],
+			"max_cost": 4,
+			"expected_eligible": [
+				"card-supply-resource-08-01",
+				"card-supply-resource-02-01",
+			],
+		},
+	]
+	for spec_index in monster_specs.size():
+		var spec := monster_specs[spec_index] as Dictionary
+		var fixture := _build_public_gain_fixture(
+			270 + spec_index,
+			StringName(spec["monster_id"]),
+			StringName(spec["source_zone_id"]),
+			base_definitions
+		)
+		var state := fixture["state"] as GameStateData
+		var definitions := fixture["definitions"] as Dictionary
+		var setup_error := str(fixture.get("error", ""))
+		_expect(setup_error.is_empty(), "%s fixture should prepare: %s" % [spec.name, setup_error])
+		if not setup_error.is_empty():
+			continue
+		var phase_result := RulesEngine.dispatch(
+			state,
+			_end_phase_envelope(state, "cmd-public-gain-phase-%d" % spec_index),
+			definitions
+		)
+		_expect(bool(phase_result.get("ok", false)), "%s should enter combat" % spec.name)
+		if not bool(phase_result.get("ok", false)):
+			continue
+		state = phase_result["state"] as GameStateData
+		var preview := CombatService.preview_attack(
+			state, &"p1", StringName(spec["monster_id"]), definitions
+		)
+		var expected_source_label := (
+			"招募區" if StringName(spec["source_zone_key"]) == &"recruit_row" else "商店"
+		)
+		var expected_type_label := (
+			"冒險者" if StringName(spec["source_zone_key"]) == &"recruit_row" else "道具或裝備"
+		)
+		_expect(
+			bool(preview.get("legal", false)) \
+					and bool(preview.get("deferred_choice", false)) \
+					and not bool(preview.get("optional_reward", true)) \
+					and "取得%s 1 張費用不超過 %d 的%s" % [
+						expected_source_label, int(spec.max_cost), expected_type_label
+					] in str(preview.get("reward_summary", "")),
+			"%s preview should describe a mandatory filtered public-row gain" % spec.name
+		)
+		var attack_envelope := _command_envelope(state, {
+			"type": "ATTACK_TARGET",
+			"target_card_id": str(spec.monster_id),
+			"claim_optional_reward": true,
+		}, "cmd-public-gain-attack-%d" % spec_index)
+		var attack_result := RulesEngine.dispatch(state, attack_envelope, definitions)
+		var repeat_result := RulesEngine.dispatch(state.clone_state(), attack_envelope, definitions)
+		_expect(bool(attack_result.get("ok", false)), "%s attack should create a choice" % spec.name)
+		_expect(
+			attack_result.get("after_hash") == repeat_result.get("after_hash"),
+			"%s pending choice hash should be deterministic" % spec.name
+		)
+		if not bool(attack_result.get("ok", false)):
+			continue
+		var pending := attack_result["state"] as GameStateData
+		var attack_events := attack_result.get("events", []) as Array
+		var choice_requested_index := -1
+		var monster_claimed_index := -1
+		var defeated_index := -1
+		for event_index in attack_events.size():
+			var attack_event := attack_events[event_index] as Dictionary
+			if attack_event.get("type") == "choice_requested":
+				choice_requested_index = event_index
+			elif attack_event.get("reason") == "defeated_monster_claimed":
+				monster_claimed_index = event_index
+			elif attack_event.get("type") == "enemy_defeated":
+				defeated_index = event_index
+		_expect(
+			choice_requested_index >= 0 \
+					and choice_requested_index < monster_claimed_index \
+					and monster_claimed_index < defeated_index,
+			"%s attack events should request choice before claim and defeat completion" % spec.name
+		)
+		var player := pending.players[&"p1"] as PlayerStateData
+		var eligible := pending.effect_state.get("eligible_card_ids", []) as Array
+		_expect(
+			eligible == spec.expected_eligible \
+					and StringName(pending.effect_state.get("source_zone_id", "")) \
+					== StringName(spec.source_zone_id) \
+					and StringName(pending.effect_state.get("source_zone_key", "")) \
+					== StringName(spec.source_zone_key) \
+					and int(pending.effect_state.get("max_cost", -1)) == int(spec.max_cost) \
+					and pending.effect_state.get("allowed_card_types", []) == spec.allowed_card_types \
+					and pending.effect_state.get("allowed_tags", []) == spec.allowed_tags,
+			"%s should lock only creation-time candidates and complete filters" % spec.name
+		)
+		var legal_commands := RulesEngine.get_legal_commands(pending, &"p1", definitions)
+		_expect(
+			legal_commands.size() == eligible.size(),
+			"%s should expose one legal command per locked candidate" % spec.name
+		)
+		for command: Dictionary in legal_commands:
+			_expect(not bool(command.get("skip", false)), "%s gain must not be skippable" % spec.name)
+		var skip_result := RulesEngine.dispatch(
+			pending,
+			_command_envelope(pending, {
+				"type": "RESOLVE_CHOICE",
+				"choice_id": str(pending.effect_state.get("choice_id", "")),
+				"card_instance_id": "",
+				"skip": true,
+			}, "cmd-public-gain-skip-%d" % spec_index),
+			definitions
+		)
+		_expect(str(skip_result.get("error", "")) == "choice_required", "%s must reject skip" % spec.name)
+		var snapshot := SnapshotCodec.encode(pending, "content-public-gain", "rules-public-gain")
+		var decoded := SnapshotCodec.decode(snapshot, "content-public-gain", "rules-public-gain")
+		_expect(
+			bool(decoded.get("ok", false)) \
+					and CanonicalJson.stringify((decoded["state"] as GameStateData).effect_state) \
+					== CanonicalJson.stringify(pending.effect_state),
+			"%s pending choice should round-trip through snapshot" % spec.name
+		)
+		var selected_id := StringName(str(eligible[0]))
+		var resolve_envelope := _command_envelope(pending, {
+			"type": "RESOLVE_CHOICE",
+			"choice_id": str(pending.effect_state.get("choice_id", "")),
+			"card_instance_id": str(selected_id),
+			"skip": false,
+		}, "cmd-public-gain-resolve-%d" % spec_index)
+		var resolved_result := RulesEngine.dispatch(pending, resolve_envelope, definitions)
+		var repeat_pending := repeat_result["state"] as GameStateData
+		var repeat_resolved := RulesEngine.dispatch(repeat_pending, resolve_envelope, definitions)
+		_expect(bool(resolved_result.get("ok", false)), "%s choice should resolve" % spec.name)
+		_expect(
+			resolved_result.get("after_hash") == repeat_resolved.get("after_hash"),
+			"%s resolved choice hash should be deterministic" % spec.name
+		)
+		if not bool(resolved_result.get("ok", false)):
+			continue
+		var resolved := resolved_result["state"] as GameStateData
+		_expect(
+			ZoneService.find_card_zone(resolved, selected_id) == player.zone_ids[&"discard_pile"] \
+					and StringName((resolved.cards[selected_id] as Dictionary).get("owner_id", "")) == &"p1" \
+					and (resolved.zones[StringName(spec.source_zone_id)] as ZoneData) \
+					.card_instance_ids.size() == 2,
+			"%s should assign ownership, use own discard, and leave a public gap" % spec.name
+		)
+		var events := resolved_result.get("events", []) as Array
+		_expect(
+			events.size() == 3 \
+					and (events[0] as Dictionary).get("reason") == "reward_card_gained" \
+					and (events[1] as Dictionary).get("type") == "choice_resolved" \
+					and (events[2] as Dictionary).get("type") == "effect_resolved",
+			"%s events should order gain, choice, then effect completion" % spec.name
+		)
+
+	# Shop candidates are locked and revalidated against source, owner, cost, and type.
+	var atomic_fixture := _build_public_gain_fixture(
+		281, &"card-monster-goblin-thief-01", SupplyService.SHOP_ROW_ID, base_definitions
+	)
+	var atomic_state := atomic_fixture["state"] as GameStateData
+	var atomic_definitions := atomic_fixture["definitions"] as Dictionary
+	var atomic_events: Array[Dictionary] = []
+	var atomic_error := EffectResolver.resolve(
+		atomic_state,
+		&"p1",
+		[(base_definitions[&"base:monster/monster-07"] as CardDefinition).effects[0]],
+		atomic_events,
+		atomic_definitions
+	)
+	_expect(atomic_error.is_empty(), "shop atomic fixture should create a pending choice")
+	var atomic_id := StringName(
+		str((atomic_state.effect_state.get("eligible_card_ids", []) as Array)[0])
+	)
+	var atomic_choice_id := str(atomic_state.effect_state.get("choice_id", ""))
+	var wrong_zone_result := RulesEngine.dispatch(
+		atomic_state,
+		_command_envelope(atomic_state, {
+			"type": "RESOLVE_CHOICE",
+			"choice_id": atomic_choice_id,
+			"card_instance_id": "card-supply-adventurer-09-01",
+			"skip": false,
+		}, "cmd-shop-wrong-public-row"),
+		atomic_definitions
+	)
+	_expect(
+		str(wrong_zone_result.get("error", "")) == "ineligible_choice_card",
+		"shop gain must reject recruit row, hand, party, monster row, decks, and other unlocked cards"
+	)
+	var moved_state := atomic_state.clone_state()
+	var moved := ZoneService.move_card(
+		moved_state, atomic_id, SupplyService.SHOP_ROW_ID, SupplyService.SHOP_DECK_ID
+	)
+	_expect(bool(moved.get("ok", false)), "shop tamper fixture should move the candidate")
+	var moved_hash := CanonicalJson.sha256(moved_state.to_dictionary())
+	var moved_result := RulesEngine.dispatch(
+		moved_state,
+		_command_envelope(moved_state, {
+			"type": "RESOLVE_CHOICE",
+			"choice_id": atomic_choice_id,
+			"card_instance_id": str(atomic_id),
+			"skip": false,
+		}, "cmd-shop-moved-candidate"),
+		atomic_definitions
+	)
+	_expect(
+		str(moved_result.get("error", "")).begins_with("invalid_state:") \
+				and moved_result.get("before_hash") == moved_hash \
+				and moved_result.get("after_hash") == moved_hash,
+		"moved shop candidate must fail atomically"
+	)
+	var owned_state := atomic_state.clone_state()
+	(owned_state.cards[atomic_id] as Dictionary)["owner_id"] = "p1"
+	var owned_hash := CanonicalJson.sha256(owned_state.to_dictionary())
+	var owned_result := RulesEngine.dispatch(
+		owned_state,
+		_command_envelope(owned_state, {
+			"type": "RESOLVE_CHOICE",
+			"choice_id": atomic_choice_id,
+			"card_instance_id": str(atomic_id),
+			"skip": false,
+		}, "cmd-shop-owned-candidate"),
+		atomic_definitions
+	)
+	_expect(
+		str(owned_result.get("error", "")).begins_with("invalid_state:") \
+				and owned_result.get("after_hash") == owned_hash,
+		"already-owned public candidate must fail atomically"
+	)
+	var filter_hash := CanonicalJson.sha256(atomic_state.to_dictionary())
+	var selected_definition_id := StringName(
+		(atomic_state.cards[atomic_id] as Dictionary).get("definition_id", "")
+	)
+	var expensive_definitions := atomic_definitions.duplicate()
+	var expensive_selected := (
+		atomic_definitions[selected_definition_id] as CardDefinition
+	).duplicate(true) as CardDefinition
+	expensive_selected.cost = 4
+	expensive_definitions[selected_definition_id] = expensive_selected
+	var expensive_result := RulesEngine.dispatch(
+		atomic_state,
+		_command_envelope(atomic_state, {
+			"type": "RESOLVE_CHOICE",
+			"choice_id": atomic_choice_id,
+			"card_instance_id": str(atomic_id),
+			"skip": false,
+		}, "cmd-shop-cost-tamper"),
+		expensive_definitions
+	)
+	_expect(
+		str(expensive_result.get("error", "")) == "choice_card_cost_exceeded" \
+				and expensive_result.get("after_hash") == filter_hash,
+		"dispatch must revalidate max cost and remain atomic"
+	)
+	var wrong_type_definitions := atomic_definitions.duplicate()
+	var wrong_type_selected := (
+		atomic_definitions[selected_definition_id] as CardDefinition
+	).duplicate(true) as CardDefinition
+	wrong_type_selected.card_type = &"adventurer"
+	wrong_type_definitions[selected_definition_id] = wrong_type_selected
+	var wrong_type_result := RulesEngine.dispatch(
+		atomic_state,
+		_command_envelope(atomic_state, {
+			"type": "RESOLVE_CHOICE",
+			"choice_id": atomic_choice_id,
+			"card_instance_id": str(atomic_id),
+			"skip": false,
+		}, "cmd-shop-type-tamper"),
+		wrong_type_definitions
+	)
+	_expect(
+		str(wrong_type_result.get("error", "")) == "choice_card_wrong_type" \
+				and wrong_type_result.get("after_hash") == filter_hash,
+		"dispatch must revalidate card type and remain atomic"
+	)
+	var wrong_tag_definitions := atomic_definitions.duplicate()
+	var wrong_tag_selected := (
+		atomic_definitions[selected_definition_id] as CardDefinition
+	).duplicate(true) as CardDefinition
+	wrong_tag_selected.tags.assign([&"adventurer"])
+	wrong_tag_definitions[selected_definition_id] = wrong_tag_selected
+	var wrong_tag_result := RulesEngine.dispatch(
+		atomic_state,
+		_command_envelope(atomic_state, {
+			"type": "RESOLVE_CHOICE",
+			"choice_id": atomic_choice_id,
+			"card_instance_id": str(atomic_id),
+			"skip": false,
+		}, "cmd-shop-tag-tamper"),
+		wrong_tag_definitions
+	)
+	_expect(
+		str(wrong_tag_result.get("error", "")) == "choice_card_wrong_type" \
+				and wrong_tag_result.get("after_hash") == filter_hash,
+		"dispatch must revalidate required tags and remain atomic"
+	)
+
+	# No legal public candidate completes immediately without a pending choice.
+	var no_candidate := GameStateData.create_vertical_slice(282)
+	var no_candidate_definitions := base_definitions.duplicate()
+	for definition_id: StringName in [
+		&"base:resource/resource-02",
+		&"base:resource/resource-03",
+		&"base:resource/resource-08",
+	]:
+		var expensive := (base_definitions[definition_id] as CardDefinition).duplicate(true) as CardDefinition
+		expensive.cost = 5
+		no_candidate_definitions[definition_id] = expensive
+	var no_candidate_events: Array[Dictionary] = []
+	var no_candidate_error := EffectResolver.resolve(
+		no_candidate,
+		&"p1",
+		[(base_definitions[&"base:monster/monster-07"] as CardDefinition).effects[0]],
+		no_candidate_events,
+		no_candidate_definitions
+	)
+	_expect(
+		no_candidate_error.is_empty() and no_candidate.effect_state.is_empty() \
+				and no_candidate_events.size() == 1 \
+				and no_candidate_events[0].get("reason") == "no_eligible_candidates",
+		"gain effect with no legal candidate should complete without pending state"
+	)
+
+	# Refill happens only when leaving rest, never at choice resolution.
+	var rest_fixture := _build_public_gain_fixture(
+		283, &"card-monster-goblin-thief-01", SupplyService.SHOP_ROW_ID, base_definitions
+	)
+	var rest_state := rest_fixture["state"] as GameStateData
+	var rest_definitions := rest_fixture["definitions"] as Dictionary
+	var rest_events: Array[Dictionary] = []
+	EffectResolver.resolve(
+		rest_state,
+		&"p1",
+		[(base_definitions[&"base:monster/monster-07"] as CardDefinition).effects[0]],
+		rest_events,
+		rest_definitions
+	)
+	var rest_selected := str((rest_state.effect_state.get("eligible_card_ids", []) as Array)[0])
+	var rest_resolve := RulesEngine.dispatch(
+		rest_state,
+		_command_envelope(rest_state, {
+			"type": "RESOLVE_CHOICE",
+			"choice_id": str(rest_state.effect_state.get("choice_id", "")),
+			"card_instance_id": rest_selected,
+			"skip": false,
+		}, "cmd-shop-rest-resolve"),
+		rest_definitions
+	)
+	rest_state = rest_resolve["state"] as GameStateData
+	_expect(
+		(rest_state.zones[SupplyService.SHOP_ROW_ID] as ZoneData).card_instance_ids.size() == 2,
+		"public gain must not refill immediately"
+	)
+	for phase_index in 5:
+		var rest_advance := RulesEngine.dispatch(
+			rest_state,
+			_end_phase_envelope(rest_state, "cmd-shop-rest-%d" % phase_index),
+			rest_definitions
+		)
+		_expect(bool(rest_advance.get("ok", false)), "shop refill fixture should advance")
+		if not bool(rest_advance.get("ok", false)):
+			break
+		rest_state = rest_advance["state"] as GameStateData
+	_expect(
+		(rest_state.zones[SupplyService.SHOP_ROW_ID] as ZoneData).card_instance_ids.size() == 3,
+		"leaving rest should refill the shop gap"
+	)
+
+
+func _build_public_gain_fixture(
+	seed: int,
+	monster_id: StringName,
+	source_zone_id: StringName,
+	base_definitions: Dictionary
+) -> Dictionary:
+	var state := GameStateData.create_vertical_slice(seed)
+	var expose_error := _expose_monster(
+		state, monster_id, &"card-monster-rabbit-demon-01"
+	)
+	if not expose_error.is_empty():
+		return {"state": state, "definitions": base_definitions, "error": expose_error}
+	var definitions := base_definitions.duplicate()
+	var row_ids: Array[StringName] = []
+	var deck_zone_id: StringName
+	if source_zone_id == SupplyService.RECRUIT_ROW_ID:
+		deck_zone_id = SupplyService.RECRUIT_DECK_ID
+		row_ids.assign([
+			&"card-supply-adventurer-09-01",
+			&"card-supply-adventurer-10-01",
+			&"card-supply-adventurer-15-01",
+		])
+	else:
+		deck_zone_id = SupplyService.SHOP_DECK_ID
+		row_ids.assign([
+			&"card-supply-resource-08-01",
+			&"card-supply-resource-02-01",
+			&"card-supply-resource-03-01",
+		])
+		for cost_spec: Array in [
+			[&"base:resource/resource-08", 3],
+			[&"base:resource/resource-02", 4],
+			[&"base:resource/resource-03", 5],
+		]:
+			var definition := (
+				base_definitions[StringName(cost_spec[0])] as CardDefinition
+			).duplicate(true) as CardDefinition
+			definition.cost = int(cost_spec[1])
+			definitions[StringName(cost_spec[0])] = definition
+	var row := state.zones[source_zone_id] as ZoneData
+	for current_id: StringName in row.card_instance_ids.duplicate():
+		var move_out := ZoneService.move_card(state, current_id, source_zone_id, deck_zone_id)
+		if not bool(move_out.get("ok", false)):
+			return {"state": state, "definitions": definitions, "error": "fixture_row_clear"}
+	for card_id: StringName in row_ids:
+		var current_zone_id := ZoneService.find_card_zone(state, card_id)
+		var move_in := ZoneService.move_card(state, card_id, current_zone_id, source_zone_id)
+		if not bool(move_in.get("ok", false)):
+			return {"state": state, "definitions": definitions, "error": "fixture_row_fill"}
+	return {"state": state, "definitions": definitions, "error": ""}
 
 
 func _test_fire_elemental_hand_redraw() -> void:
@@ -2229,13 +2703,17 @@ func _test_gargoyle_choice_hud_integration() -> void:
 	_expect(bool(attack_result.get("ok", false)), "gargoyle HUD should create recruit choice")
 	await process_frame
 	var gain_buttons: Array[Button] = []
+	var cost_labels := 0
 	var skip_buttons := 0
 	for child: Node in app.hud.hand_actions.get_children():
 		if child is Button and (child as Button).text == "從招募區取得此牌":
 			gain_buttons.append(child as Button)
+		elif child is Label and "｜費用 " in (child as Label).text:
+			cost_labels += 1
 		elif child is Button and (child as Button).text.begins_with("略過"):
 			skip_buttons += 1
 	_expect(gain_buttons.size() == 3, "gargoyle HUD should show each eligible recruit")
+	_expect(cost_labels == 3, "recruit choice HUD should show each card name and cost")
 	_expect(skip_buttons == 0, "mandatory gargoyle HUD must not show a skip action")
 	_expect(app.hud.hand_title.text == "待處理選擇", "gargoyle choice should use pending title")
 	_expect(
@@ -2262,6 +2740,64 @@ func _test_gargoyle_choice_hud_integration() -> void:
 		_expect(
 			app.hud.event_label.text.begins_with("已從招募區取得："),
 			"gargoyle HUD should announce the committed recruit gain"
+		)
+	app.queue_free()
+
+
+func _test_shop_gain_choice_hud_integration() -> void:
+	var packed := load("res://scenes/boot/main.tscn") as PackedScene
+	var app := packed.instantiate() as GameApp
+	root.add_child(app)
+	await process_frame
+	var definitions := _load_definitions()
+	var fixture := _build_public_gain_fixture(
+		291, &"card-monster-ogre-01", SupplyService.SHOP_ROW_ID, definitions
+	)
+	app.session.state = fixture["state"] as GameStateData
+	app.session.content_registry.definitions = fixture["definitions"] as Dictionary
+	app.session._emit_state_changed()
+	var phase_result := app.session.end_phase()
+	_expect(bool(phase_result.get("ok", false)), "shop gain HUD should enter combat")
+	var attack_result := app.session.attack_target(&"card-monster-ogre-01", true)
+	_expect(bool(attack_result.get("ok", false)), "shop gain HUD should create a shop choice")
+	await process_frame
+	var gain_buttons: Array[Button] = []
+	var cost_labels := 0
+	var skip_buttons := 0
+	for child: Node in app.hud.hand_actions.get_children():
+		if child is Button and (child as Button).text == "從商店取得此牌":
+			gain_buttons.append(child as Button)
+		elif child is Label and "｜費用 " in (child as Label).text:
+			cost_labels += 1
+		elif child is Button and (child as Button).text.begins_with("略過"):
+			skip_buttons += 1
+	_expect(gain_buttons.size() == 2, "shop gain HUD should show cost-three and cost-four candidates")
+	_expect(cost_labels == 2, "shop gain HUD should show each candidate card name and cost")
+	_expect(skip_buttons == 0, "mandatory shop gain HUD must not show a skip action")
+	_expect(
+		"從商店取得 1 張費用不超過 4 的道具或裝備" in app.hud.hand_summary.text \
+				and "來源：商店（2 張）" in app.hud.hand_summary.text,
+		"shop gain HUD should show the complete prompt and source"
+	)
+	if gain_buttons.size() == 2:
+		_expect(
+			gain_buttons[0].focus_neighbor_top == gain_buttons[1].get_path() \
+					and gain_buttons[1].focus_neighbor_bottom == gain_buttons[0].get_path(),
+			"shop gain HUD should trap and wrap keyboard focus"
+		)
+		var selected_id := StringName(
+			(app.session.state.effect_state.get("eligible_card_ids", []) as Array)[0]
+		)
+		gain_buttons[0].pressed.emit()
+		await process_frame
+		_expect(app.session.state.effect_state.is_empty(), "shop gain HUD should submit selection")
+		_expect(
+			ZoneService.find_card_zone(app.session.state, selected_id) == &"p1:discard-pile",
+			"shop gain HUD should move the selected card into own discard"
+		)
+		_expect(
+			app.hud.event_label.text.begins_with("已從商店取得："),
+			"shop gain HUD should announce the correct public source"
 		)
 	app.queue_free()
 

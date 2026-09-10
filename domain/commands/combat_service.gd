@@ -117,9 +117,17 @@ static func preview_attack(
 						int(effect.get("amount", 0)),
 					])
 				&"choose_gain_card":
-					reward_parts.append("取得招募區 1 張費用不超過 %d 的冒險者" % int(
-						effect.get("max_cost", 0)
-					))
+					var source_zone_id := StringName(effect.get("source_zone_id", ""))
+					var source_label := (
+						"招募區" if source_zone_id == SupplyService.RECRUIT_ROW_ID else "商店"
+					)
+					var card_types := effect.get("allowed_card_types", []) as Array
+					var filter_label := "冒險者" if card_types == ["adventurer"] else "道具或裝備"
+					reward_parts.append("取得%s 1 張費用不超過 %d 的%s" % [
+						source_label,
+						int(effect.get("max_cost", 0)),
+						filter_label,
+					])
 	var returns_to_cycle := &"cycle_anchor" in target_definition.tags
 	if not returns_to_cycle:
 		reward_parts.append("取得此卡（購買力 %s／榮譽 %s）" % [

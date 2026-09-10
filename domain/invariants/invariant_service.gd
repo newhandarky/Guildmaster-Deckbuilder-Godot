@@ -266,13 +266,33 @@ static func _validate_effect_state(state: GameStateData, errors: PackedStringArr
 				if destination_zone_id != StringName(player.zone_ids.get(&"removed", &"")):
 					errors.append("Pending removal destination must be the actor removed zone")
 			&"choose_gain_card":
-				if source_zone_key != &"recruit_row" \
-						or source_zone_id != SupplyService.RECRUIT_ROW_ID:
-					errors.append("Pending gain source must be the recruit row")
+				var valid_source := (
+					source_zone_key == &"recruit_row"
+					and source_zone_id == SupplyService.RECRUIT_ROW_ID
+				) or (
+					source_zone_key == &"shop_row"
+					and source_zone_id == SupplyService.SHOP_ROW_ID
+				)
+				if not valid_source:
+					errors.append("Pending gain source must be an allowed public row")
 				if destination_zone_id != StringName(player.zone_ids.get(&"discard_pile", &"")):
 					errors.append("Pending gain destination must be the actor discard pile")
-				if int(choice.get("max_cost", -1)) < 0 \
-						or StringName(choice.get("required_tag", "")) != &"adventurer":
+				var allowed_card_types := _normalized_choice_tags(
+					choice.get("allowed_card_types", [])
+				)
+				var allowed_tags := _normalized_choice_tags(choice.get("allowed_tags", []))
+				var valid_tags := (
+					source_zone_key == &"recruit_row"
+					and _all_choice_values_allowed(allowed_card_types, [&"adventurer"])
+					and not allowed_tags.is_empty()
+				) or (
+					source_zone_key == &"shop_row"
+					and _all_choice_values_allowed(
+						allowed_card_types, [&"item", &"equipment"]
+					)
+					and not allowed_tags.is_empty()
+				)
+				if int(choice.get("max_cost", -1)) < 0 or not valid_tags:
 					errors.append("Pending gain filter is invalid")
 			_:
 				errors.append("Unsupported pending choice operation")
@@ -296,3 +316,26 @@ static func _validate_effect_state(state: GameStateData, errors: PackedStringArr
 	var maximum := int(choice.get("max_selections", -1))
 	if minimum < 0 or maximum < minimum or maximum > 1:
 		errors.append("Pending choice selection bounds are invalid")
+
+
+static func _normalized_choice_tags(raw_tags: Variant) -> Array[StringName]:
+	var result: Array[StringName] = []
+	if not raw_tags is Array:
+		return result
+	for raw_tag: Variant in raw_tags:
+		var tag := StringName(str(raw_tag))
+		if not tag.is_empty() and tag not in result:
+			result.append(tag)
+	return result
+
+
+static func _all_choice_values_allowed(
+	values: Array[StringName],
+	allowed_values: Array[StringName]
+) -> bool:
+	if values.is_empty():
+		return false
+	for value: StringName in values:
+		if value not in allowed_values:
+			return false
+	return true

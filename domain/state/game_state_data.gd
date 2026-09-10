@@ -6,8 +6,8 @@ const PlayerStateDataType = preload("res://domain/state/player_state_data.gd")
 
 var schema_version: int = 1
 var game_id: StringName = &"game-demo-001"
-var content_version: String = "0.11.0"
-var ruleset_version: String = "0.11.0"
+var content_version: String = "0.12.0"
+var ruleset_version: String = "0.12.0"
 var seed_value: int = 20260909
 var rng_state: int = 0
 var revision: int = 0
@@ -60,6 +60,48 @@ static func create_vertical_slice(seed: int = 20260909) -> GameStateData:
 			"definition_id": "base:monster/monster-09",
 			"owner_id": "",
 			"state": {"target_id": "target-monster-09-01"},
+		},
+		&"card-monster-arcane-slime-01": {
+			"instance_id": "card-monster-arcane-slime-01",
+			"definition_id": "base:monster/monster-04",
+			"owner_id": "",
+			"state": {"target_id": "target-monster-04-01"},
+		},
+		&"card-monster-arcane-slime-02": {
+			"instance_id": "card-monster-arcane-slime-02",
+			"definition_id": "base:monster/monster-04",
+			"owner_id": "",
+			"state": {"target_id": "target-monster-04-02"},
+		},
+		&"card-monster-arcane-slime-03": {
+			"instance_id": "card-monster-arcane-slime-03",
+			"definition_id": "base:monster/monster-04",
+			"owner_id": "",
+			"state": {"target_id": "target-monster-04-03"},
+		},
+		&"card-monster-goblin-thief-01": {
+			"instance_id": "card-monster-goblin-thief-01",
+			"definition_id": "base:monster/monster-07",
+			"owner_id": "",
+			"state": {"target_id": "target-monster-07-01"},
+		},
+		&"card-monster-goblin-thief-02": {
+			"instance_id": "card-monster-goblin-thief-02",
+			"definition_id": "base:monster/monster-07",
+			"owner_id": "",
+			"state": {"target_id": "target-monster-07-02"},
+		},
+		&"card-monster-ogre-01": {
+			"instance_id": "card-monster-ogre-01",
+			"definition_id": "base:monster/monster-08",
+			"owner_id": "",
+			"state": {"target_id": "target-monster-08-01"},
+		},
+		&"card-monster-ogre-02": {
+			"instance_id": "card-monster-ogre-02",
+			"definition_id": "base:monster/monster-08",
+			"owner_id": "",
+			"state": {"target_id": "target-monster-08-02"},
 		},
 		&"card-monster-rabbit-demon-02": {
 			"instance_id": "card-monster-rabbit-demon-02",
@@ -143,6 +185,13 @@ static func create_vertical_slice(seed: int = 20260909) -> GameStateData:
 		&"card-monster-skeleton-03",
 		&"card-monster-rabbit-demon-02",
 		&"card-monster-slime-02",
+		&"card-monster-arcane-slime-01",
+		&"card-monster-arcane-slime-02",
+		&"card-monster-arcane-slime-03",
+		&"card-monster-goblin-thief-01",
+		&"card-monster-goblin-thief-02",
+		&"card-monster-ogre-01",
+		&"card-monster-ogre-02",
 		&"card-monster-automaton-archer-01",
 		&"card-monster-automaton-archer-02",
 		&"card-monster-automaton-warrior-01",

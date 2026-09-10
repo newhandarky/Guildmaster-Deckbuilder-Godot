@@ -101,9 +101,10 @@ func show_events(events: Array[Dictionary]) -> void:
 			if bool(event.get("skipped", false)):
 				event_label.text = "已略過%s" % _choice_action_label(operation)
 			elif operation == &"choose_gain_card":
-				event_label.text = "已從招募區取得：%s" % _card_display_name(
-					str(event.get("card_instance_id", ""))
-				)
+				event_label.text = "已從%s取得：%s" % [
+					_localized_choice_source(StringName(event.get("source_zone_key", ""))),
+					_card_display_name(str(event.get("card_instance_id", ""))),
+				]
 			else:
 				event_label.text = "已從%s移除：%s" % [
 					_localized_choice_source(StringName(event.get("source_zone_key", ""))),
@@ -336,6 +337,9 @@ func _hand_card_text(definition: Dictionary) -> String:
 	var text := str(definition.get("display_name", "未知卡片"))
 	var purchase_power: Variant = definition.get("purchase_power", null)
 	var combat: Variant = definition.get("combat", null)
+	var cost: Variant = definition.get("cost", null)
+	if cost != null:
+		text += "｜費用 %d" % int(cost)
 	if purchase_power != null:
 		text += "｜購買力 %d（購買階段自動計算）" % int(purchase_power)
 	if combat != null:
@@ -348,6 +352,7 @@ func _localized_choice_source(source_zone_key: StringName) -> String:
 		&"hand": "自己的手牌",
 		&"discard_pile": "自己的棄牌堆",
 		&"recruit_row": "招募區",
+		&"shop_row": "商店",
 	}.get(source_zone_key, "選擇來源區")
 
 

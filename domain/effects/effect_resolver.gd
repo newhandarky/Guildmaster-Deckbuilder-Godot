@@ -33,13 +33,22 @@ static func validate_effects(effects: Array[Dictionary], definition_id: StringNa
 		if operation == &"choose_gain_card" and int(effect.get("amount", 0)) != 1:
 			errors.append("Card gain choice amount must be 1 at %s[%d]" % [definition_id, index])
 		if operation == &"choose_gain_card" \
-				and StringName(effect.get("source_zone_id", "")) != SupplyService.RECRUIT_ROW_ID:
+				and StringName(effect.get("source_zone_id", "")) \
+				not in [SupplyService.RECRUIT_ROW_ID, SupplyService.SHOP_ROW_ID]:
 			errors.append("Unsupported gain source at %s[%d]" % [definition_id, index])
 		if operation == &"choose_gain_card" and int(effect.get("max_cost", -1)) < 0:
 			errors.append("Card gain choice requires a non-negative max_cost at %s[%d]" % [definition_id, index])
-		if operation == &"choose_gain_card" \
-				and StringName(effect.get("required_tag", "")) != &"adventurer":
-			errors.append("Recruit gain choice must require adventurer cards at %s[%d]" % [definition_id, index])
+		if operation == &"choose_gain_card":
+			var allowed_card_types := _normalized_allowed_tags(
+				effect.get("allowed_card_types", [])
+			)
+			var allowed_tags := _normalized_allowed_tags(effect.get("allowed_tags", []))
+			if allowed_card_types.is_empty() or allowed_tags.is_empty():
+				errors.append("Card gain choice requires type and tag filters at %s[%d]" % [definition_id, index])
+			elif not _gain_filter_matches_source(
+				StringName(effect.get("source_zone_id", "")), allowed_card_types, allowed_tags
+			):
+				errors.append("Card gain filters do not match source at %s[%d]" % [definition_id, index])
 	return errors
 
 
@@ -179,6 +188,7 @@ static func resolve(
 				continue
 			&"choose_gain_card":
 				var source_zone_id := StringName(effect.get("source_zone_id", ""))
+				var source_zone_key := _gain_source_zone_key(source_zone_id)
 				var source := state.zones.get(source_zone_id) as ZoneData
 				var destination := state.zones.get(
 					player.zone_ids.get(&"discard_pile", &"")
@@ -186,13 +196,17 @@ static func resolve(
 				if source == null or destination == null:
 					return "missing_choice_zone"
 				var max_cost := int(effect.get("max_cost", -1))
-				var required_tag := StringName(effect.get("required_tag", ""))
+				var allowed_card_types := _normalized_allowed_tags(
+					effect.get("allowed_card_types", [])
+				)
+				var allowed_tags := _normalized_allowed_tags(effect.get("allowed_tags", []))
 				var eligible_card_ids: Array[String] = []
 				for card_instance_id: StringName in source.card_instance_ids:
 					var definition := _definition_for_card(state, definitions, card_instance_id)
 					if definition == null or definition.cost == null:
 						continue
-					if not required_tag.is_empty() and required_tag not in definition.tags:
+					if definition.card_type not in allowed_card_types \
+							or not _definition_has_any_tag(definition, allowed_tags):
 						continue
 					if int(definition.cost) <= max_cost:
 						eligible_card_ids.append(str(card_instance_id))
@@ -204,7 +218,7 @@ static func resolve(
 						"op": str(operation),
 						"selected_count": 0,
 						"source_zone_id": str(source.zone_id),
-						"source_zone_key": "recruit_row",
+						"source_zone_key": str(source_zone_key),
 						"reason": "no_eligible_candidates",
 					})
 					continue
@@ -215,9 +229,13 @@ static func resolve(
 					"choice_id": "choice-%06d" % (state.revision + 1),
 					"actor_id": str(actor_id),
 					"op": str(operation),
-					"prompt": "從招募區取得 1 張費用不超過 %d 的冒險者" % max_cost,
+					"prompt": "從%s取得 1 張費用不超過 %d 的%s" % [
+						_gain_source_label(source_zone_key),
+						max_cost,
+						_gain_filter_label(allowed_card_types),
+					],
 					"source_zone_id": str(source.zone_id),
-					"source_zone_key": "recruit_row",
+					"source_zone_key": str(source_zone_key),
 					"destination_zone_id": str(destination.zone_id),
 					"eligible_card_ids": eligible_card_ids,
 					"min_selections": 0 if bool(effect.get("optional", false)) else 1,
@@ -225,7 +243,8 @@ static func resolve(
 					"effect_index": index,
 					"source_card_instance_id": str(effect.get("source_card_instance_id", "")),
 					"max_cost": max_cost,
-					"required_tag": str(required_tag),
+					"allowed_card_types": _string_name_array_to_strings(allowed_card_types),
+					"allowed_tags": _string_name_array_to_strings(allowed_tags),
 				}
 				events.append({
 					"type": "choice_requested",
@@ -235,10 +254,11 @@ static func resolve(
 					"eligible_card_ids": eligible_card_ids.duplicate(),
 					"optional": bool(effect.get("optional", false)),
 					"source_zone_id": str(source.zone_id),
-					"source_zone_key": "recruit_row",
+					"source_zone_key": str(source_zone_key),
 					"destination_zone_id": str(destination.zone_id),
 					"max_cost": max_cost,
-					"required_tag": str(required_tag),
+					"allowed_card_types": _string_name_array_to_strings(allowed_card_types),
+					"allowed_tags": _string_name_array_to_strings(allowed_tags),
 				})
 				continue
 			_:
@@ -261,6 +281,74 @@ static func _source_zone_label(source_zone_key: StringName) -> String:
 		&"hand": "手牌",
 		&"discard_pile": "棄牌堆",
 	}.get(source_zone_key, str(source_zone_key))
+
+
+static func _gain_source_zone_key(source_zone_id: StringName) -> StringName:
+	return &"recruit_row" if source_zone_id == SupplyService.RECRUIT_ROW_ID else &"shop_row"
+
+
+static func _gain_source_label(source_zone_key: StringName) -> String:
+	return "招募區" if source_zone_key == &"recruit_row" else "商店"
+
+
+static func _gain_filter_label(allowed_card_types: Array[StringName]) -> String:
+	if allowed_card_types == [&"adventurer"]:
+		return "冒險者"
+	if allowed_card_types == [&"item", &"equipment"]:
+		return "道具或裝備"
+	if allowed_card_types == [&"item"]:
+		return "道具"
+	if allowed_card_types == [&"equipment"]:
+		return "裝備"
+	return "指定類型卡牌"
+
+
+static func _normalized_allowed_tags(raw_tags: Variant) -> Array[StringName]:
+	var result: Array[StringName] = []
+	if not raw_tags is Array:
+		return result
+	for raw_tag: Variant in raw_tags:
+		var tag := StringName(str(raw_tag))
+		if tag.is_empty() or tag in result:
+			continue
+		result.append(tag)
+	return result
+
+
+static func _gain_filter_matches_source(
+	source_zone_id: StringName,
+	allowed_card_types: Array[StringName],
+	allowed_tags: Array[StringName]
+) -> bool:
+	if source_zone_id == SupplyService.RECRUIT_ROW_ID:
+		return _all_values_allowed(allowed_card_types, [&"adventurer"]) \
+				and not allowed_tags.is_empty()
+	if source_zone_id == SupplyService.SHOP_ROW_ID:
+		return _all_values_allowed(allowed_card_types, [&"item", &"equipment"]) \
+				and not allowed_tags.is_empty()
+	return false
+
+
+static func _all_values_allowed(
+	values: Array[StringName],
+	allowed_values: Array[StringName]
+) -> bool:
+	if values.is_empty():
+		return false
+	for value: StringName in values:
+		if value not in allowed_values:
+			return false
+	return true
+
+
+static func _definition_has_any_tag(
+	definition: CardDefinition,
+	allowed_tags: Array[StringName]
+) -> bool:
+	for tag: StringName in allowed_tags:
+		if tag in definition.tags:
+			return true
+	return false
 
 
 static func _definition_for_card(
