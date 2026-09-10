@@ -8,7 +8,7 @@ static func encode(state: GameStateData, content_fingerprint: String, ruleset_fi
 	var state_data := state.to_dictionary()
 	return CanonicalJson.stringify({
 		"snapshot_schema_version": 1,
-		"app_version": "0.6.0",
+		"app_version": "0.7.0",
 		"content_fingerprint": content_fingerprint,
 		"ruleset_fingerprint": ruleset_fingerprint,
 		"state": state_data,

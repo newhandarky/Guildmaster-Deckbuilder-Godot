@@ -1,7 +1,7 @@
 {
   "manifest": {
     "pack_id": "base:vertical-slice",
-    "version": "0.6.0",
+    "version": "0.7.0",
     "includes_custom_adventurers": false
   },
   "definitions": [
@@ -68,6 +68,34 @@
         {"op": "grant_purchase_power", "amount": 4, "timing": "on_defeat", "optional": true}
       ],
       "presentation_id": "base:presentation/monster-skeleton"
+    },
+    {
+      "definition_id": "base:monster/monster-09",
+      "display_name": "兔妖",
+      "card_type": "monster",
+      "copies": 2,
+      "combat": 2,
+      "purchase_power": 1,
+      "honor": 1,
+      "tags": ["enemy", "monster"],
+      "effects": [
+        {"op": "draw", "amount": 2, "timing": "on_defeat"}
+      ],
+      "presentation_id": "base:presentation/monster-rabbit-demon"
+    },
+    {
+      "definition_id": "base:monster/monster-14",
+      "display_name": "史萊姆",
+      "card_type": "monster",
+      "copies": 2,
+      "combat": 5,
+      "purchase_power": 1,
+      "honor": 2,
+      "tags": ["enemy", "monster"],
+      "effects": [
+        {"op": "draw", "amount": 1, "timing": "on_defeat"}
+      ],
+      "presentation_id": "base:presentation/monster-slime"
     },
     {
       "definition_id": "base:starter/summoning-stone",

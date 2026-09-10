@@ -83,3 +83,34 @@ static func cycle_defeated_monster(
 		events,
 		false
 	)
+
+
+static func claim_defeated_monster(
+	state: GameStateData,
+	card_instance_id: StringName,
+	player: PlayerStateData,
+	events: Array[Dictionary]
+) -> String:
+	if ZoneService.find_card_zone(state, card_instance_id) != MONSTER_ROW_ID:
+		return "monster_not_in_row"
+	var move_result := ZoneService.move_card(
+		state,
+		card_instance_id,
+		MONSTER_ROW_ID,
+		StringName(player.zone_ids[&"discard_pile"])
+	)
+	if not bool(move_result.get("ok", false)):
+		return str(move_result.get("error", "monster_claim_failed"))
+	var card := state.cards[card_instance_id] as Dictionary
+	card["owner_id"] = str(player.player_id)
+	var move_event: Dictionary = (move_result.get("event", {}) as Dictionary).duplicate(true)
+	move_event["reason"] = "defeated_monster_claimed"
+	events.append(move_event)
+	return refill_row(
+		state,
+		MONSTER_CYCLE_ID,
+		MONSTER_ROW_ID,
+		MONSTER_ROW_SIZE,
+		events,
+		false
+	)

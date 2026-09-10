@@ -413,8 +413,14 @@ func _append_combat_actions(commands: Array, action_buttons: Array[Button]) -> i
 			preview_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 			market_actions.add_child(preview_label)
 		var claim_reward := bool(command.get("claim_optional_reward", true))
+		var reward_summary := str(preview.get("reward_summary", ""))
 		var attack_button := Button.new()
-		attack_button.text = "討伐並領取 +4 購買力" if claim_reward else "討伐並略過獎勵"
+		if bool(preview.get("optional_reward", false)):
+			attack_button.text = (
+				"討伐並領取 %s" % reward_summary if claim_reward else "討伐並略過獎勵"
+			)
+		else:
+			attack_button.text = "討伐｜%s" % reward_summary
 		attack_button.custom_minimum_size = Vector2(0.0, 36.0)
 		attack_button.pressed.connect(
 			attack_target_requested.emit.bind(StringName(target_id), claim_reward)

@@ -6,8 +6,8 @@ const PlayerStateDataType = preload("res://domain/state/player_state_data.gd")
 
 var schema_version: int = 1
 var game_id: StringName = &"game-demo-001"
-var content_version: String = "0.6.0"
-var ruleset_version: String = "0.6.0"
+var content_version: String = "0.7.0"
+var ruleset_version: String = "0.7.0"
 var seed_value: int = 20260909
 var rng_state: int = 0
 var revision: int = 0
@@ -55,6 +55,30 @@ static func create_vertical_slice(seed: int = 20260909) -> GameStateData:
 			"owner_id": "",
 			"state": {"target_id": "target-monster-03"},
 		},
+		&"card-monster-rabbit-demon-01": {
+			"instance_id": "card-monster-rabbit-demon-01",
+			"definition_id": "base:monster/monster-09",
+			"owner_id": "",
+			"state": {"target_id": "target-monster-09-01"},
+		},
+		&"card-monster-rabbit-demon-02": {
+			"instance_id": "card-monster-rabbit-demon-02",
+			"definition_id": "base:monster/monster-09",
+			"owner_id": "",
+			"state": {"target_id": "target-monster-09-02"},
+		},
+		&"card-monster-slime-01": {
+			"instance_id": "card-monster-slime-01",
+			"definition_id": "base:monster/monster-14",
+			"owner_id": "",
+			"state": {"target_id": "target-monster-14-01"},
+		},
+		&"card-monster-slime-02": {
+			"instance_id": "card-monster-slime-02",
+			"definition_id": "base:monster/monster-14",
+			"owner_id": "",
+			"state": {"target_id": "target-monster-14-02"},
+		},
 	}
 	for player_id: StringName in state.turn_order:
 		var player := state.players[player_id] as PlayerStateData
@@ -66,12 +90,21 @@ static func create_vertical_slice(seed: int = 20260909) -> GameStateData:
 		&"hidden"
 	)
 	monster_cycle.metadata = {"cycle_anchor": "card-monster-skeleton-01"}
+	monster_cycle.card_instance_ids.assign([
+		&"card-monster-skeleton-02",
+		&"card-monster-skeleton-03",
+		&"card-monster-rabbit-demon-02",
+		&"card-monster-slime-02",
+	])
+	var monster_rng := DeterministicRng.new(state.seed_value, state.rng_state)
+	monster_rng.shuffle(monster_cycle.card_instance_ids)
+	state.rng_state = monster_rng.get_state()
 	state.zones[monster_cycle.zone_id] = monster_cycle
 	var monsters := ZoneDataType.new(SupplyService.MONSTER_ROW_ID, &"face_up_row", &"public")
 	monsters.card_instance_ids.assign([
 		&"card-monster-skeleton-01",
-		&"card-monster-skeleton-02",
-		&"card-monster-skeleton-03",
+		&"card-monster-rabbit-demon-01",
+		&"card-monster-slime-01",
 	])
 	monsters.metadata = {"cycle_anchor": "card-monster-skeleton-01"}
 	state.zones[monsters.zone_id] = monsters

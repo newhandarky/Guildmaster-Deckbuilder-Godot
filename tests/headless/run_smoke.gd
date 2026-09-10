@@ -31,6 +31,7 @@ func _run() -> void:
 	_test_monster_supply_setup_and_anchor()
 	_test_combat_preview_and_reward()
 	_test_combat_optional_reward_skip()
+	_test_standard_monster_claim_and_draw_rewards()
 	_test_combat_rejection_is_atomic()
 	_test_combat_equipment_departure()
 	_test_supply_setup_and_determinism()
@@ -65,7 +66,7 @@ func _test_content_pack() -> void:
 	var registry := ContentRegistry.new()
 	var errors := registry.load_pack("res://content/packs/base_vertical_slice.json")
 	_expect(errors.is_empty(), "base content pack should validate: %s" % "; ".join(errors))
-	_expect(registry.definitions.size() == 14, "vertical slice should load fourteen base definitions")
+	_expect(registry.definitions.size() == 16, "vertical slice should load sixteen base definitions")
 	_expect(not registry.definitions.has(&"custom:adventurer/melee-01"), "custom adventurers must stay disabled")
 	_expect(not registry.pack_fingerprint.is_empty(), "content pack should expose a deterministic fingerprint")
 
@@ -76,7 +77,7 @@ func _test_content_pack_reload() -> void:
 	var first_fingerprint := registry.pack_fingerprint
 	var second_errors := registry.load_pack("res://content/packs/base_vertical_slice.json")
 	_expect(first_errors.is_empty() and second_errors.is_empty(), "content pack should be safely reloadable")
-	_expect(registry.definitions.size() == 14, "content reload must not retain duplicate definitions")
+	_expect(registry.definitions.size() == 16, "content reload must not retain duplicate definitions")
 	_expect(registry.pack_fingerprint == first_fingerprint, "same content should keep the same fingerprint")
 
 
@@ -102,7 +103,7 @@ func _test_two_player_state() -> void:
 
 func _test_official_starting_setup() -> void:
 	var state := GameStateData.create_vertical_slice()
-	_expect(state.cards.size() == 37, "setup should create player cards, three monsters, and fourteen market cards")
+	_expect(state.cards.size() == 41, "setup should create player cards, seven monsters, and fourteen market cards")
 	for player_id: StringName in state.turn_order:
 		var player := state.players[player_id] as PlayerStateData
 		var party := state.zones[player.zone_ids[&"party"]] as ZoneData
@@ -378,12 +379,26 @@ func _test_monster_supply_setup_and_anchor() -> void:
 	var row := state.zones[SupplyService.MONSTER_ROW_ID] as ZoneData
 	var cycle := state.zones[SupplyService.MONSTER_CYCLE_ID] as ZoneData
 	_expect(row.card_instance_ids.size() == 3, "vertical slice should reveal three monsters")
-	_expect(cycle.card_instance_ids.is_empty(), "all three skeleton copies should begin face up")
+	_expect(cycle.card_instance_ids.size() == 4, "vertical slice cycle should retain four monsters")
+	_expect(
+		row.card_instance_ids == [
+			&"card-monster-skeleton-01",
+			&"card-monster-rabbit-demon-01",
+			&"card-monster-slime-01",
+		],
+		"opening row should expose skeleton, rabbit demon, and slime"
+	)
 	_expect(
 		&"card-monster-skeleton-01" in row.card_instance_ids,
 		"monster cycle anchor should begin in the public row"
 	)
 	_expect(InvariantService.validate(state).is_empty(), "monster supply should satisfy continuity invariants")
+	var same_seed := GameStateData.create_vertical_slice(219)
+	_expect(
+		cycle.card_instance_ids
+			== (same_seed.zones[SupplyService.MONSTER_CYCLE_ID] as ZoneData).card_instance_ids,
+		"monster cycle order should be deterministic for the same seed"
+	)
 	var broken := state.clone_state()
 	(broken.zones[SupplyService.MONSTER_ROW_ID] as ZoneData).card_instance_ids.erase(
 		&"card-monster-skeleton-01"
@@ -427,7 +442,7 @@ func _test_combat_preview_and_reward() -> void:
 	for legal_command: Dictionary in legal:
 		if legal_command.get("type") == "ATTACK_TARGET":
 			attack_count += 1
-	_expect(attack_count == 6, "three skeletons should each expose claim and skip attack commands")
+	_expect(attack_count == 4, "opening monsters should expose two skeleton choices and one per mandatory reward")
 	var command := {
 		"type": "ATTACK_TARGET",
 		"target_card_id": "card-monster-skeleton-01",
@@ -460,7 +475,7 @@ func _test_combat_preview_and_reward() -> void:
 		"defeated skeleton should return through the cycle and refill the row"
 	)
 	_expect(
-		ZoneService.find_card_zone(defeated, &"card-monster-skeleton-01") == SupplyService.MONSTER_ROW_ID,
+		ZoneService.find_card_zone(defeated, &"card-monster-skeleton-01") == SupplyService.MONSTER_CYCLE_ID,
 		"cycle skeleton must never enter a player discard pile"
 	)
 	_expect(int(player.turn_facts.get(&"defeated_monster_count", 0)) == 1, "combat should update turn facts")
@@ -516,7 +531,7 @@ func _test_combat_optional_reward_skip() -> void:
 		state,
 		_command_envelope(state, {
 			"type": "ATTACK_TARGET",
-			"target_card_id": "card-monster-skeleton-02",
+			"target_card_id": "card-monster-skeleton-01",
 			"claim_optional_reward": false,
 		}, "cmd-attack-skip-reward"),
 		definitions
@@ -529,6 +544,149 @@ func _test_combat_optional_reward_skip() -> void:
 			int(player.turn_resources.get("purchase_power", 0)) == 0,
 			"skipping reward should not grant temporary purchase power"
 		)
+
+
+func _test_standard_monster_claim_and_draw_rewards() -> void:
+	var definitions := _load_definitions()
+	var rabbit_state := GameStateData.create_vertical_slice(226)
+	var phase_result := RulesEngine.dispatch(
+		rabbit_state,
+		_end_phase_envelope(rabbit_state, "cmd-rabbit-combat-setup"),
+		definitions
+	)
+	if not bool(phase_result.get("ok", false)):
+		_expect(false, "rabbit fixture should enter combat")
+		return
+	rabbit_state = phase_result["state"] as GameStateData
+	var rabbit_preview := CombatService.preview_attack(
+		rabbit_state, &"p1", &"card-monster-rabbit-demon-01", definitions
+	)
+	_expect(
+		rabbit_preview.get("participant_ids", []) == [
+			"card-p1-starter-adventurer-01",
+			"card-p1-starter-adventurer-02",
+		],
+		"rabbit should use the first two participants"
+	)
+	_expect(
+		rabbit_preview.get("reward_summary")
+			== "抽 2 張、取得此卡（購買力 1／榮譽 1）",
+		"rabbit preview should describe draw and printed acquisition values"
+	)
+	var invalid_skip_hash := CanonicalJson.sha256(rabbit_state.to_dictionary())
+	var invalid_skip := RulesEngine.dispatch(
+		rabbit_state,
+		_command_envelope(rabbit_state, {
+			"type": "ATTACK_TARGET",
+			"target_card_id": "card-monster-rabbit-demon-01",
+			"claim_optional_reward": false,
+		}, "cmd-skip-mandatory-rabbit-reward"),
+		definitions
+	)
+	_expect(
+		str(invalid_skip.get("error", "")) == "reward_not_optional",
+		"mandatory rabbit reward must not accept a skip command"
+	)
+	_expect(
+		CanonicalJson.sha256(rabbit_state.to_dictionary()) == invalid_skip_hash,
+		"invalid mandatory reward choice must be atomic"
+	)
+	var rabbit_result := RulesEngine.dispatch(
+		rabbit_state,
+		_command_envelope(rabbit_state, {
+			"type": "ATTACK_TARGET",
+			"target_card_id": "card-monster-rabbit-demon-01",
+			"claim_optional_reward": true,
+		}, "cmd-attack-rabbit"),
+		definitions
+	)
+	_expect(bool(rabbit_result.get("ok", false)), "rabbit attack should commit")
+	if not bool(rabbit_result.get("ok", false)):
+		return
+	var departure_index := -1
+	var reward_index := -1
+	var claim_index := -1
+	var rabbit_events := rabbit_result["events"] as Array
+	for index in rabbit_events.size():
+		var event := rabbit_events[index] as Dictionary
+		if event.get("reason") == "combat_departure" and departure_index < 0:
+			departure_index = index
+		elif event.get("type") == "effect_resolved" and event.get("op") == "draw":
+			reward_index = index
+		elif event.get("reason") == "defeated_monster_claimed":
+			claim_index = index
+	_expect(
+		departure_index >= 0 and departure_index < reward_index and reward_index < claim_index,
+		"combat events should order departure, reward, then monster acquisition"
+	)
+	var rabbit_defeated := rabbit_result["state"] as GameStateData
+	var rabbit_player := rabbit_defeated.players[&"p1"] as PlayerStateData
+	_expect(
+		(rabbit_defeated.zones[rabbit_player.zone_ids[&"hand"]] as ZoneData)
+			.card_instance_ids.size() == 7,
+		"rabbit reward should draw two departed adventurers after combat departure"
+	)
+	_expect(
+		ZoneService.find_card_zone(rabbit_defeated, &"card-monster-rabbit-demon-01")
+			== rabbit_player.zone_ids[&"discard_pile"],
+		"defeated rabbit should enter the winner discard pile"
+	)
+	_expect(
+		StringName(
+			(rabbit_defeated.cards[&"card-monster-rabbit-demon-01"] as Dictionary)
+				.get("owner_id", "")
+		) == &"p1",
+		"claimed rabbit should become owned by the winner"
+	)
+	ZoneService.move_card(
+		rabbit_defeated,
+		&"card-monster-rabbit-demon-01",
+		rabbit_player.zone_ids[&"discard_pile"],
+		rabbit_player.zone_ids[&"hand"]
+	)
+	_expect(
+		int(
+			ResourceService.evaluate_player(rabbit_defeated, &"p1", definitions)
+				.get("purchase_power", 0)
+		) == 5,
+		"claimed rabbit should provide its printed purchase power while in hand"
+	)
+	_expect(InvariantService.validate(rabbit_defeated).is_empty(), "rabbit claim should preserve invariants")
+
+	var slime_state := GameStateData.create_vertical_slice(232)
+	phase_result = RulesEngine.dispatch(
+		slime_state,
+		_end_phase_envelope(slime_state, "cmd-slime-combat-setup"),
+		definitions
+	)
+	if not bool(phase_result.get("ok", false)):
+		_expect(false, "slime fixture should enter combat")
+		return
+	slime_state = phase_result["state"] as GameStateData
+	var slime_result := RulesEngine.dispatch(
+		slime_state,
+		_command_envelope(slime_state, {
+			"type": "ATTACK_TARGET",
+			"target_card_id": "card-monster-slime-01",
+			"claim_optional_reward": true,
+		}, "cmd-attack-slime"),
+		definitions
+	)
+	_expect(bool(slime_result.get("ok", false)), "slime attack should commit")
+	if bool(slime_result.get("ok", false)):
+		var slime_defeated := slime_result["state"] as GameStateData
+		var slime_player := slime_defeated.players[&"p1"] as PlayerStateData
+		_expect(
+			(slime_defeated.zones[slime_player.zone_ids[&"hand"]] as ZoneData)
+				.card_instance_ids.size() == 6,
+			"slime reward should draw one card after participants depart"
+		)
+		_expect(
+			ZoneService.find_card_zone(slime_defeated, &"card-monster-slime-01")
+				== slime_player.zone_ids[&"discard_pile"],
+			"defeated slime should enter the winner discard pile"
+		)
+		_expect(InvariantService.validate(slime_defeated).is_empty(), "slime claim should preserve invariants")
 
 
 func _test_combat_rejection_is_atomic() -> void:
@@ -600,7 +758,7 @@ func _test_combat_equipment_departure() -> void:
 		return
 	state = phase_result["state"] as GameStateData
 	var preview := CombatService.preview_attack(
-		state, &"p1", &"card-monster-skeleton-03", definitions
+		state, &"p1", &"card-monster-skeleton-01", definitions
 	)
 	_expect(
 		(preview.get("participant_ids", []) as Array).size() == 3,
@@ -610,7 +768,7 @@ func _test_combat_equipment_departure() -> void:
 		state,
 		_command_envelope(state, {
 			"type": "ATTACK_TARGET",
-			"target_card_id": "card-monster-skeleton-03",
+			"target_card_id": "card-monster-skeleton-01",
 			"claim_optional_reward": true,
 		}, "cmd-combat-equipped-attack"),
 		definitions
@@ -937,7 +1095,7 @@ func _test_combat_hud_integration() -> void:
 			attack_buttons += 1
 		elif child is Label and "參戰：" in (child as Label).text:
 			preview_labels += 1
-	_expect(attack_buttons == 6, "combat HUD should show claim and skip for each skeleton")
+	_expect(attack_buttons == 4, "combat HUD should show optional skeleton and mandatory draw rewards")
 	_expect(preview_labels == 3, "combat HUD should preview participants for each target")
 	app.queue_free()
 

@@ -49,6 +49,8 @@ static func preview_attack(
 		"contributions": [],
 		"temporary_combat": 0,
 		"optional_reward": false,
+		"reward_summary": "",
+		"returns_to_cycle": false,
 	}
 	var player := state.players.get(actor_id) as PlayerStateData
 	if player == null:
@@ -92,9 +94,21 @@ static func preview_attack(
 		})
 		total += contribution
 	var optional_reward := false
+	var reward_parts: Array[String] = []
 	for effect: Dictionary in target_definition.effects:
 		if StringName(effect.get("timing", "")) == &"on_defeat":
 			optional_reward = optional_reward or bool(effect.get("optional", false))
+			match StringName(effect.get("op", "")):
+				&"grant_purchase_power":
+					reward_parts.append("+%d 購買力" % int(effect.get("amount", 0)))
+				&"draw":
+					reward_parts.append("抽 %d 張" % int(effect.get("amount", 0)))
+	var returns_to_cycle := &"cycle_anchor" in target_definition.tags
+	if not returns_to_cycle:
+		reward_parts.append("取得此卡（購買力 %s／榮譽 %s）" % [
+			_printed_label(target_definition.purchase_power),
+			_printed_label(target_definition.honor),
+		])
 	result["ok"] = true
 	result["legal"] = not participants.is_empty() and total >= requirement
 	result["requirement"] = requirement
@@ -104,6 +118,8 @@ static func preview_attack(
 	result["contributions"] = contributions
 	result["temporary_combat"] = int(player.turn_resources.get("combat", 0))
 	result["optional_reward"] = optional_reward
+	result["reward_summary"] = "、".join(reward_parts)
+	result["returns_to_cycle"] = returns_to_cycle
 	return result
 
 
@@ -123,6 +139,9 @@ static func validate(
 		return str(preview.get("error", "combat_preview_failed"))
 	if not bool(preview.get("legal", false)):
 		return "insufficient_combat"
+	if not bool(preview.get("optional_reward", false)) \
+			and not bool(command.get("claim_optional_reward", true)):
+		return "reward_not_optional"
 	return ""
 
 
@@ -172,9 +191,15 @@ static func apply(
 	var effect_error := EffectResolver.resolve(state, actor_id, reward_effects, events)
 	if not effect_error.is_empty():
 		return effect_error
-	var cycle_error := SupplyService.cycle_defeated_monster(state, target_card_id, events)
-	if not cycle_error.is_empty():
-		return cycle_error
+	var supply_error: String
+	if &"cycle_anchor" in target_definition.tags:
+		supply_error = SupplyService.cycle_defeated_monster(state, target_card_id, events)
+	else:
+		supply_error = SupplyService.claim_defeated_monster(
+			state, target_card_id, player, events
+		)
+	if not supply_error.is_empty():
+		return supply_error
 	player.turn_facts[&"defeated_enemy"] = true
 	player.turn_facts[&"defeated_monster_count"] = int(
 		player.turn_facts.get(&"defeated_monster_count", 0)
@@ -185,6 +210,15 @@ static func apply(
 		"target_card_id": str(target_card_id),
 		"participant_ids": participant_ids.duplicate(),
 		"claimed_optional_reward": claim_optional_reward,
+		"destination": (
+			str(SupplyService.MONSTER_CYCLE_ID)
+			if &"cycle_anchor" in target_definition.tags
+			else str(player.zone_ids[&"discard_pile"])
+		),
 		"defeated_monster_count": int(player.turn_facts[&"defeated_monster_count"]),
 	})
 	return ""
+
+
+static func _printed_label(value: Variant) -> String:
+	return "—" if value == null else str(int(value))
