@@ -252,20 +252,18 @@ static func _validate_effect_state(state: GameStateData, errors: PackedStringArr
 	var choice_id := str(choice.get("choice_id", ""))
 	if choice_id.is_empty():
 		errors.append("Pending choice requires a choice ID")
-	var source_zone_id := StringName(choice.get("source_zone_id", ""))
-	var source_zone_key := StringName(choice.get("source_zone_key", ""))
 	var destination_zone_id := StringName(choice.get("destination_zone_id", ""))
 	var player := state.players.get(actor_id) as PlayerStateData
+	var operation := StringName(choice.get("op", ""))
 	if player != null:
-		match StringName(choice.get("op", "")):
+		match operation:
 			&"choose_remove_card":
-				if source_zone_key not in [&"hand", &"discard_pile"]:
-					errors.append("Pending removal has an unsupported source zone key")
-				elif source_zone_id != StringName(player.zone_ids.get(source_zone_key, &"")):
-					errors.append("Pending removal source must belong to the actor")
+				_validate_removal_choice_sources(choice, player, errors)
 				if destination_zone_id != StringName(player.zone_ids.get(&"removed", &"")):
 					errors.append("Pending removal destination must be the actor removed zone")
 			&"choose_gain_card":
+				var source_zone_id := StringName(choice.get("source_zone_id", ""))
+				var source_zone_key := StringName(choice.get("source_zone_key", ""))
 				var valid_source := (
 					source_zone_key == &"recruit_row"
 					and source_zone_id == SupplyService.RECRUIT_ROW_ID
@@ -299,6 +297,21 @@ static func _validate_effect_state(state: GameStateData, errors: PackedStringArr
 	if not choice.get("eligible_card_ids", []) is Array:
 		errors.append("Pending choice eligible cards must be an Array")
 		return
+	if not choice.get("selected_card_ids", []) is Array:
+		errors.append("Pending choice selected cards must be an Array")
+		return
+	if operation == &"choose_remove_card" \
+			and not choice.get("eligible_card_sources", {}) is Dictionary:
+		errors.append("Pending removal candidate origins must be a Dictionary")
+		return
+	var selected_card_ids := choice.get("selected_card_ids", []) as Array
+	var selected_seen: Dictionary = {}
+	for raw_selected_id: Variant in selected_card_ids:
+		var selected_id := StringName(str(raw_selected_id))
+		if selected_id.is_empty() or selected_seen.has(selected_id):
+			errors.append("Pending choice selected cards must be unique and non-empty")
+			continue
+		selected_seen[selected_id] = true
 	var eligible_seen: Dictionary = {}
 	for raw_card_id: Variant in choice.get("eligible_card_ids", []):
 		var card_instance_id := StringName(str(raw_card_id))
@@ -306,16 +319,90 @@ static func _validate_effect_state(state: GameStateData, errors: PackedStringArr
 			errors.append("Pending choice eligible cards must be unique and non-empty")
 			continue
 		eligible_seen[card_instance_id] = true
-		if ZoneService.find_card_zone(state, card_instance_id) != source_zone_id:
-			errors.append("Pending choice card %s is not in its source zone" % card_instance_id)
-		elif StringName(choice.get("op", "")) == &"choose_gain_card":
+		if operation == &"choose_remove_card":
+			if player != null:
+				_validate_removal_candidate(
+					state,
+					choice,
+					player,
+					card_instance_id,
+					selected_seen.has(card_instance_id),
+					errors
+				)
+		elif operation == &"choose_gain_card":
+			var source_zone_id := StringName(choice.get("source_zone_id", ""))
+			if ZoneService.find_card_zone(state, card_instance_id) != source_zone_id:
+				errors.append("Pending choice card %s is not in its source zone" % card_instance_id)
 			var card := state.cards.get(card_instance_id) as Dictionary
 			if card == null or not StringName(card.get("owner_id", "")).is_empty():
 				errors.append("Pending gain card %s must be unowned" % card_instance_id)
+	for selected_id: Variant in selected_card_ids:
+		if not eligible_seen.has(StringName(str(selected_id))):
+			errors.append("Pending choice selected cards must be locked candidates")
+	if operation == &"choose_remove_card" \
+			and (choice.get("eligible_card_sources", {}) as Dictionary).size() \
+			!= eligible_seen.size():
+		errors.append("Pending removal candidate origins must match locked candidates")
 	var minimum := int(choice.get("min_selections", -1))
 	var maximum := int(choice.get("max_selections", -1))
-	if minimum < 0 or maximum < minimum or maximum > 1:
+	var maximum_limit := 2 if operation == &"choose_remove_card" else 1
+	if minimum < 0 or maximum < minimum or maximum > maximum_limit:
 		errors.append("Pending choice selection bounds are invalid")
+	if operation == &"choose_remove_card" \
+			and (int(choice.get("selected_count", -1)) != selected_card_ids.size() \
+			or selected_card_ids.size() >= maximum):
+		errors.append("Pending choice selection progress is invalid")
+
+
+static func _validate_removal_choice_sources(
+	choice: Dictionary,
+	player: PlayerStateData,
+	errors: PackedStringArray
+) -> void:
+	if not choice.get("source_zone_keys", []) is Array \
+			or not choice.get("source_zone_ids", {}) is Dictionary:
+		errors.append("Pending removal requires source zone keys and IDs")
+		return
+	var source_zone_keys := choice.get("source_zone_keys", []) as Array
+	var source_zone_ids := choice.get("source_zone_ids", {}) as Dictionary
+	var seen: Dictionary = {}
+	for raw_zone_key: Variant in source_zone_keys:
+		var zone_key := StringName(str(raw_zone_key))
+		if zone_key not in [&"hand", &"party", &"discard_pile"] or seen.has(zone_key):
+			errors.append("Pending removal has invalid source zone keys")
+			continue
+		seen[zone_key] = true
+		if StringName(source_zone_ids.get(str(zone_key), "")) \
+				!= StringName(player.zone_ids.get(zone_key, &"")):
+			errors.append("Pending removal sources must belong to the actor")
+	if source_zone_keys.is_empty() or source_zone_ids.size() != source_zone_keys.size():
+		errors.append("Pending removal source zones must be complete")
+
+
+static func _validate_removal_candidate(
+	state: GameStateData,
+	choice: Dictionary,
+	player: PlayerStateData,
+	card_instance_id: StringName,
+	is_selected: bool,
+	errors: PackedStringArray
+) -> void:
+	var candidate_sources := choice.get("eligible_card_sources", {}) as Dictionary
+	var source_record := candidate_sources.get(str(card_instance_id), {}) as Dictionary
+	var source_zone_key := StringName(source_record.get("zone_key", ""))
+	var source_zone_id := StringName(source_record.get("zone_id", ""))
+	if source_zone_key not in [&"hand", &"party", &"discard_pile"] \
+			or source_zone_id != StringName(player.zone_ids.get(source_zone_key, &"")):
+		errors.append("Pending removal candidate %s has invalid origin" % card_instance_id)
+		return
+	var expected_zone_id := (
+		StringName(player.zone_ids.get(&"removed", &"")) if is_selected else source_zone_id
+	)
+	if ZoneService.find_card_zone(state, card_instance_id) != expected_zone_id:
+		errors.append("Pending removal card %s is not in its expected zone" % card_instance_id)
+	var card := state.cards.get(card_instance_id) as Dictionary
+	if card == null or StringName(card.get("owner_id", "")) != player.player_id:
+		errors.append("Pending removal card %s must belong to the actor" % card_instance_id)
 
 
 static func _normalized_choice_tags(raw_tags: Variant) -> Array[StringName]:

@@ -107,6 +107,41 @@ static func discard_party_member_with_equipment(
 	reason: StringName,
 	events: Array[Dictionary]
 ) -> String:
+	return _move_party_member_with_equipment(
+		state,
+		player,
+		target_card_id,
+		StringName(player.zone_ids[&"discard_pile"]),
+		reason,
+		events
+	)
+
+
+static func remove_party_member_with_equipment(
+	state: GameStateData,
+	player: PlayerStateData,
+	target_card_id: StringName,
+	reason: StringName,
+	events: Array[Dictionary]
+) -> String:
+	return _move_party_member_with_equipment(
+		state,
+		player,
+		target_card_id,
+		StringName(player.zone_ids[&"removed"]),
+		reason,
+		events
+	)
+
+
+static func _move_party_member_with_equipment(
+	state: GameStateData,
+	player: PlayerStateData,
+	target_card_id: StringName,
+	target_destination_zone_id: StringName,
+	reason: StringName,
+	events: Array[Dictionary]
+) -> String:
 	if ZoneService.find_card_zone(state, target_card_id) != StringName(player.zone_ids[&"party"]):
 		return "party_member_not_in_party"
 	var target_card := state.cards[target_card_id] as Dictionary
@@ -135,7 +170,7 @@ static func discard_party_member_with_equipment(
 		state,
 		target_card_id,
 		StringName(player.zone_ids[&"party"]),
-		StringName(player.zone_ids[&"discard_pile"])
+		target_destination_zone_id
 	)
 	if not bool(outgoing_result.get("ok", false)):
 		return str(outgoing_result.get("error", "party_member_discard_failed"))

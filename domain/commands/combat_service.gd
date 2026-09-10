@@ -112,9 +112,19 @@ static func preview_attack(
 				&"discard_hand_and_draw":
 					reward_parts.append("可棄掉全部手牌，再抽相同張數")
 				&"choose_remove_card":
-					reward_parts.append("可從%s移除 %d 張" % [
-						_source_zone_label(StringName(effect.get("source_zone_key", ""))),
-						int(effect.get("amount", 0)),
+					var source_labels: Array[String] = []
+					var removal_sources := _removal_source_zone_keys(effect)
+					for raw_source: Variant in removal_sources:
+						var source_key := StringName(str(raw_source))
+						source_labels.append(
+							_source_zone_label(source_key)
+							if removal_sources.size() == 1
+							else _short_source_zone_label(source_key)
+						)
+					var removal_amount := int(effect.get("amount", 0))
+					reward_parts.append("可從%s移除%s" % [
+						_join_labels_with_or(source_labels),
+						" 1 張" if removal_amount == 1 else "最多 %d 張" % removal_amount,
 					])
 				&"choose_gain_card":
 					var source_zone_id := StringName(effect.get("source_zone_id", ""))
@@ -257,5 +267,27 @@ static func _printed_label(value: Variant) -> String:
 static func _source_zone_label(source_zone_key: StringName) -> String:
 	return {
 		&"hand": "手牌",
+		&"party": "隊伍",
 		&"discard_pile": "自己的棄牌堆",
 	}.get(source_zone_key, str(source_zone_key))
+
+
+static func _removal_source_zone_keys(effect: Dictionary) -> Array:
+	var source_zone_keys := effect.get("source_zone_keys", []) as Array
+	if not source_zone_keys.is_empty():
+		return source_zone_keys
+	return [str(effect.get("source_zone_key", ""))]
+
+
+static func _short_source_zone_label(source_zone_key: StringName) -> String:
+	return {
+		&"hand": "手牌",
+		&"party": "隊伍",
+		&"discard_pile": "棄牌堆",
+	}.get(source_zone_key, str(source_zone_key))
+
+
+static func _join_labels_with_or(labels: Array[String]) -> String:
+	if labels.size() < 2:
+		return "" if labels.is_empty() else labels[0]
+	return "%s或%s" % ["、".join(labels.slice(0, -1)), labels.back()]

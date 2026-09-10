@@ -24,12 +24,16 @@ static func validate_effects(effects: Array[Dictionary], definition_id: StringNa
 		if operation in [&"choose_remove_card", &"choose_gain_card"] \
 				and index != effects.size() - 1:
 			errors.append("Pending choice effect must be last at %s[%d]" % [definition_id, index])
-		if operation == &"choose_remove_card" and int(effect.get("amount", 0)) != 1:
-			errors.append("Card removal choice amount must be 1 at %s[%d]" % [definition_id, index])
-		if operation == &"choose_remove_card" \
-				and StringName(effect.get("source_zone_key", "")) \
-				not in [&"hand", &"discard_pile"]:
-			errors.append("Unsupported removal source at %s[%d]" % [definition_id, index])
+		if operation == &"choose_remove_card":
+			var removal_amount := int(effect.get("amount", 0))
+			if removal_amount < 1 or removal_amount > 2:
+				errors.append("Card removal choice amount must be 1 or 2 at %s[%d]" % [definition_id, index])
+			var removal_sources := _normalized_removal_sources(effect)
+			if removal_sources.is_empty():
+				errors.append("Card removal choice requires source zones at %s[%d]" % [definition_id, index])
+			for source_zone_key: StringName in removal_sources:
+				if source_zone_key not in [&"hand", &"party", &"discard_pile"]:
+					errors.append("Unsupported removal source at %s[%d]" % [definition_id, index])
 		if operation == &"choose_gain_card" and int(effect.get("amount", 0)) != 1:
 			errors.append("Card gain choice amount must be 1 at %s[%d]" % [definition_id, index])
 		if operation == &"choose_gain_card" \
@@ -133,17 +137,25 @@ static func resolve(
 				})
 				continue
 			&"choose_remove_card":
-				var source_zone_key := StringName(effect.get("source_zone_key", ""))
-				var source := state.zones.get(
-					player.zone_ids.get(source_zone_key, &"")
-				) as ZoneData
+				var source_zone_keys := _normalized_removal_sources(effect)
 				var removed := state.zones.get(player.zone_ids.get(&"removed", &"")) as ZoneData
-				if source == null or removed == null:
+				if removed == null:
 					return "missing_choice_zone"
-				var source_zone_label := _source_zone_label(source_zone_key)
+				var source_zone_ids: Dictionary = {}
 				var eligible_card_ids: Array[String] = []
-				for card_instance_id: StringName in source.card_instance_ids:
-					eligible_card_ids.append(str(card_instance_id))
+				var eligible_card_sources: Dictionary = {}
+				for source_zone_key: StringName in source_zone_keys:
+					var source_zone_id := StringName(player.zone_ids.get(source_zone_key, &""))
+					var source := state.zones.get(source_zone_id) as ZoneData
+					if source == null:
+						return "missing_choice_zone"
+					source_zone_ids[str(source_zone_key)] = str(source_zone_id)
+					for card_instance_id: StringName in source.card_instance_ids:
+						eligible_card_ids.append(str(card_instance_id))
+						eligible_card_sources[str(card_instance_id)] = {
+							"zone_key": str(source_zone_key),
+							"zone_id": str(source_zone_id),
+						}
 				if eligible_card_ids.is_empty() or amount == 0:
 					events.append({
 						"type": "effect_resolved",
@@ -151,8 +163,8 @@ static func resolve(
 						"effect_index": index,
 						"op": str(operation),
 						"selected_count": 0,
-						"source_zone_id": str(source.zone_id),
-						"source_zone_key": str(source_zone_key),
+						"source_zone_ids": source_zone_ids.duplicate(true),
+						"source_zone_keys": _string_name_array_to_strings(source_zone_keys),
 						"reason": "no_eligible_candidates",
 					})
 					continue
@@ -163,13 +175,16 @@ static func resolve(
 					"choice_id": "choice-%06d" % (state.revision + 1),
 					"actor_id": str(actor_id),
 					"op": str(operation),
-					"prompt": "可以從自己的%s移除 1 張牌" % source_zone_label,
-					"source_zone_id": str(source.zone_id),
-					"source_zone_key": str(source_zone_key),
+					"prompt": _removal_prompt(source_zone_keys, amount),
+					"source_zone_ids": source_zone_ids,
+					"source_zone_keys": _string_name_array_to_strings(source_zone_keys),
 					"destination_zone_id": str(removed.zone_id),
 					"eligible_card_ids": eligible_card_ids,
-					"min_selections": 0 if bool(effect.get("optional", false)) else 1,
+					"eligible_card_sources": eligible_card_sources,
+					"min_selections": 0 if bool(effect.get("optional", false)) else amount,
 					"max_selections": amount,
+					"selected_card_ids": [],
+					"selected_count": 0,
 					"effect_index": index,
 					"source_card_instance_id": str(
 						effect.get("source_card_instance_id", "")
@@ -182,8 +197,10 @@ static func resolve(
 					"op": str(operation),
 					"eligible_card_ids": eligible_card_ids.duplicate(),
 					"optional": bool(effect.get("optional", false)),
-					"source_zone_id": str(source.zone_id),
-					"source_zone_key": str(source_zone_key),
+					"source_zone_ids": source_zone_ids.duplicate(true),
+					"source_zone_keys": _string_name_array_to_strings(source_zone_keys),
+					"min_selections": int(state.effect_state["min_selections"]),
+					"max_selections": amount,
 				})
 				continue
 			&"choose_gain_card":
@@ -279,8 +296,40 @@ static func resolve(
 static func _source_zone_label(source_zone_key: StringName) -> String:
 	return {
 		&"hand": "手牌",
+		&"party": "隊伍",
 		&"discard_pile": "棄牌堆",
 	}.get(source_zone_key, str(source_zone_key))
+
+
+static func _normalized_removal_sources(effect: Dictionary) -> Array[StringName]:
+	var result: Array[StringName] = []
+	var raw_sources: Variant = effect.get("source_zone_keys", [])
+	if raw_sources is Array:
+		for raw_source: Variant in raw_sources:
+			var source_zone_key := StringName(str(raw_source))
+			if not source_zone_key.is_empty() and source_zone_key not in result:
+				result.append(source_zone_key)
+	if result.is_empty():
+		var legacy_source := StringName(effect.get("source_zone_key", ""))
+		if not legacy_source.is_empty():
+			result.append(legacy_source)
+	return result
+
+
+static func _removal_prompt(source_zone_keys: Array[StringName], amount: int) -> String:
+	var labels: Array[String] = []
+	for source_zone_key: StringName in source_zone_keys:
+		labels.append(_source_zone_label(source_zone_key))
+	return "可以從自己的%s移除%s" % [
+		_join_labels_with_or(labels),
+		" 1 張牌" if amount == 1 else "最多 %d 張牌" % amount,
+	]
+
+
+static func _join_labels_with_or(labels: Array[String]) -> String:
+	if labels.size() < 2:
+		return "" if labels.is_empty() else labels[0]
+	return "%s或%s" % ["、".join(labels.slice(0, -1)), labels.back()]
 
 
 static func _gain_source_zone_key(source_zone_id: StringName) -> StringName:

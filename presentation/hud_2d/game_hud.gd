@@ -96,10 +96,23 @@ func show_events(events: Array[Dictionary]) -> void:
 				(event.get("participant_ids", []) as Array).size(),
 			]
 			return
+		if event.get("type") == "choice_progressed":
+			event_label.text = "已移除：%s（%d/%d）" % [
+				_card_display_name(str(event.get("card_instance_id", ""))),
+				int(event.get("selected_count", 0)),
+				int(event.get("max_selections", 0)),
+			]
+			return
 		if event.get("type") == "choice_resolved":
 			var operation := StringName(event.get("op", ""))
 			if bool(event.get("skipped", false)):
 				event_label.text = "已略過%s" % _choice_action_label(operation)
+			elif operation == &"choose_remove_card" \
+					and (bool(event.get("completed_early", false)) \
+					or (event.get("source_zone_keys", []) as Array).size() > 1):
+				event_label.text = "已完成移除（%d 張）" % int(
+					event.get("selected_count", 0)
+				)
 			elif operation == &"choose_gain_card":
 				event_label.text = "已從%s取得：%s" % [
 					_localized_choice_source(StringName(event.get("source_zone_key", ""))),
@@ -191,9 +204,7 @@ func _rebuild_hand(state: Dictionary, active_player_id: String) -> void:
 	var effect_state := state.get("effect_state", {}) as Dictionary
 	var removed := zones.get(str(zone_ids.get("removed", "")), {}) as Dictionary
 	var card_ids := hand_card_ids
-	var choice_source_label := _localized_choice_source(
-		StringName(effect_state.get("source_zone_key", ""))
-	)
+	var choice_source_label := _choice_source_summary(effect_state)
 	if choice_commands.is_empty():
 		hand_title.text = "手牌與合法操作"
 		hand_summary.text = "目前手牌：%d 張　移除區：%d 張" % [
@@ -202,11 +213,25 @@ func _rebuild_hand(state: Dictionary, active_player_id: String) -> void:
 		]
 	else:
 		hand_title.text = "待處理選擇"
-		card_ids = effect_state.get("eligible_card_ids", []) as Array
-		hand_summary.text = "待選擇：%s｜來源：%s（%d 張）" % [
+		card_ids = _remaining_choice_card_ids(effect_state)
+		var selected_count := int(effect_state.get("selected_count", 0))
+		var max_selections := int(effect_state.get("max_selections", 1))
+		var progress_text := (
+			"（已選 %d/%d）" % [selected_count, max_selections]
+			if StringName(effect_state.get("op", "")) == &"choose_remove_card"
+			else ""
+		)
+		var count_text := (
+			"剩餘 %d 張" % card_ids.size()
+			if StringName(effect_state.get("op", "")) == &"choose_remove_card" \
+					and max_selections > 1
+			else "%d 張" % card_ids.size()
+		)
+		hand_summary.text = "待選擇：%s%s｜來源：%s（%s）" % [
 			str(effect_state.get("prompt", "請完成選擇")),
+			progress_text,
 			choice_source_label,
-			card_ids.size(),
+			count_text,
 		]
 
 	for raw_card_id: Variant in card_ids:
@@ -215,13 +240,19 @@ func _rebuild_hand(state: Dictionary, active_player_id: String) -> void:
 		var definition := definitions.get(str(card.get("definition_id", "")), {}) as Dictionary
 		var card_label := Label.new()
 		card_label.text = _hand_card_text(definition)
+		if StringName(effect_state.get("op", "")) == &"choose_remove_card":
+			card_label.text += "｜來源：%s" % _choice_card_source_label(
+				effect_state, card_id
+			)
 		card_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		hand_actions.add_child(card_label)
 		var choice_command := _find_choice_for_card(choice_commands, card_id)
 		if not choice_command.is_empty():
+			var card_source_label := _choice_card_source_label(effect_state, card_id)
 			var choice_button := Button.new()
 			choice_button.text = _choice_button_text(
-				StringName(effect_state.get("op", "")), choice_source_label
+				StringName(effect_state.get("op", "")),
+				card_source_label if not card_source_label.is_empty() else choice_source_label
 			)
 			choice_button.custom_minimum_size = Vector2(0.0, 36.0)
 			choice_button.focus_mode = Control.FOCUS_ALL
@@ -290,8 +321,13 @@ func _rebuild_hand(state: Dictionary, active_player_id: String) -> void:
 	var skip_choice := _find_skip_choice(choice_commands)
 	if not skip_choice.is_empty():
 		var skip_choice_button := Button.new()
-		skip_choice_button.text = "略過%s" % _choice_action_label(
-			StringName(effect_state.get("op", ""))
+		var selected_count := int(effect_state.get("selected_count", 0))
+		var max_selections := int(effect_state.get("max_selections", 1))
+		skip_choice_button.text = (
+			"完成移除（已選 %d/%d）" % [selected_count, max_selections]
+			if StringName(effect_state.get("op", "")) == &"choose_remove_card" \
+					and selected_count > 0
+			else "略過%s" % _choice_action_label(StringName(effect_state.get("op", "")))
 		)
 		skip_choice_button.custom_minimum_size = Vector2(0.0, 36.0)
 		skip_choice_button.focus_mode = Control.FOCUS_ALL
@@ -350,10 +386,38 @@ func _hand_card_text(definition: Dictionary) -> String:
 func _localized_choice_source(source_zone_key: StringName) -> String:
 	return {
 		&"hand": "自己的手牌",
+		&"party": "自己的隊伍",
 		&"discard_pile": "自己的棄牌堆",
 		&"recruit_row": "招募區",
 		&"shop_row": "商店",
 	}.get(source_zone_key, "選擇來源區")
+
+
+func _choice_source_summary(effect_state: Dictionary) -> String:
+	var source_zone_keys := effect_state.get("source_zone_keys", []) as Array
+	if source_zone_keys.is_empty():
+		return _localized_choice_source(StringName(effect_state.get("source_zone_key", "")))
+	var labels: Array[String] = []
+	for raw_source: Variant in source_zone_keys:
+		labels.append(_localized_choice_source(StringName(str(raw_source))))
+	return "、".join(labels)
+
+
+func _choice_card_source_label(effect_state: Dictionary, card_id: String) -> String:
+	var source_record := (effect_state.get("eligible_card_sources", {}) as Dictionary).get(
+		card_id, {}
+	) as Dictionary
+	var source_zone_key := StringName(source_record.get("zone_key", ""))
+	return "" if source_zone_key.is_empty() else _localized_choice_source(source_zone_key)
+
+
+func _remaining_choice_card_ids(effect_state: Dictionary) -> Array:
+	var result: Array = []
+	var selected_card_ids := effect_state.get("selected_card_ids", []) as Array
+	for raw_card_id: Variant in effect_state.get("eligible_card_ids", []):
+		if str(raw_card_id) not in selected_card_ids:
+			result.append(raw_card_id)
+	return result
 
 
 func _choice_action_label(operation: StringName) -> String:

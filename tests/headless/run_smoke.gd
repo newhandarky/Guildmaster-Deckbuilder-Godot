@@ -34,6 +34,7 @@ func _run() -> void:
 	_test_standard_monster_claim_and_draw_rewards()
 	_test_automaton_archer_pending_choice()
 	_test_automaton_warrior_discard_choice()
+	_test_multi_zone_removal_monsters()
 	_test_gargoyle_recruit_choice()
 	_test_public_row_gain_monsters()
 	_test_fire_elemental_hand_redraw()
@@ -50,6 +51,7 @@ func _run() -> void:
 	await _test_combat_hud_integration()
 	await _test_pending_choice_hud_integration()
 	await _test_discard_choice_hud_integration()
+	await _test_multi_zone_removal_hud_integration()
 	await _test_gargoyle_choice_hud_integration()
 	await _test_shop_gain_choice_hud_integration()
 	await _test_fire_elemental_hud_integration()
@@ -76,7 +78,20 @@ func _test_content_pack() -> void:
 	var registry := ContentRegistry.new()
 	var errors := registry.load_pack("res://content/packs/base_vertical_slice.json")
 	_expect(errors.is_empty(), "base content pack should validate: %s" % "; ".join(errors))
-	_expect(registry.definitions.size() == 23, "vertical slice should load twenty-three base definitions")
+	_expect(registry.definitions.size() == 25, "vertical slice should load twenty-five base definitions")
+	var lizardfolk_mage := registry.definitions.get(&"base:monster/monster-03") as CardDefinition
+	_expect(
+		lizardfolk_mage != null and lizardfolk_mage.copies == 3 \
+				and lizardfolk_mage.combat == 6 and lizardfolk_mage.purchase_power == 2 \
+				and lizardfolk_mage.honor == 5,
+		"lizardfolk mage should use the confirmed 3 copies and 6/2/5 values"
+	)
+	var golem := registry.definitions.get(&"base:monster/monster-06") as CardDefinition
+	_expect(
+		golem != null and golem.copies == 2 and golem.combat == 7 \
+				and golem.purchase_power == 2 and golem.honor == 5,
+		"golem should use the confirmed 2 copies and 7/2/5 values"
+	)
 	var arcane_slime := registry.definitions.get(&"base:monster/monster-04") as CardDefinition
 	_expect(
 		arcane_slime != null and arcane_slime.copies == 3 and arcane_slime.combat == 5 \
@@ -124,7 +139,7 @@ func _test_content_pack_reload() -> void:
 	var first_fingerprint := registry.pack_fingerprint
 	var second_errors := registry.load_pack("res://content/packs/base_vertical_slice.json")
 	_expect(first_errors.is_empty() and second_errors.is_empty(), "content pack should be safely reloadable")
-	_expect(registry.definitions.size() == 23, "content reload must not retain duplicate definitions")
+	_expect(registry.definitions.size() == 25, "content reload must not retain duplicate definitions")
 	_expect(registry.pack_fingerprint == first_fingerprint, "same content should keep the same fingerprint")
 
 
@@ -150,7 +165,7 @@ func _test_two_player_state() -> void:
 
 func _test_official_starting_setup() -> void:
 	var state := GameStateData.create_vertical_slice()
-	_expect(state.cards.size() == 56, "setup should create player cards, twenty-two monsters, and fourteen market cards")
+	_expect(state.cards.size() == 61, "setup should create player cards, twenty-seven monsters, and fourteen market cards")
 	for player_id: StringName in state.turn_order:
 		var player := state.players[player_id] as PlayerStateData
 		var party := state.zones[player.zone_ids[&"party"]] as ZoneData
@@ -231,12 +246,17 @@ func _test_command_legality_guards() -> void:
 		"actor_id": "p1",
 		"op": "choose_remove_card",
 		"prompt": "test",
-		"source_zone_id": "p1:hand",
-		"source_zone_key": "hand",
+		"source_zone_ids": {"hand": "p1:hand"},
+		"source_zone_keys": ["hand"],
 		"destination_zone_id": "p1:removed",
 		"eligible_card_ids": ["card-p1-summoning-stone-01"],
+		"eligible_card_sources": {
+			"card-p1-summoning-stone-01": {"zone_key": "hand", "zone_id": "p1:hand"},
+		},
 		"min_selections": 0,
 		"max_selections": 1,
+		"selected_card_ids": [],
+		"selected_count": 0,
 		"effect_index": 0,
 		"source_card_instance_id": "test-source",
 	}
@@ -445,7 +465,7 @@ func _test_monster_supply_setup_and_anchor() -> void:
 	var row := state.zones[SupplyService.MONSTER_ROW_ID] as ZoneData
 	var cycle := state.zones[SupplyService.MONSTER_CYCLE_ID] as ZoneData
 	_expect(row.card_instance_ids.size() == 3, "vertical slice should reveal three monsters")
-	_expect(cycle.card_instance_ids.size() == 19, "vertical slice cycle should retain nineteen monsters")
+	_expect(cycle.card_instance_ids.size() == 24, "vertical slice cycle should retain twenty-four monsters")
 	_expect(
 		row.card_instance_ids == [
 			&"card-monster-skeleton-01",
@@ -986,9 +1006,9 @@ func _test_automaton_warrior_discard_choice() -> void:
 	var player := pending.players[&"p1"] as PlayerStateData
 	var discard := pending.zones[player.zone_ids[&"discard_pile"]] as ZoneData
 	_expect(
-		StringName(pending.effect_state.get("source_zone_key", "")) == &"discard_pile" \
-				and StringName(pending.effect_state.get("source_zone_id", "")) \
-				== player.zone_ids[&"discard_pile"],
+		pending.effect_state.get("source_zone_keys", []) == ["discard_pile"] \
+				and StringName((pending.effect_state.get("source_zone_ids", {}) as Dictionary) \
+				.get("discard_pile", "")) == player.zone_ids[&"discard_pile"],
 		"warrior choice source must be the active player's discard pile"
 	)
 	_expect(
@@ -1164,6 +1184,471 @@ func _test_automaton_warrior_discard_choice() -> void:
 					and (skip_events[1] as Dictionary).get("type") == "effect_resolved",
 			"warrior skip events should order choice then effect completion"
 		)
+
+
+func _test_multi_zone_removal_monsters() -> void:
+	var definitions := _load_definitions()
+	var lizard_id := &"card-monster-lizardfolk-mage-01"
+	var lizard_state := GameStateData.create_vertical_slice(245)
+	var equip_result := RulesEngine.dispatch(
+		lizard_state,
+		_equip_item_envelope(
+			lizard_state,
+			&"card-p1-spirit-crystal-01",
+			&"card-p1-starter-adventurer-05",
+			"cmd-lizard-equip"
+		),
+		definitions
+	)
+	_expect(bool(equip_result.get("ok", false)), "lizard fixture should equip a remaining party member")
+	if not bool(equip_result.get("ok", false)):
+		return
+	lizard_state = equip_result["state"] as GameStateData
+	for move_spec: Array in [
+		[&"card-p1-summoning-stone-01", &"p1:draw-pile"],
+		[&"card-p1-summoning-stone-02", &"p1:play-area"],
+		[&"card-p1-summoning-stone-03", &"p1:removed"],
+	]:
+		var move_result := ZoneService.move_card(
+			lizard_state,
+			StringName(move_spec[0]),
+			&"p1:hand",
+			StringName(move_spec[1])
+		)
+		_expect(bool(move_result.get("ok", false)), "lizard wrong-zone fixture should move a card")
+	var expose_error := _expose_monster(
+		lizard_state, lizard_id, &"card-monster-rabbit-demon-01"
+	)
+	_expect(expose_error.is_empty(), "lizard fixture should expose the target")
+	var lizard_player := lizard_state.players[&"p1"] as PlayerStateData
+	lizard_player.turn_resources[&"combat"] = 6
+	var phase_result := RulesEngine.dispatch(
+		lizard_state,
+		_end_phase_envelope(lizard_state, "cmd-lizard-combat-phase"),
+		definitions
+	)
+	_expect(bool(phase_result.get("ok", false)), "lizard fixture should enter combat")
+	if not bool(phase_result.get("ok", false)):
+		return
+	lizard_state = phase_result["state"] as GameStateData
+	var lizard_preview := CombatService.preview_attack(lizard_state, &"p1", lizard_id, definitions)
+	_expect(
+		bool(lizard_preview.get("legal", false)) \
+				and "可從手牌、隊伍或棄牌堆移除 1 張" \
+				in str(lizard_preview.get("reward_summary", "")),
+		"lizard preview should describe all removal sources"
+	)
+	var lizard_attack_envelope := _command_envelope(lizard_state, {
+		"type": "ATTACK_TARGET",
+		"target_card_id": str(lizard_id),
+		"claim_optional_reward": true,
+	}, "cmd-attack-lizard")
+	var lizard_attack := RulesEngine.dispatch(lizard_state, lizard_attack_envelope, definitions)
+	var repeated_lizard_attack := RulesEngine.dispatch(
+		lizard_state.clone_state(), lizard_attack_envelope, definitions
+	)
+	_expect(bool(lizard_attack.get("ok", false)), "lizard attack should create a pending choice")
+	_expect(
+		lizard_attack.get("after_hash") == repeated_lizard_attack.get("after_hash"),
+		"lizard pending hash should be deterministic"
+	)
+	if not bool(lizard_attack.get("ok", false)):
+		return
+	var lizard_pending := lizard_attack["state"] as GameStateData
+	var lizard_choice := lizard_pending.effect_state
+	var lizard_sources := lizard_choice.get("eligible_card_sources", {}) as Dictionary
+	var source_counts := {"hand": 0, "party": 0, "discard_pile": 0}
+	for raw_card_id: Variant in lizard_choice.get("eligible_card_ids", []):
+		var card_id := str(raw_card_id)
+		var source_record := lizard_sources.get(card_id, {}) as Dictionary
+		var source_key := str(source_record.get("zone_key", ""))
+		source_counts[source_key] = int(source_counts.get(source_key, 0)) + 1
+	_expect(
+		lizard_choice.get("source_zone_keys", []) == ["hand", "party", "discard_pile"] \
+				and (lizard_choice.get("source_zone_ids", {}) as Dictionary) == {
+					"hand": "p1:hand",
+					"party": "p1:party",
+					"discard_pile": "p1:discard-pile",
+				} \
+				and int(source_counts.hand) == 1 \
+				and int(source_counts.party) == 4 \
+				and int(source_counts.discard_pile) == 1,
+		"lizard pending should lock hand, remaining party, and departed discard candidates"
+	)
+	_expect(
+		lizard_sources.get("card-p1-starter-adventurer-01", {}).get("zone_key") \
+				== "discard_pile",
+		"combat-departed adventurer should be a discard candidate"
+	)
+	_expect(
+		str(lizard_id) not in (lizard_choice.get("eligible_card_ids", []) as Array),
+		"defeated lizard must not be captured as its own reward candidate"
+	)
+	var lizard_attack_events := lizard_attack.get("events", []) as Array
+	var departure_index := -1
+	var request_index := -1
+	var claim_index := -1
+	for event_index in lizard_attack_events.size():
+		var event := lizard_attack_events[event_index] as Dictionary
+		if event.get("reason") == "combat_departure" and departure_index < 0:
+			departure_index = event_index
+		elif event.get("type") == "choice_requested":
+			request_index = event_index
+		elif event.get("reason") == "defeated_monster_claimed":
+			claim_index = event_index
+	_expect(
+		departure_index >= 0 and departure_index < request_index and request_index < claim_index,
+		"multi-source candidates must lock after combat departure and before monster claim"
+	)
+	var initial_snapshot := SnapshotCodec.encode(lizard_pending, "content-lizard", "rules-lizard")
+	var initial_decoded := SnapshotCodec.decode(initial_snapshot, "content-lizard", "rules-lizard")
+	_expect(
+		bool(initial_decoded.get("ok", false)) \
+				and CanonicalJson.stringify((initial_decoded["state"] as GameStateData).effect_state) \
+				== CanonicalJson.stringify(lizard_choice),
+		"initial multi-source pending state should round-trip"
+	)
+	var wrong_zone_ids: Array[StringName] = [
+		&"card-p2-summoning-stone-01",
+		&"card-p1-summoning-stone-01",
+		&"card-p1-summoning-stone-02",
+		&"card-p1-summoning-stone-03",
+		&"card-p1-spirit-crystal-01",
+		(lizard_pending.zones[SupplyService.RECRUIT_ROW_ID] as ZoneData).card_instance_ids[0],
+		(lizard_pending.zones[SupplyService.RECRUIT_DECK_ID] as ZoneData).card_instance_ids[0],
+		&"card-monster-skeleton-01",
+	]
+	for wrong_index in wrong_zone_ids.size():
+		var pending_hash := CanonicalJson.sha256(lizard_pending.to_dictionary())
+		var wrong_result := RulesEngine.dispatch(
+			lizard_pending,
+			_command_envelope(lizard_pending, {
+				"type": "RESOLVE_CHOICE",
+				"choice_id": str(lizard_choice.get("choice_id", "")),
+				"card_instance_id": str(wrong_zone_ids[wrong_index]),
+				"skip": false,
+			}, "cmd-lizard-wrong-zone-%d" % wrong_index),
+			definitions
+		)
+		_expect(
+			str(wrong_result.get("error", "")) == "ineligible_choice_card" \
+					and wrong_result.get("after_hash") == pending_hash,
+			"multi-source removal must reject opponent and every disallowed zone atomically"
+		)
+	var party_selected := &"card-p1-starter-adventurer-05"
+	var lizard_resolve_envelope := _command_envelope(lizard_pending, {
+		"type": "RESOLVE_CHOICE",
+		"choice_id": str(lizard_choice.get("choice_id", "")),
+		"card_instance_id": str(party_selected),
+		"skip": false,
+	}, "cmd-lizard-remove-party")
+	var lizard_resolve := RulesEngine.dispatch(
+		lizard_pending, lizard_resolve_envelope, definitions
+	)
+	var repeated_lizard_resolve := RulesEngine.dispatch(
+		repeated_lizard_attack["state"] as GameStateData,
+		lizard_resolve_envelope,
+		definitions
+	)
+	_expect(bool(lizard_resolve.get("ok", false)), "lizard should remove one party adventurer")
+	_expect(
+		lizard_resolve.get("after_hash") == repeated_lizard_resolve.get("after_hash"),
+		"lizard resolved hash should be deterministic"
+	)
+	if bool(lizard_resolve.get("ok", false)):
+		var lizard_resolved := lizard_resolve["state"] as GameStateData
+		var removed_adventurer := lizard_resolved.cards[party_selected] as Dictionary
+		var departed_equipment := lizard_resolved.cards[&"card-p1-spirit-crystal-01"] as Dictionary
+		_expect(
+			ZoneService.find_card_zone(lizard_resolved, party_selected) == &"p1:removed" \
+					and ZoneService.find_card_zone(
+						lizard_resolved, &"card-p1-spirit-crystal-01"
+					) == &"p1:discard-pile" \
+					and (removed_adventurer.get("state", {}) as Dictionary) \
+					.get("equipment_ids", []).is_empty() \
+					and not (departed_equipment.get("state", {}) as Dictionary).has("equipped_to"),
+			"party removal should exile the adventurer, discard equipment, and clear attachments"
+		)
+		_expect(lizard_resolved.effect_state.is_empty(), "lizard should auto-complete after one card")
+
+	var lizard_skip_command: Dictionary = {}
+	for command: Dictionary in RulesEngine.get_legal_commands(lizard_pending, &"p1", definitions):
+		if bool(command.get("skip", false)):
+			lizard_skip_command = command
+			break
+	var lizard_skip := RulesEngine.dispatch(
+		lizard_pending,
+		_command_envelope(lizard_pending, lizard_skip_command, "cmd-lizard-skip"),
+		definitions
+	)
+	_expect(
+		bool(lizard_skip.get("ok", false)) \
+				and (lizard_skip["state"] as GameStateData).effect_state.is_empty(),
+		"lizard removal should allow skipping"
+	)
+	var no_candidate := GameStateData.create_vertical_slice(246)
+	var no_player := no_candidate.players[&"p1"] as PlayerStateData
+	for source_key: StringName in [&"hand", &"party", &"discard_pile"]:
+		var source := no_candidate.zones[no_player.zone_ids[source_key]] as ZoneData
+		for card_id: StringName in source.card_instance_ids.duplicate():
+			ZoneService.move_card(
+				no_candidate, card_id, source.zone_id, no_player.zone_ids[&"removed"]
+			)
+	var no_candidate_events: Array[Dictionary] = []
+	var no_candidate_error := EffectResolver.resolve(
+		no_candidate,
+		&"p1",
+		[(definitions[&"base:monster/monster-03"] as CardDefinition).effects[0]],
+		no_candidate_events,
+		definitions
+	)
+	_expect(
+		no_candidate_error.is_empty() and no_candidate.effect_state.is_empty() \
+				and no_candidate_events.size() == 1 \
+				and no_candidate_events[0].get("reason") == "no_eligible_candidates",
+		"lizard with no legal source candidates should complete immediately"
+	)
+
+	var golem_id := &"card-monster-golem-01"
+	var golem_state := GameStateData.create_vertical_slice(247)
+	_expose_monster(golem_state, golem_id, &"card-monster-rabbit-demon-01")
+	(golem_state.players[&"p1"] as PlayerStateData).turn_resources[&"combat"] = 6
+	phase_result = RulesEngine.dispatch(
+		golem_state,
+		_end_phase_envelope(golem_state, "cmd-golem-combat-phase"),
+		definitions
+	)
+	golem_state = phase_result["state"] as GameStateData
+	var golem_preview := CombatService.preview_attack(golem_state, &"p1", golem_id, definitions)
+	_expect(
+		bool(golem_preview.get("legal", false)) \
+				and "可從手牌、隊伍或棄牌堆移除最多 2 張" \
+				in str(golem_preview.get("reward_summary", "")),
+		"golem preview should describe its two-card multi-source removal"
+	)
+	var golem_attack_envelope := _command_envelope(golem_state, {
+		"type": "ATTACK_TARGET",
+		"target_card_id": str(golem_id),
+		"claim_optional_reward": true,
+	}, "cmd-attack-golem")
+	var golem_attack := RulesEngine.dispatch(golem_state, golem_attack_envelope, definitions)
+	var repeated_golem_attack := RulesEngine.dispatch(
+		golem_state.clone_state(), golem_attack_envelope, definitions
+	)
+	_expect(bool(golem_attack.get("ok", false)), "golem attack should create a two-card choice")
+	_expect(
+		golem_attack.get("after_hash") == repeated_golem_attack.get("after_hash"),
+		"golem initial pending hash should be deterministic"
+	)
+	if not bool(golem_attack.get("ok", false)):
+		return
+	var golem_pending := golem_attack["state"] as GameStateData
+	var golem_choice_id := str(golem_pending.effect_state.get("choice_id", ""))
+	_expect(
+		int(golem_pending.effect_state.get("min_selections", -1)) == 0 \
+				and int(golem_pending.effect_state.get("max_selections", -1)) == 2 \
+				and int(golem_pending.effect_state.get("selected_count", -1)) == 0,
+		"golem pending should serialize 0..2 selection progress"
+	)
+	_expect(
+		str(golem_id) not in (golem_pending.effect_state.get("eligible_card_ids", []) as Array),
+		"defeated golem must not be captured as its own reward candidate"
+	)
+	var golem_initial_snapshot := SnapshotCodec.encode(
+		golem_pending, "content-golem", "rules-golem"
+	)
+	_expect(
+		bool(SnapshotCodec.decode(
+			golem_initial_snapshot, "content-golem", "rules-golem"
+		).get("ok", false)),
+		"golem initial pending state should round-trip"
+	)
+	var zero_command: Dictionary = {}
+	for command: Dictionary in RulesEngine.get_legal_commands(golem_pending, &"p1", definitions):
+		if bool(command.get("skip", false)):
+			zero_command = command
+			break
+	var zero_result := RulesEngine.dispatch(
+		golem_pending,
+		_command_envelope(golem_pending, zero_command, "cmd-golem-zero"),
+		definitions
+	)
+	_expect(
+		bool(zero_result.get("ok", false)) \
+				and (zero_result["state"] as GameStateData).effect_state.is_empty() \
+				and (zero_result.get("events", []) as Array).size() == 2,
+		"golem should allow completing with zero removals"
+	)
+	var first_id := StringName(
+		(golem_pending.effect_state.get("eligible_card_ids", []) as Array)[0]
+	)
+	var first_envelope := _command_envelope(golem_pending, {
+		"type": "RESOLVE_CHOICE",
+		"choice_id": golem_choice_id,
+		"card_instance_id": str(first_id),
+		"skip": false,
+	}, "cmd-golem-first")
+	var first_result := RulesEngine.dispatch(golem_pending, first_envelope, definitions)
+	var repeated_first := RulesEngine.dispatch(
+		repeated_golem_attack["state"] as GameStateData, first_envelope, definitions
+	)
+	_expect(bool(first_result.get("ok", false)), "golem first removal should commit")
+	_expect(
+		first_result.get("after_hash") == repeated_first.get("after_hash"),
+		"golem intermediate hash should be deterministic"
+	)
+	if not bool(first_result.get("ok", false)):
+		return
+	var mid_state := first_result["state"] as GameStateData
+	_expect(
+		int(mid_state.effect_state.get("selected_count", -1)) == 1 \
+				and mid_state.effect_state.get("selected_card_ids", []) == [str(first_id)] \
+				and ZoneService.find_card_zone(mid_state, first_id) == &"p1:removed",
+		"golem should preserve pending progress after its first removal"
+	)
+	var first_events := first_result.get("events", []) as Array
+	_expect(
+		first_events.size() == 2 \
+				and (first_events[0] as Dictionary).get("reason") == "card_removed" \
+				and (first_events[1] as Dictionary).get("type") == "choice_progressed",
+		"golem first-step events should order removal before progress"
+	)
+	var mid_commands := RulesEngine.get_legal_commands(mid_state, &"p1", definitions)
+	var finish_commands := 0
+	for command: Dictionary in mid_commands:
+		if bool(command.get("skip", false)):
+			finish_commands += 1
+	_expect(
+		mid_commands.size() \
+				== (mid_state.effect_state.get("eligible_card_ids", []) as Array).size() \
+				and finish_commands == 1,
+		"golem first removal should leave remaining candidates plus one finish command"
+	)
+	var mid_snapshot := SnapshotCodec.encode(mid_state, "content-golem", "rules-golem")
+	var mid_decoded := SnapshotCodec.decode(mid_snapshot, "content-golem", "rules-golem")
+	_expect(
+		bool(mid_decoded.get("ok", false)) \
+				and CanonicalJson.stringify((mid_decoded["state"] as GameStateData).effect_state) \
+				== CanonicalJson.stringify(mid_state.effect_state),
+		"golem one-selected pending state should round-trip"
+	)
+	var mid_hash := CanonicalJson.sha256(mid_state.to_dictionary())
+	var repeated_result := RulesEngine.dispatch(
+		mid_state,
+		_command_envelope(mid_state, {
+			"type": "RESOLVE_CHOICE",
+			"choice_id": golem_choice_id,
+			"card_instance_id": str(first_id),
+			"skip": false,
+		}, "cmd-golem-repeat"),
+		definitions
+	)
+	_expect(
+		str(repeated_result.get("error", "")) == "choice_card_already_selected" \
+				and repeated_result.get("after_hash") == mid_hash,
+		"golem must reject selecting the same card twice without losing first-step progress"
+	)
+	var remaining_id := StringName("")
+	for raw_id: Variant in mid_state.effect_state.get("eligible_card_ids", []):
+		if str(raw_id) != str(first_id):
+			remaining_id = StringName(str(raw_id))
+			break
+	var moved_state := mid_state.clone_state()
+	var remaining_source := (moved_state.effect_state.get(
+		"eligible_card_sources", {}
+	) as Dictionary).get(str(remaining_id), {}) as Dictionary
+	var move_tamper := ZoneService.move_card(
+		moved_state,
+		remaining_id,
+		StringName(remaining_source.get("zone_id", "")),
+		&"p1:play-area"
+	)
+	_expect(bool(move_tamper.get("ok", false)), "golem moved-source fixture should mutate candidate")
+	var moved_hash := CanonicalJson.sha256(moved_state.to_dictionary())
+	var moved_result := RulesEngine.dispatch(
+		moved_state,
+		_command_envelope(moved_state, {
+			"type": "RESOLVE_CHOICE",
+			"choice_id": golem_choice_id,
+			"card_instance_id": str(remaining_id),
+			"skip": false,
+		}, "cmd-golem-moved"),
+		definitions
+	)
+	_expect(
+		str(moved_result.get("error", "")).begins_with("invalid_state:") \
+				and moved_result.get("before_hash") == moved_hash \
+				and moved_result.get("after_hash") == moved_hash,
+		"golem moved candidate must reject only that command atomically"
+	)
+	var owner_state := mid_state.clone_state()
+	(owner_state.cards[remaining_id] as Dictionary)["owner_id"] = "p2"
+	var owner_hash := CanonicalJson.sha256(owner_state.to_dictionary())
+	var owner_result := RulesEngine.dispatch(
+		owner_state,
+		_command_envelope(owner_state, {
+			"type": "RESOLVE_CHOICE",
+			"choice_id": golem_choice_id,
+			"card_instance_id": str(remaining_id),
+			"skip": false,
+		}, "cmd-golem-owner"),
+		definitions
+	)
+	_expect(
+		str(owner_result.get("error", "")).begins_with("invalid_state:") \
+				and owner_result.get("after_hash") == owner_hash,
+		"golem ownership tamper must preserve committed first-step progress"
+	)
+	var finish_command: Dictionary = {}
+	for command: Dictionary in mid_commands:
+		if bool(command.get("skip", false)):
+			finish_command = command
+			break
+	var one_result := RulesEngine.dispatch(
+		mid_state,
+		_command_envelope(mid_state, finish_command, "cmd-golem-finish-one"),
+		definitions
+	)
+	_expect(
+		bool(one_result.get("ok", false)) \
+				and (one_result["state"] as GameStateData).effect_state.is_empty() \
+				and int(((one_result.get("events", []) as Array)[0] as Dictionary) \
+				.get("selected_count", -1)) == 1 \
+				and not bool(((one_result.get("events", []) as Array)[0] as Dictionary) \
+				.get("skipped", true)),
+		"golem should allow completing after exactly one removal"
+	)
+	var second_envelope := _command_envelope(mid_state, {
+		"type": "RESOLVE_CHOICE",
+		"choice_id": golem_choice_id,
+		"card_instance_id": str(remaining_id),
+		"skip": false,
+	}, "cmd-golem-second")
+	var two_result := RulesEngine.dispatch(mid_state, second_envelope, definitions)
+	var repeated_two := RulesEngine.dispatch(
+		repeated_first["state"] as GameStateData, second_envelope, definitions
+	)
+	_expect(
+		bool(two_result.get("ok", false)) \
+				and (two_result["state"] as GameStateData).effect_state.is_empty() \
+				and ZoneService.find_card_zone(
+					two_result["state"] as GameStateData, remaining_id
+				) == &"p1:removed",
+		"golem should auto-complete after exactly two removals"
+	)
+	_expect(
+		two_result.get("after_hash") == repeated_two.get("after_hash"),
+		"golem final two-card hash should be deterministic"
+	)
+	var second_events := two_result.get("events", []) as Array
+	_expect(
+		second_events.size() == 3 \
+				and (second_events[0] as Dictionary).get("reason") == "card_removed" \
+				and (second_events[1] as Dictionary).get("type") == "choice_resolved" \
+				and int((second_events[1] as Dictionary).get("selected_count", -1)) == 2 \
+				and (second_events[2] as Dictionary).get("type") == "effect_resolved",
+		"golem final-step events should order removal, choice completion, then effect completion"
+	)
 
 
 func _test_gargoyle_recruit_choice() -> void:
@@ -2683,6 +3168,94 @@ func _test_discard_choice_hud_integration() -> void:
 			(app.session.state.zones[&"p1:removed"] as ZoneData).card_instance_ids.size() == 1,
 			"discard choice HUD should remove exactly one selected card"
 		)
+	app.queue_free()
+
+
+func _test_multi_zone_removal_hud_integration() -> void:
+	var packed := load("res://scenes/boot/main.tscn") as PackedScene
+	var app := packed.instantiate() as GameApp
+	root.add_child(app)
+	await process_frame
+	var expose_error := _expose_monster(
+		app.session.state,
+		&"card-monster-golem-01",
+		&"card-monster-rabbit-demon-01"
+	)
+	_expect(expose_error.is_empty(), "golem HUD fixture should expose the target")
+	(app.session.state.players[&"p1"] as PlayerStateData).turn_resources[&"combat"] = 6
+	var phase_result := app.session.end_phase()
+	_expect(bool(phase_result.get("ok", false)), "golem HUD fixture should enter combat")
+	var attack_result := app.session.attack_target(&"card-monster-golem-01", true)
+	_expect(bool(attack_result.get("ok", false)), "golem HUD should create multi-source choice")
+	await process_frame
+	var removal_buttons: Array[Button] = []
+	var completion_button: Button
+	var source_labels := {"hand": 0, "party": 0, "discard": 0}
+	for child: Node in app.hud.hand_actions.get_children():
+		if child is Button and (child as Button).text.begins_with("從自己的"):
+			removal_buttons.append(child as Button)
+		elif child is Button and (child as Button).text == "略過移除":
+			completion_button = child as Button
+		elif child is Label:
+			var label_text := (child as Label).text
+			if "來源：自己的手牌" in label_text:
+				source_labels.hand = int(source_labels.hand) + 1
+			elif "來源：自己的隊伍" in label_text:
+				source_labels.party = int(source_labels.party) + 1
+			elif "來源：自己的棄牌堆" in label_text:
+				source_labels.discard = int(source_labels.discard) + 1
+	_expect(
+		int(source_labels.hand) == 5 \
+				and int(source_labels.party) == 4 \
+				and int(source_labels.discard) == 1,
+		"golem HUD should label each remaining candidate with its actual source"
+	)
+	_expect(completion_button != null, "golem HUD should initially show skip removal")
+	_expect(
+		"可以從自己的手牌、隊伍或棄牌堆移除最多 2 張牌（已選 0/2）" \
+				in app.hud.hand_summary.text \
+				and "來源：自己的手牌、自己的隊伍、自己的棄牌堆" \
+				in app.hud.hand_summary.text,
+		"golem HUD should show complete multi-source prompt and initial progress"
+	)
+	if not removal_buttons.is_empty() and completion_button != null:
+		_expect(
+			removal_buttons[0].focus_neighbor_top == completion_button.get_path() \
+					and completion_button.focus_neighbor_bottom == removal_buttons[0].get_path(),
+			"golem pending focus should wrap inside choice controls"
+		)
+		removal_buttons[0].pressed.emit()
+		await process_frame
+		_expect(
+			int(app.session.state.effect_state.get("selected_count", -1)) == 1 \
+					and "（已選 1/2）" in app.hud.hand_summary.text,
+			"golem HUD should reproject progress after the first removal"
+		)
+		var remaining_buttons: Array[Button] = []
+		completion_button = null
+		for child: Node in app.hud.hand_actions.get_children():
+			if child is Button and (child as Button).text.begins_with("從自己的"):
+				remaining_buttons.append(child as Button)
+			elif child is Button and (child as Button).text == "完成移除（已選 1/2）":
+				completion_button = child as Button
+		_expect(
+			remaining_buttons.size() == removal_buttons.size() - 1,
+			"golem HUD should remove the selected card from projected candidates"
+		)
+		_expect(completion_button != null, "golem HUD should offer finish after one selection")
+		if not remaining_buttons.is_empty() and completion_button != null:
+			_expect(
+				remaining_buttons[0].focus_neighbor_top == completion_button.get_path() \
+						and completion_button.focus_neighbor_bottom \
+						== remaining_buttons[0].get_path(),
+				"golem progress focus should remain trapped"
+			)
+			completion_button.pressed.emit()
+			await process_frame
+			_expect(
+				app.session.state.effect_state.is_empty(),
+				"golem HUD finish should commit exactly one removal"
+			)
 	app.queue_free()
 
 

@@ -1,7 +1,7 @@
 {
   "manifest": {
     "pack_id": "base:vertical-slice",
-    "version": "0.12.0",
+    "version": "0.13.0",
     "includes_custom_adventurers": false
   },
   "definitions": [
@@ -70,6 +70,26 @@
       "presentation_id": "base:presentation/monster-skeleton"
     },
     {
+      "definition_id": "base:monster/monster-03",
+      "display_name": "蜥蜴人法師",
+      "card_type": "monster",
+      "copies": 3,
+      "combat": 6,
+      "purchase_power": 2,
+      "honor": 5,
+      "tags": ["enemy", "monster"],
+      "effects": [
+        {
+          "op": "choose_remove_card",
+          "amount": 1,
+          "source_zone_keys": ["hand", "party", "discard_pile"],
+          "timing": "on_defeat",
+          "optional": true
+        }
+      ],
+      "presentation_id": "base:presentation/monster-lizardfolk-mage"
+    },
+    {
       "definition_id": "base:monster/monster-04",
       "display_name": "奧術史萊姆",
       "card_type": "monster",
@@ -90,6 +110,26 @@
         }
       ],
       "presentation_id": "base:presentation/monster-arcane-slime"
+    },
+    {
+      "definition_id": "base:monster/monster-06",
+      "display_name": "哥雷姆",
+      "card_type": "monster",
+      "copies": 2,
+      "combat": 7,
+      "purchase_power": 2,
+      "honor": 5,
+      "tags": ["enemy", "monster"],
+      "effects": [
+        {
+          "op": "choose_remove_card",
+          "amount": 2,
+          "source_zone_keys": ["hand", "party", "discard_pile"],
+          "timing": "on_defeat",
+          "optional": true
+        }
+      ],
+      "presentation_id": "base:presentation/monster-golem"
     },
     {
       "definition_id": "base:monster/monster-07",
@@ -179,7 +219,7 @@
         {
           "op": "choose_remove_card",
           "amount": 1,
-          "source_zone_key": "hand",
+          "source_zone_keys": ["hand"],
           "timing": "on_defeat",
           "optional": true
         }
@@ -202,7 +242,7 @@
         {
           "op": "choose_remove_card",
           "amount": 1,
-          "source_zone_key": "discard_pile",
+          "source_zone_keys": ["discard_pile"],
           "timing": "on_defeat",
           "optional": true
         }
