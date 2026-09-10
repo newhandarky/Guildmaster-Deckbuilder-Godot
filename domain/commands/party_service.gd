@@ -21,7 +21,7 @@ static func get_legal_commands(
 		return commands
 	for card_instance_id: StringName in hand.card_instance_ids:
 		var definition := _definition_for_card(state, definitions, card_instance_id)
-		if definition != null and definition.card_type == &"adventurer":
+		if _is_adventurer(definition):
 			commands.append({
 				"type": "PLAY_ADVENTURER",
 				"actor_id": str(actor_id),
@@ -53,7 +53,7 @@ static func validate(
 	var definition := _definition_for_card(state, definitions, card_instance_id)
 	if definition == null:
 		return "missing_definition"
-	if definition.card_type != &"adventurer":
+	if not _is_adventurer(definition):
 		return "unsupported_card_type"
 	return ""
 
@@ -73,20 +73,11 @@ static func apply(
 	var party := state.zones[party_zone_id] as ZoneData
 	if party.card_instance_ids.size() >= BASE_PARTY_CAPACITY:
 		var outgoing_id: StringName = party.card_instance_ids[0]
-		var detach_error := _discard_attached_equipment(state, player, outgoing_id, events)
-		if not detach_error.is_empty():
-			return detach_error
-		var outgoing_result := ZoneService.move_card(
-			state,
-			outgoing_id,
-			party_zone_id,
-			StringName(player.zone_ids[&"discard_pile"])
+		var departure_error := discard_party_member_with_equipment(
+			state, player, outgoing_id, &"party_capacity", events
 		)
-		if not bool(outgoing_result.get("ok", false)):
-			return str(outgoing_result.get("error", "party_capacity_discard_failed"))
-		var outgoing_event: Dictionary = (outgoing_result.get("event", {}) as Dictionary).duplicate(true)
-		outgoing_event["reason"] = "party_capacity"
-		events.append(outgoing_event)
+		if not departure_error.is_empty():
+			return departure_error
 
 	var card_instance_id := StringName(command.get("card_instance_id", ""))
 	var move_result := ZoneService.move_card(
@@ -109,12 +100,15 @@ static func apply(
 	return ""
 
 
-static func _discard_attached_equipment(
+static func discard_party_member_with_equipment(
 	state: GameStateData,
 	player: PlayerStateData,
 	target_card_id: StringName,
+	reason: StringName,
 	events: Array[Dictionary]
 ) -> String:
+	if ZoneService.find_card_zone(state, target_card_id) != StringName(player.zone_ids[&"party"]):
+		return "party_member_not_in_party"
 	var target_card := state.cards[target_card_id] as Dictionary
 	var target_state := target_card.get("state", {}) as Dictionary
 	var equipment_ids := target_state.get("equipment_ids", []) as Array
@@ -133,10 +127,21 @@ static func _discard_attached_equipment(
 		if not bool(move_result.get("ok", false)):
 			return str(move_result.get("error", "equipment_departure_failed"))
 		var event: Dictionary = (move_result.get("event", {}) as Dictionary).duplicate(true)
-		event["reason"] = "equipped_adventurer_left_party"
+		event["reason"] = "%s_equipment" % reason
 		events.append(event)
 	target_state["equipment_ids"] = []
 	target_card["state"] = target_state
+	var outgoing_result := ZoneService.move_card(
+		state,
+		target_card_id,
+		StringName(player.zone_ids[&"party"]),
+		StringName(player.zone_ids[&"discard_pile"])
+	)
+	if not bool(outgoing_result.get("ok", false)):
+		return str(outgoing_result.get("error", "party_member_discard_failed"))
+	var outgoing_event: Dictionary = (outgoing_result.get("event", {}) as Dictionary).duplicate(true)
+	outgoing_event["reason"] = str(reason)
+	events.append(outgoing_event)
 	return ""
 
 
@@ -149,3 +154,7 @@ static func _definition_for_card(
 	if card == null:
 		return null
 	return definitions.get(StringName(card.get("definition_id", ""))) as CardDefinition
+
+
+static func _is_adventurer(definition: CardDefinition) -> bool:
+	return definition != null and &"adventurer" in definition.tags

@@ -28,6 +28,11 @@ func _run() -> void:
 	_test_equipment_replacement()
 	_test_effect_resolution_fifo()
 	_test_equipment_survives_rest()
+	_test_monster_supply_setup_and_anchor()
+	_test_combat_preview_and_reward()
+	_test_combat_optional_reward_skip()
+	_test_combat_rejection_is_atomic()
+	_test_combat_equipment_departure()
 	_test_supply_setup_and_determinism()
 	_test_purchase_and_rest_refill()
 	_test_purchase_rejection_is_atomic()
@@ -36,6 +41,7 @@ func _run() -> void:
 	_test_market_refresh_rejection_is_atomic()
 	_test_market_refresh_selection_order_is_deterministic()
 	await _test_market_refresh_hud_integration()
+	await _test_combat_hud_integration()
 	_test_play_adventurer_capacity_and_equipment_departure()
 	_test_use_item_draw_and_rest_cleanup()
 	_test_turn_rotation()
@@ -96,7 +102,7 @@ func _test_two_player_state() -> void:
 
 func _test_official_starting_setup() -> void:
 	var state := GameStateData.create_vertical_slice()
-	_expect(state.cards.size() == 35, "setup should create player cards, one monster, and fourteen market cards")
+	_expect(state.cards.size() == 37, "setup should create player cards, three monsters, and fourteen market cards")
 	for player_id: StringName in state.turn_order:
 		var player := state.players[player_id] as PlayerStateData
 		var party := state.zones[player.zone_ids[&"party"]] as ZoneData
@@ -365,6 +371,264 @@ func _test_equipment_survives_rest() -> void:
 	var resources := ResourceService.evaluate_player(state, &"p1", definitions)
 	_expect(int(resources.get("combat", 0)) == 7 and int(resources.get("purchase_power", 0)) == 4, "printed party, equipment, and hand resources should remain derivable after rest")
 	_expect(InvariantService.validate(state).is_empty(), "rest with persistent equipment should satisfy invariants")
+
+
+func _test_monster_supply_setup_and_anchor() -> void:
+	var state := GameStateData.create_vertical_slice(219)
+	var row := state.zones[SupplyService.MONSTER_ROW_ID] as ZoneData
+	var cycle := state.zones[SupplyService.MONSTER_CYCLE_ID] as ZoneData
+	_expect(row.card_instance_ids.size() == 3, "vertical slice should reveal three monsters")
+	_expect(cycle.card_instance_ids.is_empty(), "all three skeleton copies should begin face up")
+	_expect(
+		&"card-monster-skeleton-01" in row.card_instance_ids,
+		"monster cycle anchor should begin in the public row"
+	)
+	_expect(InvariantService.validate(state).is_empty(), "monster supply should satisfy continuity invariants")
+	var broken := state.clone_state()
+	(broken.zones[SupplyService.MONSTER_ROW_ID] as ZoneData).card_instance_ids.erase(
+		&"card-monster-skeleton-01"
+	)
+	(broken.zones[&"p1:discard-pile"] as ZoneData).card_instance_ids.append(
+		&"card-monster-skeleton-01"
+	)
+	_expect(
+		not InvariantService.validate(broken).is_empty(),
+		"moving the cycle anchor outside its supply should fail invariants"
+	)
+
+
+func _test_combat_preview_and_reward() -> void:
+	var definitions := _load_definitions()
+	var state := GameStateData.create_vertical_slice(221)
+	var phase_result := RulesEngine.dispatch(
+		state, _end_phase_envelope(state, "cmd-combat-setup"), definitions
+	)
+	_expect(bool(phase_result.get("ok", false)), "combat fixture should enter combat phase")
+	if not bool(phase_result.get("ok", false)):
+		return
+	state = phase_result["state"] as GameStateData
+	var preview := CombatService.preview_attack(
+		state, &"p1", &"card-monster-skeleton-01", definitions
+	)
+	_expect(bool(preview.get("legal", false)), "starter party should be able to defeat a skeleton")
+	_expect(int(preview.get("requirement", 0)) == 5, "skeleton should require five combat")
+	_expect(int(preview.get("total_combat", 0)) == 5, "combat preview should stop at exact threshold")
+	_expect(
+		preview.get("participant_ids", []) == [
+			"card-p1-starter-adventurer-01",
+			"card-p1-starter-adventurer-02",
+			"card-p1-starter-adventurer-03",
+			"card-p1-starter-adventurer-04",
+		],
+		"participants should be the shortest left-to-right prefix that reaches five"
+	)
+	var legal := RulesEngine.get_legal_commands(state, &"p1", definitions)
+	var attack_count := 0
+	for legal_command: Dictionary in legal:
+		if legal_command.get("type") == "ATTACK_TARGET":
+			attack_count += 1
+	_expect(attack_count == 6, "three skeletons should each expose claim and skip attack commands")
+	var command := {
+		"type": "ATTACK_TARGET",
+		"target_card_id": "card-monster-skeleton-01",
+		"claim_optional_reward": true,
+	}
+	var envelope := _command_envelope(state, command, "cmd-attack-skeleton")
+	var result := RulesEngine.dispatch(state, envelope, definitions)
+	var deterministic := RulesEngine.dispatch(state, envelope, definitions)
+	_expect(bool(result.get("ok", false)), "legal skeleton attack should commit")
+	_expect(result.get("after_hash") == deterministic.get("after_hash"), "combat should be deterministic")
+	if not bool(result.get("ok", false)):
+		return
+	var defeated := result["state"] as GameStateData
+	var player := defeated.players[&"p1"] as PlayerStateData
+	var party := defeated.zones[player.zone_ids[&"party"]] as ZoneData
+	_expect(
+		party.card_instance_ids == [&"card-p1-starter-adventurer-05"],
+		"only non-participating party members should remain"
+	)
+	_expect(
+		int(player.turn_resources.get("purchase_power", 0)) == 4,
+		"claiming the skeleton reward should grant four temporary purchase power"
+	)
+	_expect(
+		int(ResourceService.evaluate_player(defeated, &"p1", definitions).get("purchase_power", 0)) == 8,
+		"reward should combine with four summoning stones"
+	)
+	_expect(
+		(defeated.zones[SupplyService.MONSTER_ROW_ID] as ZoneData).card_instance_ids.size() == 3,
+		"defeated skeleton should return through the cycle and refill the row"
+	)
+	_expect(
+		ZoneService.find_card_zone(defeated, &"card-monster-skeleton-01") == SupplyService.MONSTER_ROW_ID,
+		"cycle skeleton must never enter a player discard pile"
+	)
+	_expect(int(player.turn_facts.get(&"defeated_monster_count", 0)) == 1, "combat should update turn facts")
+	_expect(_events_contain(result["events"], "combat_declared"), "combat should emit its locked context")
+	_expect(_events_contain(result["events"], "enemy_defeated"), "combat should emit enemy defeat")
+	_expect(InvariantService.validate(defeated).is_empty(), "combat should preserve all invariants")
+	var decoded := SnapshotCodec.decode(
+		SnapshotCodec.encode(defeated, "content:combat", "rules:combat")
+	)
+	_expect(bool(decoded.get("ok", false)), "post-combat snapshot should round trip")
+	if bool(decoded.get("ok", false)):
+		var restored := decoded["state"] as GameStateData
+		_expect(
+			InvariantService.validate(restored).is_empty(),
+			"restored combat snapshot should preserve monster continuity"
+		)
+		_expect(
+			CanonicalJson.sha256(restored.to_dictionary())
+				== CanonicalJson.sha256(defeated.to_dictionary()),
+			"post-combat snapshot should preserve the exact state hash"
+		)
+	_expect(
+		not _commands_contain(RulesEngine.get_legal_commands(defeated, &"p1", definitions), "ATTACK_TARGET"),
+		"remaining combat one should not expose another attack"
+	)
+	defeated.phase = &"action2"
+	var departed_starter := &"card-p1-starter-adventurer-01"
+	ZoneService.move_card(
+		defeated,
+		departed_starter,
+		&"p1:discard-pile",
+		&"p1:hand"
+	)
+	var starter_can_return := false
+	for legal_command: Dictionary in RulesEngine.get_legal_commands(defeated, &"p1", definitions):
+		if legal_command.get("type") == "PLAY_ADVENTURER" \
+				and legal_command.get("card_instance_id") == str(departed_starter):
+			starter_can_return = true
+	_expect(starter_can_return, "departed starter adventurers should be playable again from hand")
+
+
+func _test_combat_optional_reward_skip() -> void:
+	var definitions := _load_definitions()
+	var state := GameStateData.create_vertical_slice(225)
+	var phase_result := RulesEngine.dispatch(
+		state, _end_phase_envelope(state, "cmd-combat-skip-setup"), definitions
+	)
+	if not bool(phase_result.get("ok", false)):
+		_expect(false, "skip reward fixture should enter combat")
+		return
+	state = phase_result["state"] as GameStateData
+	var result := RulesEngine.dispatch(
+		state,
+		_command_envelope(state, {
+			"type": "ATTACK_TARGET",
+			"target_card_id": "card-monster-skeleton-02",
+			"claim_optional_reward": false,
+		}, "cmd-attack-skip-reward"),
+		definitions
+	)
+	_expect(bool(result.get("ok", false)), "optional skeleton reward should be skippable")
+	if bool(result.get("ok", false)):
+		var skipped := result["state"] as GameStateData
+		var player := skipped.players[&"p1"] as PlayerStateData
+		_expect(
+			int(player.turn_resources.get("purchase_power", 0)) == 0,
+			"skipping reward should not grant temporary purchase power"
+		)
+
+
+func _test_combat_rejection_is_atomic() -> void:
+	var definitions := _load_definitions()
+	var wrong_phase := GameStateData.create_vertical_slice(227)
+	var command := {
+		"type": "ATTACK_TARGET",
+		"target_card_id": "card-monster-skeleton-01",
+		"claim_optional_reward": true,
+	}
+	var wrong_hash := CanonicalJson.sha256(wrong_phase.to_dictionary())
+	var wrong_result := RulesEngine.dispatch(
+		wrong_phase,
+		_command_envelope(wrong_phase, command, "cmd-attack-wrong-phase"),
+		definitions
+	)
+	_expect(str(wrong_result.get("error", "")) == "wrong_phase", "attack must be combat-phase only")
+	_expect(CanonicalJson.sha256(wrong_phase.to_dictionary()) == wrong_hash, "wrong-phase attack must be atomic")
+
+	var insufficient := GameStateData.create_vertical_slice(228)
+	for starter_number in range(1, 5):
+		ZoneService.move_card(
+			insufficient,
+			StringName("card-p1-starter-adventurer-%02d" % starter_number),
+			&"p1:party",
+			&"p1:discard-pile"
+		)
+	var phase_result := RulesEngine.dispatch(
+		insufficient,
+		_end_phase_envelope(insufficient, "cmd-insufficient-combat-setup"),
+		definitions
+	)
+	if not bool(phase_result.get("ok", false)):
+		_expect(false, "insufficient fixture should enter combat")
+		return
+	insufficient = phase_result["state"] as GameStateData
+	var before_hash := CanonicalJson.sha256(insufficient.to_dictionary())
+	var result := RulesEngine.dispatch(
+		insufficient,
+		_command_envelope(insufficient, command, "cmd-insufficient-combat"),
+		definitions
+	)
+	_expect(str(result.get("error", "")) == "insufficient_combat", "insufficient attack should be rejected")
+	_expect(CanonicalJson.sha256(insufficient.to_dictionary()) == before_hash, "failed attack must preserve state and RNG")
+
+
+func _test_combat_equipment_departure() -> void:
+	var definitions := _load_definitions()
+	var state := GameStateData.create_vertical_slice(230)
+	var equip_result := RulesEngine.dispatch(
+		state,
+		_equip_item_envelope(
+			state,
+			&"card-p1-spirit-crystal-01",
+			&"card-p1-starter-adventurer-01",
+			"cmd-combat-equip"
+		),
+		definitions
+	)
+	if not bool(equip_result.get("ok", false)):
+		_expect(false, "combat equipment fixture should equip")
+		return
+	state = equip_result["state"] as GameStateData
+	var phase_result := RulesEngine.dispatch(
+		state, _end_phase_envelope(state, "cmd-combat-equip-setup"), definitions
+	)
+	if not bool(phase_result.get("ok", false)):
+		_expect(false, "combat equipment fixture should enter combat")
+		return
+	state = phase_result["state"] as GameStateData
+	var preview := CombatService.preview_attack(
+		state, &"p1", &"card-monster-skeleton-03", definitions
+	)
+	_expect(
+		(preview.get("participant_ids", []) as Array).size() == 3,
+		"equipped combat should reach five with the first three participants"
+	)
+	var result := RulesEngine.dispatch(
+		state,
+		_command_envelope(state, {
+			"type": "ATTACK_TARGET",
+			"target_card_id": "card-monster-skeleton-03",
+			"claim_optional_reward": true,
+		}, "cmd-combat-equipped-attack"),
+		definitions
+	)
+	_expect(bool(result.get("ok", false)), "equipped skeleton attack should commit")
+	if not bool(result.get("ok", false)):
+		return
+	var defeated := result["state"] as GameStateData
+	_expect(
+		ZoneService.find_card_zone(defeated, &"card-p1-spirit-crystal-01") == &"p1:discard-pile",
+		"equipment should depart with its combat participant"
+	)
+	var crystal := defeated.cards[&"card-p1-spirit-crystal-01"] as Dictionary
+	_expect(
+		not (crystal.get("state", {}) as Dictionary).has("equipped_to"),
+		"combat departure should clear equipment attachment"
+	)
+	_expect(InvariantService.validate(defeated).is_empty(), "equipped combat should preserve invariants")
 
 
 func _test_supply_setup_and_determinism() -> void:
@@ -656,6 +920,25 @@ func _test_market_refresh_hud_integration() -> void:
 	_expect(refresh_cost_buttons == 5, "purchase HUD should expose each hand card as refresh cost")
 	_expect(refresh_selectors == 6, "purchase HUD should expose all six public cards for refresh")
 	_expect(refresh_confirm_buttons == 2, "purchase HUD should expose one confirmation per row")
+	app.queue_free()
+
+
+func _test_combat_hud_integration() -> void:
+	var packed := load("res://scenes/boot/main.tscn") as PackedScene
+	var app := packed.instantiate() as GameApp
+	root.add_child(app)
+	await process_frame
+	var result := app.session.end_phase()
+	_expect(bool(result.get("ok", false)), "combat HUD fixture should enter combat phase")
+	var attack_buttons := 0
+	var preview_labels := 0
+	for child: Node in app.hud.market_actions.get_children():
+		if child is Button and (child as Button).text.begins_with("討伐"):
+			attack_buttons += 1
+		elif child is Label and "參戰：" in (child as Label).text:
+			preview_labels += 1
+	_expect(attack_buttons == 6, "combat HUD should show claim and skip for each skeleton")
+	_expect(preview_labels == 3, "combat HUD should preview participants for each target")
 	app.queue_free()
 
 

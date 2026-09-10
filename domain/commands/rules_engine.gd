@@ -26,6 +26,7 @@ static func get_legal_commands(
 	commands.append_array(EquipmentService.get_legal_commands(state, actor_id, definitions))
 	commands.append_array(PartyService.get_legal_commands(state, actor_id, definitions))
 	commands.append_array(ItemService.get_legal_commands(state, actor_id, definitions))
+	commands.append_array(CombatService.get_legal_commands(state, actor_id, definitions))
 	commands.append_array(PurchaseService.get_legal_commands(state, actor_id, definitions))
 	commands.append_array(MarketRefreshService.get_legal_commands(state, actor_id))
 	return commands
@@ -60,6 +61,8 @@ static func dispatch(
 			error = PartyService.apply(draft, actor_id, command, definitions, events)
 		&"USE_ITEM":
 			error = ItemService.apply(draft, actor_id, command, definitions, events)
+		&"ATTACK_TARGET":
+			error = CombatService.apply(draft, actor_id, command, definitions, events)
 		&"BUY_CARD":
 			error = PurchaseService.apply(draft, actor_id, command, definitions, events)
 		&"REFRESH_MARKET":
@@ -126,6 +129,8 @@ static func _validate_command(
 			return PartyService.validate(state, actor_id, command, definitions)
 		&"USE_ITEM":
 			return ItemService.validate(state, actor_id, command, definitions)
+		&"ATTACK_TARGET":
+			return CombatService.validate(state, actor_id, command, definitions)
 		&"BUY_CARD":
 			return PurchaseService.validate(state, actor_id, command, definitions)
 		&"REFRESH_MARKET":

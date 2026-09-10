@@ -18,6 +18,7 @@ func _ready() -> void:
 	hud.equip_item_requested.connect(_on_equip_item_requested)
 	hud.play_adventurer_requested.connect(_on_play_adventurer_requested)
 	hud.use_item_requested.connect(_on_use_item_requested)
+	hud.attack_target_requested.connect(_on_attack_target_requested)
 	hud.buy_card_requested.connect(_on_buy_card_requested)
 	hud.refresh_market_requested.connect(_on_refresh_market_requested)
 	hud.skip_animation_requested.connect(animation_director.skip_all)
@@ -54,6 +55,10 @@ func _on_play_adventurer_requested(card_instance_id: StringName) -> void:
 
 func _on_use_item_requested(card_instance_id: StringName) -> void:
 	session.use_item(card_instance_id)
+
+
+func _on_attack_target_requested(target_card_id: StringName, claim_optional_reward: bool) -> void:
+	session.attack_target(target_card_id, claim_optional_reward)
 
 
 func _on_buy_card_requested(card_instance_id: StringName, source_row_id: StringName) -> void:

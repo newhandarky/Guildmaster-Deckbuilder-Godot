@@ -81,6 +81,25 @@ static func _validate_supply_zones(state: GameStateData, errors: PackedStringArr
 			errors.append("Missing supply deck %s" % deck_zone_id)
 		elif deck.kind != &"ordered_deck" or deck.visibility != &"hidden":
 			errors.append("Supply deck %s must be a hidden ordered deck" % deck_zone_id)
+	var monster_row := state.zones.get(SupplyService.MONSTER_ROW_ID) as ZoneData
+	var monster_cycle := state.zones.get(SupplyService.MONSTER_CYCLE_ID) as ZoneData
+	if monster_row == null:
+		errors.append("Missing monster row")
+	elif monster_row.kind != &"face_up_row" or monster_row.visibility != &"public":
+		errors.append("Monster row must be a public face-up row")
+	elif monster_row.card_instance_ids.size() > SupplyService.MONSTER_ROW_SIZE:
+		errors.append("Monster row exceeds capacity")
+	if monster_cycle == null:
+		errors.append("Missing monster cycle")
+	elif monster_cycle.kind != &"ordered_deck" or monster_cycle.visibility != &"hidden":
+		errors.append("Monster cycle must be a hidden ordered deck")
+	if monster_row != null and monster_cycle != null:
+		var anchor_id := StringName(monster_cycle.metadata.get("cycle_anchor", ""))
+		if anchor_id.is_empty():
+			errors.append("Monster cycle requires an anchor")
+		elif anchor_id not in monster_row.card_instance_ids \
+				and anchor_id not in monster_cycle.card_instance_ids:
+			errors.append("Monster cycle anchor is not continuous")
 
 
 static func _validate_equipment_attachments(

@@ -21,20 +21,9 @@ static func evaluate_player(
 
 	for party_index in party.card_instance_ids.size():
 		var card_instance_id := party.card_instance_ids[party_index]
-		combat += _printed_value(state, definitions, card_instance_id, &"combat")
-		combat += _continuous_combat_bonus(
-			state,
-			definitions,
-			card_instance_id,
-			party_index,
-			party
+		combat += evaluate_party_member_combat(
+			state, definitions, card_instance_id, party_index, party
 		)
-	for card_instance_id: StringName in equipment.card_instance_ids:
-		var card := state.cards.get(card_instance_id) as Dictionary
-		var card_state := card.get("state", {}) as Dictionary if card != null else {}
-		if not StringName(card_state.get("equipped_to", "")).is_empty():
-			combat += _printed_value(state, definitions, card_instance_id, &"combat")
-			combat += _continuous_combat_bonus(state, definitions, card_instance_id, -1, party)
 	for card_instance_id: StringName in hand.card_instance_ids:
 		purchase_power += _printed_value(state, definitions, card_instance_id, &"purchase_power")
 	purchase_power = maxi(0, purchase_power - player.spent_purchase_power)
@@ -44,6 +33,37 @@ static func evaluate_player(
 		"purchase_power": purchase_power,
 		"spent_purchase_power": player.spent_purchase_power,
 	}
+
+
+static func evaluate_party_member_combat(
+	state: GameStateData,
+	definitions: Dictionary,
+	card_instance_id: StringName,
+	party_index: int,
+	party: ZoneData = null
+) -> int:
+	if party == null:
+		var card := state.cards.get(card_instance_id) as Dictionary
+		if card == null:
+			return 0
+		var owner := state.players.get(StringName(card.get("owner_id", ""))) as PlayerStateData
+		if owner == null:
+			return 0
+		party = state.zones.get(owner.zone_ids.get(&"party", &"")) as ZoneData
+	if party == null or party_index < 0 or party_index >= party.card_instance_ids.size() \
+			or party.card_instance_ids[party_index] != card_instance_id:
+		return 0
+	var combat := _printed_value(state, definitions, card_instance_id, &"combat")
+	combat += _continuous_combat_bonus(
+		state, definitions, card_instance_id, party_index, party
+	)
+	var card := state.cards.get(card_instance_id) as Dictionary
+	var card_state := card.get("state", {}) as Dictionary if card != null else {}
+	for raw_equipment_id: Variant in card_state.get("equipment_ids", []) as Array:
+		var equipment_id := StringName(str(raw_equipment_id))
+		combat += _printed_value(state, definitions, equipment_id, &"combat")
+		combat += _continuous_combat_bonus(state, definitions, equipment_id, -1, party)
+	return maxi(0, combat)
 
 
 static func _printed_value(

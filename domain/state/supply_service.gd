@@ -5,7 +5,10 @@ const RECRUIT_DECK_ID := &"shared:adventurer-supply"
 const RECRUIT_ROW_ID := &"shared:recruit-row"
 const SHOP_DECK_ID := &"shared:resource-supply"
 const SHOP_ROW_ID := &"shared:shop-row"
+const MONSTER_CYCLE_ID := &"shared:monster-cycle"
+const MONSTER_ROW_ID := &"shared:monster-row"
 const ROW_SIZE := 3
+const MONSTER_ROW_SIZE := 3
 
 
 static func refill_vertical_slice_rows(state: GameStateData, events: Array[Dictionary]) -> String:
@@ -24,7 +27,8 @@ static func refill_row(
 	deck_zone_id: StringName,
 	row_zone_id: StringName,
 	target_size: int,
-	events: Array[Dictionary]
+	events: Array[Dictionary],
+	announce_depletion: bool = true
 ) -> String:
 	var deck := state.zones.get(deck_zone_id) as ZoneData
 	var row := state.zones.get(row_zone_id) as ZoneData
@@ -40,7 +44,7 @@ static func refill_row(
 		event["reason"] = "supply_refill"
 		events.append(event)
 		moved_count += 1
-	if moved_count > 0 \
+	if announce_depletion and moved_count > 0 \
 			and deck.card_instance_ids.is_empty() \
 			and not bool(deck.metadata.get("depletion_announced", false)):
 		deck.metadata["depletion_announced"] = true
@@ -50,3 +54,32 @@ static func refill_row(
 			"row_zone_id": str(row_zone_id),
 		})
 	return ""
+
+
+static func cycle_defeated_monster(
+	state: GameStateData,
+	card_instance_id: StringName,
+	events: Array[Dictionary]
+) -> String:
+	if ZoneService.find_card_zone(state, card_instance_id) != MONSTER_ROW_ID:
+		return "monster_not_in_row"
+	var move_result := ZoneService.move_card(
+		state,
+		card_instance_id,
+		MONSTER_ROW_ID,
+		MONSTER_CYCLE_ID,
+		0
+	)
+	if not bool(move_result.get("ok", false)):
+		return str(move_result.get("error", "monster_cycle_failed"))
+	var move_event: Dictionary = (move_result.get("event", {}) as Dictionary).duplicate(true)
+	move_event["reason"] = "monster_cycle_bottom"
+	events.append(move_event)
+	return refill_row(
+		state,
+		MONSTER_CYCLE_ID,
+		MONSTER_ROW_ID,
+		MONSTER_ROW_SIZE,
+		events,
+		false
+	)

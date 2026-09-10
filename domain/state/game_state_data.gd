@@ -6,8 +6,8 @@ const PlayerStateDataType = preload("res://domain/state/player_state_data.gd")
 
 var schema_version: int = 1
 var game_id: StringName = &"game-demo-001"
-var content_version: String = "0.5.0"
-var ruleset_version: String = "0.5.0"
+var content_version: String = "0.6.0"
+var ruleset_version: String = "0.6.0"
 var seed_value: int = 20260909
 var rng_state: int = 0
 var revision: int = 0
@@ -43,13 +43,36 @@ static func create_vertical_slice(seed: int = 20260909) -> GameStateData:
 			"owner_id": "",
 			"state": {"target_id": "target-monster-01"},
 		},
+		&"card-monster-skeleton-02": {
+			"instance_id": "card-monster-skeleton-02",
+			"definition_id": "base:monster/monster-01",
+			"owner_id": "",
+			"state": {"target_id": "target-monster-02"},
+		},
+		&"card-monster-skeleton-03": {
+			"instance_id": "card-monster-skeleton-03",
+			"definition_id": "base:monster/monster-01",
+			"owner_id": "",
+			"state": {"target_id": "target-monster-03"},
+		},
 	}
 	for player_id: StringName in state.turn_order:
 		var player := state.players[player_id] as PlayerStateData
 		_add_player_zones(state, player)
 		_add_official_starting_cards(state, player)
-	var monsters := ZoneDataType.new(&"shared:monster-row", &"face_up_row", &"public")
-	monsters.card_instance_ids.append(&"card-monster-skeleton-01")
+	var monster_cycle := ZoneDataType.new(
+		SupplyService.MONSTER_CYCLE_ID,
+		&"ordered_deck",
+		&"hidden"
+	)
+	monster_cycle.metadata = {"cycle_anchor": "card-monster-skeleton-01"}
+	state.zones[monster_cycle.zone_id] = monster_cycle
+	var monsters := ZoneDataType.new(SupplyService.MONSTER_ROW_ID, &"face_up_row", &"public")
+	monsters.card_instance_ids.assign([
+		&"card-monster-skeleton-01",
+		&"card-monster-skeleton-02",
+		&"card-monster-skeleton-03",
+	])
 	monsters.metadata = {"cycle_anchor": "card-monster-skeleton-01"}
 	state.zones[monsters.zone_id] = monsters
 	_add_vertical_slice_supplies(state)

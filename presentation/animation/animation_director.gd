@@ -16,6 +16,8 @@ func play_events(events: Array[Dictionary]) -> void:
 		match StringName(event.get("type", "")):
 			&"phase_changed":
 				_pulse_all()
+			&"enemy_defeated":
+				play_selection(&"card-monster-skeleton-01")
 			_:
 				pass
 	if _active_tweens.is_empty():

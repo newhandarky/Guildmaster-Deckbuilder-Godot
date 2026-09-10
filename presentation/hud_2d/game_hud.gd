@@ -6,6 +6,7 @@ signal skip_animation_requested
 signal equip_item_requested(card_instance_id: StringName, target_card_id: StringName)
 signal play_adventurer_requested(card_instance_id: StringName)
 signal use_item_requested(card_instance_id: StringName)
+signal attack_target_requested(target_card_id: StringName, claim_optional_reward: bool)
 signal buy_card_requested(card_instance_id: StringName, source_row_id: StringName)
 signal refresh_market_requested(
 	discard_card_id: StringName,
@@ -82,6 +83,12 @@ func show_events(events: Array[Dictionary]) -> void:
 		return
 	for index in range(events.size() - 1, -1, -1):
 		var event := events[index] as Dictionary
+		if event.get("type") == "enemy_defeated":
+			event_label.text = "討伐成功：%s（%d 名參戰者）" % [
+				_card_display_name(str(event.get("target_card_id", ""))),
+				(event.get("participant_ids", []) as Array).size(),
+			]
+			return
 		if event.get("type") == "market_refreshed":
 			event_label.text = "市場刷新完成：已更換 %d 張公開卡" % (
 				(event.get("returned_card_ids", []) as Array).size()
@@ -266,6 +273,7 @@ func _rebuild_market(state: Dictionary) -> void:
 	var refresh_command := _find_refresh_command(legal_commands)
 	var refresh_rows := refresh_command.get("rows", {}) as Dictionary
 	var market_buttons: Array[Button] = []
+	var attack_target_count := _append_combat_actions(legal_commands, market_buttons)
 	var row_specs := [
 		["shared:recruit-row", "招募區"],
 		["shared:shop-row", "商店"],
@@ -325,12 +333,15 @@ func _rebuild_market(state: Dictionary) -> void:
 			confirm_button.pressed.connect(_on_refresh_confirmed.bind(StringName(row_id)))
 			market_actions.add_child(confirm_button)
 			market_buttons.append(confirm_button)
-	market_summary.text = "公開卡：%d　%s" % [
-		total_cards,
-		"選 1～3 張並從手牌選 1 張作為刷新代價"
-		if not refresh_command.is_empty()
-		else "購買只在購買階段開放",
-	]
+	if attack_target_count > 0:
+		market_summary.text = "可討伐目標：%d　參戰者採剛好達標的隊伍前綴" % attack_target_count
+	else:
+		market_summary.text = "公開卡：%d　%s" % [
+			total_cards,
+			"選 1～3 張並從手牌選 1 張作為刷新代價"
+			if not refresh_command.is_empty()
+			else "購買只在購買階段開放",
+		]
 
 	skip_button.focus_neighbor_right = NodePath()
 	for index in market_buttons.size():
@@ -370,6 +381,47 @@ func _find_refresh_command(commands: Array) -> Dictionary:
 		if raw_command is Dictionary and (raw_command as Dictionary).get("type") == "REFRESH_MARKET":
 			return raw_command as Dictionary
 	return {}
+
+
+func _append_combat_actions(commands: Array, action_buttons: Array[Button]) -> int:
+	var attack_commands: Array[Dictionary] = []
+	for raw_command: Variant in commands:
+		if raw_command is Dictionary and (raw_command as Dictionary).get("type") == "ATTACK_TARGET":
+			attack_commands.append(raw_command as Dictionary)
+	if attack_commands.is_empty():
+		return 0
+	var title := Label.new()
+	title.text = "討伐目標"
+	title.add_theme_color_override("font_color", Color(0.95, 0.78, 0.26))
+	market_actions.add_child(title)
+	var rendered_targets: Dictionary = {}
+	for command: Dictionary in attack_commands:
+		var target_id := str(command.get("target_card_id", ""))
+		var preview := command.get("preview", {}) as Dictionary
+		if not rendered_targets.has(target_id):
+			rendered_targets[target_id] = true
+			var participant_names: Array[String] = []
+			for raw_participant_id: Variant in preview.get("participant_ids", []):
+				participant_names.append(_card_display_name(str(raw_participant_id)))
+			var preview_label := Label.new()
+			preview_label.text = "%s｜需求 %d｜投入 %d\n參戰：%s" % [
+				_card_display_name(target_id),
+				int(preview.get("requirement", 0)),
+				int(preview.get("total_combat", 0)),
+				"、".join(participant_names),
+			]
+			preview_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			market_actions.add_child(preview_label)
+		var claim_reward := bool(command.get("claim_optional_reward", true))
+		var attack_button := Button.new()
+		attack_button.text = "討伐並領取 +4 購買力" if claim_reward else "討伐並略過獎勵"
+		attack_button.custom_minimum_size = Vector2(0.0, 36.0)
+		attack_button.pressed.connect(
+			attack_target_requested.emit.bind(StringName(target_id), claim_reward)
+		)
+		market_actions.add_child(attack_button)
+		action_buttons.append(attack_button)
+	return rendered_targets.size()
 
 
 func _on_refresh_cost_selected(card_instance_id: StringName) -> void:

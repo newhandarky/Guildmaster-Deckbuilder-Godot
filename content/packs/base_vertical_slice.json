@@ -1,7 +1,7 @@
 {
   "manifest": {
     "pack_id": "base:vertical-slice",
-    "version": "0.5.0",
+    "version": "0.6.0",
     "includes_custom_adventurers": false
   },
   "definitions": [
@@ -65,7 +65,7 @@
       "honor": null,
       "tags": ["enemy", "monster", "cycle_anchor"],
       "effects": [
-        {"op": "grant_purchase_power", "amount": 4, "optional": true}
+        {"op": "grant_purchase_power", "amount": 4, "timing": "on_defeat", "optional": true}
       ],
       "presentation_id": "base:presentation/monster-skeleton"
     },
