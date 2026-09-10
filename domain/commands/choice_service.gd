@@ -9,10 +9,15 @@ static func get_legal_commands(
 	var commands: Array[Dictionary] = []
 	var choice := state.effect_state
 	if StringName(choice.get("type", "")) != &"pending_choice" \
-			or StringName(choice.get("actor_id", "")) != actor_id:
+			or _required_actor_id(choice) != actor_id:
 		return commands
 	var selected_card_ids := choice.get("selected_card_ids", []) as Array
-	for raw_card_id: Variant in choice.get("eligible_card_ids", []):
+	var candidate_ids := (
+		choice.get("remaining_card_ids", []) as Array
+		if StringName(choice.get("op", "")) == &"draft_gain_card"
+		else choice.get("eligible_card_ids", []) as Array
+	)
+	for raw_card_id: Variant in candidate_ids:
 		if str(raw_card_id) in selected_card_ids:
 			continue
 		commands.append({
@@ -24,7 +29,8 @@ static func get_legal_commands(
 			"skip": false,
 		})
 	var selected_count := int(choice.get("selected_count", selected_card_ids.size()))
-	if selected_count >= int(choice.get("min_selections", 1)):
+	if StringName(choice.get("op", "")) != &"draft_gain_card" \
+			and selected_count >= int(choice.get("min_selections", 1)):
 		commands.append({
 			"type": "RESOLVE_CHOICE",
 			"actor_id": str(actor_id),
@@ -45,7 +51,7 @@ static func validate(
 	var choice := state.effect_state
 	if StringName(choice.get("type", "")) != &"pending_choice":
 		return "no_pending_choice"
-	if StringName(choice.get("actor_id", "")) != actor_id:
+	if _required_actor_id(choice) != actor_id:
 		return "wrong_choice_actor"
 	if str(command.get("choice_id", "")) != str(choice.get("choice_id", "")):
 		return "wrong_choice_id"
@@ -53,9 +59,12 @@ static func validate(
 		return "invalid_choice_skip"
 	var skip := bool(command.get("skip", false))
 	var card_instance_id := StringName(command.get("card_instance_id", ""))
+	var operation := StringName(choice.get("op", ""))
 	var selected_card_ids := choice.get("selected_card_ids", []) as Array
 	var selected_count := int(choice.get("selected_count", selected_card_ids.size()))
 	if skip:
+		if operation == &"draft_gain_card":
+			return "choice_required"
 		if selected_count < int(choice.get("min_selections", 1)):
 			return "choice_required"
 		if not card_instance_id.is_empty():
@@ -65,14 +74,15 @@ static func validate(
 		return "missing_choice_card"
 	if str(card_instance_id) in selected_card_ids:
 		return "choice_card_already_selected"
-	if selected_count >= int(choice.get("max_selections", 1)):
+	if operation != &"draft_gain_card" \
+			and selected_count >= int(choice.get("max_selections", 1)):
 		return "choice_selection_limit_reached"
 	if not str(card_instance_id) in (choice.get("eligible_card_ids", []) as Array):
 		return "ineligible_choice_card"
 	var card := state.cards.get(card_instance_id) as Dictionary
 	if card == null:
 		return "missing_choice_card"
-	match StringName(choice.get("op", "")):
+	match operation:
 		&"choose_remove_card":
 			var source_record := (choice.get("eligible_card_sources", {}) as Dictionary).get(
 				str(card_instance_id), {}
@@ -107,6 +117,46 @@ static func validate(
 				return "choice_card_wrong_type"
 			if int(definition.cost) > int(choice.get("max_cost", -1)):
 				return "choice_card_cost_exceeded"
+		&"draft_gain_card":
+			if not str(card_instance_id) in (choice.get("remaining_card_ids", []) as Array):
+				return "ineligible_choice_card"
+			var source_effect := choice.get("source_effect", {}) as Dictionary
+			if StringName(source_effect.get("op", "")) != &"draft_gain_card" \
+					or StringName(source_effect.get("source_deck_zone_id", "")) \
+					!= StringName(choice.get("source_deck_zone_id", "")) \
+					or StringName(source_effect.get("choice_zone_id", "")) \
+					!= StringName(choice.get("choice_zone_id", "")) \
+					or StringName(source_effect.get("destination_zone_key", "")) \
+					!= StringName(choice.get("destination_zone_key", "")):
+				return "invalid_choice_source"
+			var source_deck := state.zones.get(
+				StringName(choice.get("source_deck_zone_id", ""))
+			) as ZoneData
+			var choice_zone := state.zones.get(
+				StringName(choice.get("choice_zone_id", ""))
+			) as ZoneData
+			if source_deck == null or source_deck.kind != &"ordered_deck" \
+					or source_deck.visibility != &"hidden" or choice_zone == null \
+					or choice_zone.kind != &"face_up_row" or choice_zone.visibility != &"public" \
+					or not bool(choice_zone.metadata.get("temporary_choice_zone", false)) \
+					or StringName(choice.get("source_zone_id", "")) != choice_zone.zone_id:
+				return "invalid_choice_source"
+			if ZoneService.find_card_zone(state, card_instance_id) \
+					!= StringName(choice.get("choice_zone_id", "")):
+				return "choice_card_moved"
+			if not StringName(card.get("owner_id", "")).is_empty():
+				return "choice_card_already_owned"
+			if StringName(choice.get("destination_zone_key", "")) != &"hand":
+				return "invalid_choice_destination"
+			var destination_player := state.players.get(actor_id) as PlayerStateData
+			if destination_player == null \
+					or not state.zones.has(destination_player.zone_ids.get(&"hand", &"")):
+				return "invalid_choice_destination"
+			var selection_order := choice.get("selection_order", []) as Array
+			var selection_index := int(choice.get("selection_index", -1))
+			if selection_index < 0 or selection_index >= selection_order.size() \
+					or StringName(str(selection_order[selection_index])) != actor_id:
+				return "wrong_choice_actor"
 		_:
 			return "unsupported_choice_operation"
 	return ""
@@ -126,6 +176,8 @@ static func apply(
 	var skip := bool(command.get("skip", false))
 	var card_instance_id := StringName(command.get("card_instance_id", ""))
 	var operation := StringName(choice.get("op", ""))
+	if operation == &"draft_gain_card":
+		return _apply_draft_gain(state, actor_id, choice, card_instance_id, events)
 	var resolved_source_record: Dictionary = {}
 	if not skip:
 		if operation == &"choose_remove_card":
@@ -217,6 +269,94 @@ static func apply(
 		"selected_count": selected_count if StringName(choice.get("op", "")) == &"choose_remove_card" else (0 if skip else 1),
 	})
 	return ""
+
+
+static func _apply_draft_gain(
+	state: GameStateData,
+	actor_id: StringName,
+	choice: Dictionary,
+	card_instance_id: StringName,
+	events: Array[Dictionary]
+) -> String:
+	var player := state.players.get(actor_id) as PlayerStateData
+	if player == null:
+		return "missing_player"
+	var destination_zone_id := StringName(player.zone_ids.get(&"hand", &""))
+	var move_result := ZoneService.move_card(
+		state,
+		card_instance_id,
+		StringName(choice.get("choice_zone_id", "")),
+		destination_zone_id
+	)
+	if not bool(move_result.get("ok", false)):
+		return str(move_result.get("error", "choice_move_failed"))
+	var card := state.cards[card_instance_id] as Dictionary
+	card["owner_id"] = str(actor_id)
+	var move_event := (move_result.get("event", {}) as Dictionary).duplicate(true)
+	move_event["reason"] = "resource_draft_gained"
+	move_event["actor_id"] = str(actor_id)
+	events.append(move_event)
+	var remaining_card_ids := choice.get("remaining_card_ids", []) as Array
+	remaining_card_ids.erase(str(card_instance_id))
+	choice["remaining_card_ids"] = remaining_card_ids
+	var selected_card_ids := choice.get("selected_card_ids", []) as Array
+	selected_card_ids.append(str(card_instance_id))
+	choice["selected_card_ids"] = selected_card_ids
+	choice["selected_count"] = selected_card_ids.size()
+	var completed_selections := choice.get("completed_selections", []) as Array
+	completed_selections.append({
+		"actor_id": str(actor_id),
+		"card_instance_id": str(card_instance_id),
+		"destination_zone_id": str(destination_zone_id),
+	})
+	choice["completed_selections"] = completed_selections
+	var selection_index := int(choice.get("selection_index", 0)) + 1
+	if remaining_card_ids.is_empty():
+		state.effect_state.clear()
+		events.append({
+			"type": "choice_resolved",
+			"choice_id": str(choice.get("choice_id", "")),
+			"actor_id": str(actor_id),
+			"defeated_by_actor_id": str(choice.get("defeated_by_actor_id", "")),
+			"op": str(choice.get("op", "")),
+			"card_instance_id": str(card_instance_id),
+			"selected_card_ids": selected_card_ids.duplicate(),
+			"selected_count": selected_card_ids.size(),
+			"completed_selections": completed_selections.duplicate(true),
+			"source_card_instance_id": str(choice.get("source_card_instance_id", "")),
+			"source_zone_id": str(choice.get("choice_zone_id", "")),
+			"destination_zone_id": str(destination_zone_id),
+		})
+		events.append({
+			"type": "effect_resolved",
+			"actor_id": str(choice.get("defeated_by_actor_id", "")),
+			"effect_index": int(choice.get("effect_index", 0)),
+			"op": str(choice.get("op", "")),
+			"selected_count": selected_card_ids.size(),
+		})
+		return ""
+	var selection_order := choice.get("selection_order", []) as Array
+	if selection_index >= selection_order.size():
+		return "draft_selection_order_exhausted"
+	choice["selection_index"] = selection_index
+	choice["required_actor_id"] = str(selection_order[selection_index])
+	state.effect_state = choice
+	events.append({
+		"type": "choice_progressed",
+		"choice_id": str(choice.get("choice_id", "")),
+		"actor_id": str(actor_id),
+		"required_actor_id": str(choice.get("required_actor_id", "")),
+		"op": str(choice.get("op", "")),
+		"card_instance_id": str(card_instance_id),
+		"remaining_card_ids": remaining_card_ids.duplicate(),
+		"remaining_count": remaining_card_ids.size(),
+		"completed_selections": completed_selections.duplicate(true),
+	})
+	return ""
+
+
+static func _required_actor_id(choice: Dictionary) -> StringName:
+	return StringName(choice.get("required_actor_id", choice.get("actor_id", "")))
 
 
 static func _definition_for_card(

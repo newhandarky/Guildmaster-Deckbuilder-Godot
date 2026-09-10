@@ -5,6 +5,7 @@ const RECRUIT_DECK_ID := &"shared:adventurer-supply"
 const RECRUIT_ROW_ID := &"shared:recruit-row"
 const SHOP_DECK_ID := &"shared:resource-supply"
 const SHOP_ROW_ID := &"shared:shop-row"
+const RESOURCE_DRAFT_ROW_ID := &"shared:resource-draft-row"
 const MONSTER_CYCLE_ID := &"shared:monster-cycle"
 const MONSTER_ROW_ID := &"shared:monster-row"
 const ROW_SIZE := 3

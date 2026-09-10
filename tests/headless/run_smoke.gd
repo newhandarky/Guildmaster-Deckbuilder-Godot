@@ -32,6 +32,8 @@ func _run() -> void:
 	_test_combat_preview_and_reward()
 	_test_combat_optional_reward_skip()
 	_test_standard_monster_claim_and_draw_rewards()
+	_test_mimic_dice_reward()
+	_test_lamia_resource_draft()
 	_test_automaton_archer_pending_choice()
 	_test_automaton_warrior_discard_choice()
 	_test_multi_zone_removal_monsters()
@@ -55,6 +57,7 @@ func _run() -> void:
 	await _test_gargoyle_choice_hud_integration()
 	await _test_shop_gain_choice_hud_integration()
 	await _test_fire_elemental_hud_integration()
+	await _test_mimic_and_lamia_hud_integration()
 	_test_play_adventurer_capacity_and_equipment_departure()
 	_test_use_item_draw_and_rest_cleanup()
 	_test_turn_rotation()
@@ -78,7 +81,19 @@ func _test_content_pack() -> void:
 	var registry := ContentRegistry.new()
 	var errors := registry.load_pack("res://content/packs/base_vertical_slice.json")
 	_expect(errors.is_empty(), "base content pack should validate: %s" % "; ".join(errors))
-	_expect(registry.definitions.size() == 25, "vertical slice should load twenty-five base definitions")
+	_expect(registry.definitions.size() == 27, "vertical slice should load twenty-seven base definitions")
+	var mimic := registry.definitions.get(&"base:monster/monster-02") as CardDefinition
+	_expect(
+		mimic != null and mimic.copies == 3 and mimic.combat == 5 \
+				and mimic.purchase_power == 2 and mimic.honor == 5,
+		"mimic should use the confirmed 3 copies and 5/2/5 values"
+	)
+	var lamia := registry.definitions.get(&"base:monster/monster-05") as CardDefinition
+	_expect(
+		lamia != null and lamia.copies == 2 and lamia.combat == 4 \
+				and lamia.purchase_power == 1 and lamia.honor == 3,
+		"lamia should use the confirmed 2 copies and 4/1/3 values"
+	)
 	var lizardfolk_mage := registry.definitions.get(&"base:monster/monster-03") as CardDefinition
 	_expect(
 		lizardfolk_mage != null and lizardfolk_mage.copies == 3 \
@@ -131,6 +146,15 @@ func _test_content_pack() -> void:
 	)
 	_expect(not registry.definitions.has(&"custom:adventurer/melee-01"), "custom adventurers must stay disabled")
 	_expect(not registry.pack_fingerprint.is_empty(), "content pack should expose a deterministic fingerprint")
+	var monster_definition_ids: Array[StringName] = []
+	var monster_copy_count := 0
+	for definition_id: StringName in registry.definitions:
+		var definition := registry.definitions[definition_id] as CardDefinition
+		if definition.card_type == &"monster":
+			monster_definition_ids.append(definition_id)
+			monster_copy_count += definition.copies
+	_expect(monster_definition_ids.size() == 14, "all fourteen base monster definitions should exist")
+	_expect(monster_copy_count == 32, "base monster definitions should total thirty-two instances")
 
 
 func _test_content_pack_reload() -> void:
@@ -139,7 +163,7 @@ func _test_content_pack_reload() -> void:
 	var first_fingerprint := registry.pack_fingerprint
 	var second_errors := registry.load_pack("res://content/packs/base_vertical_slice.json")
 	_expect(first_errors.is_empty() and second_errors.is_empty(), "content pack should be safely reloadable")
-	_expect(registry.definitions.size() == 25, "content reload must not retain duplicate definitions")
+	_expect(registry.definitions.size() == 27, "content reload must not retain duplicate definitions")
 	_expect(registry.pack_fingerprint == first_fingerprint, "same content should keep the same fingerprint")
 
 
@@ -165,7 +189,20 @@ func _test_two_player_state() -> void:
 
 func _test_official_starting_setup() -> void:
 	var state := GameStateData.create_vertical_slice()
-	_expect(state.cards.size() == 61, "setup should create player cards, twenty-seven monsters, and fourteen market cards")
+	_expect(state.cards.size() == 66, "setup should create player cards, thirty-two monsters, and fourteen market cards")
+	var monster_instance_count := 0
+	var monster_definition_ids: Dictionary = {}
+	for card_instance_id: StringName in state.cards:
+		var definition_id := StringName((state.cards[card_instance_id] as Dictionary).get("definition_id", ""))
+		if str(definition_id).begins_with("base:monster/"):
+			monster_instance_count += 1
+			monster_definition_ids[definition_id] = true
+	_expect(monster_instance_count == 32, "setup should instantiate all thirty-two base monsters")
+	_expect(monster_definition_ids.size() == 14, "setup should include instances of all fourteen base monsters")
+	_expect(
+		(state.zones[SupplyService.RESOURCE_DRAFT_ROW_ID] as ZoneData).card_instance_ids.is_empty(),
+		"formal resource draft row should start empty"
+	)
 	for player_id: StringName in state.turn_order:
 		var player := state.players[player_id] as PlayerStateData
 		var party := state.zones[player.zone_ids[&"party"]] as ZoneData
@@ -465,7 +502,8 @@ func _test_monster_supply_setup_and_anchor() -> void:
 	var row := state.zones[SupplyService.MONSTER_ROW_ID] as ZoneData
 	var cycle := state.zones[SupplyService.MONSTER_CYCLE_ID] as ZoneData
 	_expect(row.card_instance_ids.size() == 3, "vertical slice should reveal three monsters")
-	_expect(cycle.card_instance_ids.size() == 24, "vertical slice cycle should retain twenty-four monsters")
+	_expect(cycle.card_instance_ids.size() == 29, "vertical slice cycle should retain twenty-nine monsters")
+	_expect(row.card_instance_ids.size() + cycle.card_instance_ids.size() == 32, "monster row and cycle should contain the complete base set")
 	_expect(
 		row.card_instance_ids == [
 			&"card-monster-skeleton-01",
@@ -773,6 +811,359 @@ func _test_standard_monster_claim_and_draw_rewards() -> void:
 			"defeated slime should enter the winner discard pile"
 		)
 		_expect(InvariantService.validate(slime_defeated).is_empty(), "slime claim should preserve invariants")
+
+
+func _test_mimic_dice_reward() -> void:
+	var definitions := _load_definitions()
+	var faces_seen: Dictionary = {}
+	for seed_value in range(1, 500):
+		var state := GameStateData.create_vertical_slice(seed_value)
+		var player := state.players[&"p1"] as PlayerStateData
+		player.turn_resources[&"purchase_power"] = 0
+		var events: Array[Dictionary] = []
+		var effect := {
+			"op": "roll_resource_reward",
+			"die_sides": 6,
+			"resource": "purchase_power",
+			"conversion": "ceil_divide",
+			"divisor": 2,
+			"source_card_instance_id": "card-monster-mimic-01",
+		}
+		var error := EffectResolver.resolve(state, &"p1", [effect], events, definitions)
+		_expect(error.is_empty(), "generic dice reward should resolve")
+		if not error.is_empty():
+			return
+		var roll := int(events[0].get("die_result", 0))
+		faces_seen[roll] = true
+		_expect(
+			int(player.turn_resources.get("purchase_power", 0)) == (roll + 1) / 2,
+			"each d6 face should map to ceiling-half purchase power"
+		)
+		_expect(
+			events[0].get("die_sides") == 6 and events[0].get("resource") == "purchase_power" \
+					and events[0].get("source_card_instance_id") == "card-monster-mimic-01" \
+					and events[0].get("actor_id") == "p1",
+			"dice event should record sides, resource, source card, and actor"
+		)
+		if faces_seen.size() == 6:
+			break
+	_expect(faces_seen.size() == 6, "dice reward coverage should observe all six faces")
+
+	var state := GameStateData.create_vertical_slice(307)
+	var expose_error := _expose_monster(
+		state, &"card-monster-mimic-01", &"card-monster-rabbit-demon-01"
+	)
+	_expect(expose_error.is_empty(), "mimic fixture should expose the target")
+	var phase_result := RulesEngine.dispatch(
+		state, _end_phase_envelope(state, "cmd-mimic-combat"), definitions
+	)
+	if not bool(phase_result.get("ok", false)):
+		_expect(false, "mimic fixture should enter combat")
+		return
+	state = phase_result["state"] as GameStateData
+	var preview := CombatService.preview_attack(state, &"p1", &"card-monster-mimic-01", definitions)
+	_expect(
+		"1／2 → 1、3／4 → 2、5／6 → 3 購買力" in str(preview.get("reward_summary", "")),
+		"mimic preview should show the complete dice conversion"
+	)
+	var rng_before := state.rng_state
+	var before_hash := CanonicalJson.sha256(state.to_dictionary())
+	var invalid := RulesEngine.dispatch(
+		state,
+		_command_envelope(state, {
+			"type": "ATTACK_TARGET",
+			"target_card_id": "card-monster-mimic-01",
+			"claim_optional_reward": false,
+		}, "cmd-mimic-invalid"),
+		definitions
+	)
+	_expect(str(invalid.get("error", "")) == "reward_not_optional", "mimic reward must not be skippable")
+	_expect(
+		state.rng_state == rng_before and CanonicalJson.sha256(state.to_dictionary()) == before_hash,
+		"failed mimic dispatch must not consume RNG or mutate state"
+	)
+	var command := _command_envelope(state, {
+		"type": "ATTACK_TARGET",
+		"target_card_id": "card-monster-mimic-01",
+		"claim_optional_reward": true,
+	}, "cmd-mimic-attack")
+	var result := RulesEngine.dispatch(state, command, definitions)
+	var repeated := RulesEngine.dispatch(state.clone_state(), command, definitions)
+	_expect(bool(result.get("ok", false)), "mimic attack should resolve immediately")
+	_expect(result.get("after_hash") == repeated.get("after_hash"), "mimic attack hash should be deterministic")
+	if not bool(result.get("ok", false)):
+		return
+	var resolved := result["state"] as GameStateData
+	_expect(resolved.rng_state != rng_before, "mimic attack should advance serialized RNG state")
+	var departure_index := -1
+	var roll_index := -1
+	var reward_index := -1
+	var claim_index := -1
+	var defeated_index := -1
+	for index in (result.get("events", []) as Array).size():
+		var event := (result.get("events", []) as Array)[index] as Dictionary
+		if event.get("reason") == "combat_departure" and departure_index < 0:
+			departure_index = index
+		elif event.get("type") == "die_rolled":
+			roll_index = index
+		elif event.get("type") == "effect_resolved" and event.get("op") == "roll_resource_reward":
+			reward_index = index
+		elif event.get("reason") == "defeated_monster_claimed":
+			claim_index = index
+		elif event.get("type") == "enemy_defeated":
+			defeated_index = index
+	_expect(
+		departure_index < roll_index and roll_index < reward_index \
+				and reward_index < claim_index and claim_index < defeated_index,
+		"mimic events should order departure, roll, reward, claim, and defeat"
+	)
+	var encoded := SnapshotCodec.encode(resolved, "content-mimic", "rules-mimic")
+	var decoded := SnapshotCodec.decode(encoded, "content-mimic", "rules-mimic")
+	_expect(bool(decoded.get("ok", false)), "post-mimic RNG state should round-trip")
+	if bool(decoded.get("ok", false)):
+		var restored := decoded["state"] as GameStateData
+		var next_events: Array[Dictionary] = []
+		var restored_events: Array[Dictionary] = []
+		var next_rng_before := resolved.rng_state
+		EffectResolver.resolve(resolved, &"p1", [(definitions[&"base:monster/monster-02"] as CardDefinition).effects[0]], next_events, definitions)
+		EffectResolver.resolve(restored, &"p1", [(definitions[&"base:monster/monster-02"] as CardDefinition).effects[0]], restored_events, definitions)
+		_expect(next_events == restored_events, "snapshot RNG continuation should reproduce the next dice event")
+		_expect(resolved.rng_state != next_rng_before, "consecutive dice rewards should deterministically advance RNG")
+
+
+func _test_lamia_resource_draft() -> void:
+	var definitions := _load_definitions()
+	var state := GameStateData.create_vertical_slice(311)
+	var expose_error := _expose_monster(
+		state, &"card-monster-lamia-01", &"card-monster-rabbit-demon-01"
+	)
+	_expect(expose_error.is_empty(), "lamia fixture should expose the target")
+	var phase_result := RulesEngine.dispatch(
+		state, _end_phase_envelope(state, "cmd-lamia-combat"), definitions
+	)
+	if not bool(phase_result.get("ok", false)):
+		_expect(false, "lamia fixture should enter combat")
+		return
+	state = phase_result["state"] as GameStateData
+	var attack_command := _command_envelope(state, {
+		"type": "ATTACK_TARGET",
+		"target_card_id": "card-monster-lamia-01",
+		"claim_optional_reward": true,
+	}, "cmd-lamia-attack")
+	var attack := RulesEngine.dispatch(state, attack_command, definitions)
+	var repeated_attack := RulesEngine.dispatch(state.clone_state(), attack_command, definitions)
+	_expect(bool(attack.get("ok", false)), "lamia attack should create a resource draft")
+	_expect(attack.get("after_hash") == repeated_attack.get("after_hash"), "initial lamia draft hash should be deterministic")
+	if not bool(attack.get("ok", false)):
+		return
+	var pending := attack["state"] as GameStateData
+	var choice := pending.effect_state
+	var departure_index := -1
+	var first_reveal_index := -1
+	var request_index := -1
+	var claim_index := -1
+	var defeated_index := -1
+	for index in (attack.get("events", []) as Array).size():
+		var event := (attack.get("events", []) as Array)[index] as Dictionary
+		if event.get("reason") == "combat_departure" and departure_index < 0:
+			departure_index = index
+		elif event.get("reason") == "resource_draft_reveal" and first_reveal_index < 0:
+			first_reveal_index = index
+		elif event.get("type") == "choice_requested":
+			request_index = index
+		elif event.get("reason") == "defeated_monster_claimed":
+			claim_index = index
+		elif event.get("type") == "enemy_defeated":
+			defeated_index = index
+	_expect(
+		departure_index < first_reveal_index and first_reveal_index < request_index \
+				and request_index < claim_index and claim_index < defeated_index,
+		"lamia attack events should order departure, reveal, choice, claim, and defeat"
+	)
+	_expect(pending.active_player_id == &"p1", "lamia draft must preserve the active player")
+	_expect(choice.get("required_actor_id") == "p1", "defeater should select first")
+	_expect(choice.get("selection_order") == ["p1", "p2"], "lamia draft should follow leftward turn order")
+	var draft_row := pending.zones[SupplyService.RESOURCE_DRAFT_ROW_ID] as ZoneData
+	_expect(draft_row.card_instance_ids.size() == 2, "two players should reveal two resource cards")
+	_expect(
+		(choice.get("remaining_card_ids", []) as Array).size() == 2 \
+				and (choice.get("eligible_card_ids", []) as Array).size() == 2,
+		"lamia pending choice should lock and expose both candidates"
+	)
+	_expect(RulesEngine.get_legal_commands(pending, &"p2", definitions).is_empty(), "non-required player should have no legal commands")
+	var p1_commands := RulesEngine.get_legal_commands(pending, &"p1", definitions)
+	_expect(p1_commands.size() == 2, "required player should choose either revealed card without skip")
+	var has_skip := false
+	for command: Dictionary in p1_commands:
+		has_skip = has_skip or bool(command.get("skip", false))
+	_expect(not has_skip, "lamia draft must never expose a skip command")
+	var forced_skip := _command_envelope(pending, {
+		"type": "RESOLVE_CHOICE",
+		"choice_id": str(choice.get("choice_id", "")),
+		"card_instance_id": "",
+		"skip": true,
+	}, "cmd-lamia-forced-skip")
+	var forced_skip_result := RulesEngine.dispatch(pending, forced_skip, definitions)
+	_expect(str(forced_skip_result.get("error", "")) == "choice_required", "lamia draft must reject forged skip commands")
+	var pending_hash := CanonicalJson.sha256(pending.to_dictionary())
+	var pending_snapshot := SnapshotCodec.encode(pending, "content-lamia", "rules-lamia")
+	_expect(
+		bool(SnapshotCodec.decode(pending_snapshot, "content-lamia", "rules-lamia").get("ok", false)),
+		"new lamia draft should round-trip"
+	)
+	var moved_candidate := pending.clone_state()
+	var moved_id := StringName((moved_candidate.effect_state.get("remaining_card_ids", []) as Array)[0])
+	ZoneService.move_card(
+		moved_candidate, moved_id, SupplyService.RESOURCE_DRAFT_ROW_ID, &"p1:discard-pile"
+	)
+	(moved_candidate.cards[moved_id] as Dictionary)["owner_id"] = "p1"
+	var moved_hash := CanonicalJson.sha256(moved_candidate.to_dictionary())
+	var moved_command := (p1_commands[0] as Dictionary).duplicate(true)
+	moved_command["card_instance_id"] = str(moved_id)
+	var moved_result := RulesEngine.dispatch(
+		moved_candidate,
+		_command_envelope(moved_candidate, moved_command, "cmd-lamia-moved"),
+		definitions
+	)
+	_expect(not bool(moved_result.get("ok", true)), "moved lamia candidate must be rejected")
+	_expect(CanonicalJson.sha256(moved_candidate.to_dictionary()) == moved_hash, "moved candidate rejection must be atomic")
+	var wrong_source := pending.clone_state()
+	wrong_source.effect_state["choice_zone_id"] = str(SupplyService.SHOP_ROW_ID)
+	var wrong_source_hash := CanonicalJson.sha256(wrong_source.to_dictionary())
+	var wrong_source_result := RulesEngine.dispatch(
+		wrong_source,
+		_command_envelope(wrong_source, p1_commands[0], "cmd-lamia-wrong-source"),
+		definitions
+	)
+	_expect(not bool(wrong_source_result.get("ok", true)), "tampered lamia source must be rejected")
+	_expect(CanonicalJson.sha256(wrong_source.to_dictionary()) == wrong_source_hash, "wrong source rejection must be atomic")
+	var wrong_card_command := (p1_commands[0] as Dictionary).duplicate(true)
+	wrong_card_command["card_instance_id"] = str(
+		(pending.zones[SupplyService.SHOP_ROW_ID] as ZoneData).card_instance_ids[0]
+	)
+	var wrong_card_result := RulesEngine.dispatch(
+		pending,
+		_command_envelope(pending, wrong_card_command, "cmd-lamia-wrong-card"),
+		definitions
+	)
+	_expect(str(wrong_card_result.get("error", "")) == "ineligible_choice_card", "card outside draft row must be rejected")
+	_expect(CanonicalJson.sha256(pending.to_dictionary()) == pending_hash, "wrong-card rejection must be atomic")
+	var wrong_owner := pending.clone_state()
+	var owner_tamper_id := StringName((wrong_owner.effect_state.get("remaining_card_ids", []) as Array)[0])
+	(wrong_owner.cards[owner_tamper_id] as Dictionary)["owner_id"] = "p2"
+	var wrong_owner_hash := CanonicalJson.sha256(wrong_owner.to_dictionary())
+	var wrong_owner_result := RulesEngine.dispatch(
+		wrong_owner,
+		_command_envelope(wrong_owner, p1_commands[0], "cmd-lamia-wrong-owner"),
+		definitions
+	)
+	_expect(not bool(wrong_owner_result.get("ok", true)), "owned card in draft row must be rejected")
+	_expect(CanonicalJson.sha256(wrong_owner.to_dictionary()) == wrong_owner_hash, "ownership tamper rejection must be atomic")
+	var wrong_actor_command := (p1_commands[0] as Dictionary).duplicate(true)
+	var wrong_actor_envelope := _command_envelope(pending, wrong_actor_command, "cmd-lamia-wrong-actor")
+	wrong_actor_envelope["actor_id"] = "p2"
+	var wrong_actor := RulesEngine.dispatch(pending, wrong_actor_envelope, definitions)
+	_expect(str(wrong_actor.get("error", "")) == "wrong_actor", "wrong lamia chooser must be rejected")
+	_expect(CanonicalJson.sha256(pending.to_dictionary()) == pending_hash, "wrong lamia chooser must be atomic")
+	var first_card_id := StringName(p1_commands[0].get("card_instance_id", ""))
+	var first_envelope := _command_envelope(pending, p1_commands[0], "cmd-lamia-first")
+	var first := RulesEngine.dispatch(pending, first_envelope, definitions)
+	var repeated_first := RulesEngine.dispatch(repeated_attack["state"] as GameStateData, first_envelope, definitions)
+	_expect(bool(first.get("ok", false)), "first lamia pick should commit")
+	_expect(first.get("after_hash") == repeated_first.get("after_hash"), "mid-draft hash should be deterministic")
+	if not bool(first.get("ok", false)):
+		return
+	var middle := first["state"] as GameStateData
+	_expect(middle.revision == pending.revision + 1, "first lamia pick should increment revision")
+	_expect(middle.active_player_id == &"p1", "active player must remain the defeater after first pick")
+	_expect(middle.effect_state.get("required_actor_id") == "p2", "second player should become required actor")
+	_expect(ZoneService.find_card_zone(middle, first_card_id) == &"p1:hand", "first card should enter p1 hand")
+	_expect(StringName((middle.cards[first_card_id] as Dictionary).get("owner_id", "")) == &"p1", "first card owner should be p1")
+	_expect(RulesEngine.get_legal_commands(middle, &"p1", definitions).is_empty(), "active but non-required player should have no commands")
+	var p2_commands := RulesEngine.get_legal_commands(middle, &"p2", definitions)
+	_expect(p2_commands.size() == 1, "p2 should receive only the remaining mandatory choice")
+	_expect(
+		RulesEngine.get_legal_commands(middle, &"p2", definitions)[0].get("actor_id") == "p2",
+		"legal draft command should be assigned to its required actor"
+	)
+	var middle_snapshot := SnapshotCodec.encode(middle, "content-lamia-mid", "rules-lamia")
+	_expect(
+		bool(SnapshotCodec.decode(middle_snapshot, "content-lamia-mid", "rules-lamia").get("ok", false)),
+		"lamia draft after one pick should round-trip"
+	)
+	var illegal_end := _command_envelope(middle, {"type": "END_PHASE"}, "cmd-lamia-illegal-end")
+	illegal_end["actor_id"] = "p2"
+	var middle_hash := CanonicalJson.sha256(middle.to_dictionary())
+	var illegal_end_result := RulesEngine.dispatch(middle, illegal_end, definitions)
+	_expect(str(illegal_end_result.get("error", "")) == "effects_pending", "assigned chooser cannot execute normal commands")
+	_expect(CanonicalJson.sha256(middle.to_dictionary()) == middle_hash, "illegal pending command must be atomic")
+	var duplicate_command := (p2_commands[0] as Dictionary).duplicate(true)
+	duplicate_command["card_instance_id"] = str(first_card_id)
+	var duplicate_envelope := _command_envelope(middle, duplicate_command, "cmd-lamia-repeat-card")
+	duplicate_envelope["actor_id"] = "p2"
+	var duplicate_result := RulesEngine.dispatch(middle, duplicate_envelope, definitions)
+	_expect(str(duplicate_result.get("error", "")) == "choice_card_already_selected", "draft cannot select an already gained card")
+	_expect(CanonicalJson.sha256(middle.to_dictionary()) == middle_hash, "repeat-card rejection must preserve mid-draft state")
+	var second_card_id := StringName(p2_commands[0].get("card_instance_id", ""))
+	var second_envelope := _command_envelope(middle, p2_commands[0], "cmd-lamia-second")
+	second_envelope["actor_id"] = "p2"
+	var second := RulesEngine.dispatch(middle, second_envelope, definitions)
+	var repeated_second := RulesEngine.dispatch(repeated_first["state"] as GameStateData, second_envelope, definitions)
+	_expect(bool(second.get("ok", false)), "second lamia pick should complete the draft")
+	_expect(second.get("after_hash") == repeated_second.get("after_hash"), "completed draft hash should be deterministic")
+	if bool(second.get("ok", false)):
+		var resolved := second["state"] as GameStateData
+		_expect(resolved.effect_state.is_empty(), "last draft pick should clear pending choice")
+		_expect((resolved.zones[SupplyService.RESOURCE_DRAFT_ROW_ID] as ZoneData).card_instance_ids.is_empty(), "last pick should empty draft row")
+		_expect(ZoneService.find_card_zone(resolved, second_card_id) == &"p2:hand", "second card should enter p2 hand")
+		_expect(StringName((resolved.cards[second_card_id] as Dictionary).get("owner_id", "")) == &"p2", "second card owner should be p2")
+		_expect(_commands_contain(RulesEngine.get_legal_commands(resolved, &"p1", definitions), "END_PHASE"), "normal active-player commands should resume")
+		var progressed_index := -1
+		for index in (first.get("events", []) as Array).size():
+			if ((first.get("events", []) as Array)[index] as Dictionary).get("type") == "choice_progressed":
+				progressed_index = index
+		_expect(progressed_index > 0, "first lamia pick should move the card before announcing next chooser")
+		var resolved_index := -1
+		var effect_index := -1
+		for index in (second.get("events", []) as Array).size():
+			var event := (second.get("events", []) as Array)[index] as Dictionary
+			if event.get("type") == "choice_resolved":
+				resolved_index = index
+			elif event.get("type") == "effect_resolved":
+				effect_index = index
+		_expect(resolved_index > 0 and resolved_index < effect_index, "final lamia pick should move, resolve choice, then complete effect")
+
+	var one_card := GameStateData.create_vertical_slice(313)
+	var deck := one_card.zones[SupplyService.SHOP_DECK_ID] as ZoneData
+	while deck.card_instance_ids.size() > 1:
+		var card_id: StringName = deck.card_instance_ids.back()
+		ZoneService.move_card(one_card, card_id, SupplyService.SHOP_DECK_ID, &"p1:discard-pile")
+		(one_card.cards[card_id] as Dictionary)["owner_id"] = "p1"
+	var one_events: Array[Dictionary] = []
+	var draft_effect := (definitions[&"base:monster/monster-05"] as CardDefinition).effects[0]
+	var one_error := EffectResolver.resolve(one_card, &"p1", [draft_effect], one_events, definitions)
+	_expect(one_error.is_empty() and (one_card.effect_state.get("eligible_card_ids", []) as Array).size() == 1, "short supply should reveal only its actual final card")
+	_expect(InvariantService.validate(one_card).is_empty(), "one-card lamia draft should satisfy invariants")
+	var empty_state := GameStateData.create_vertical_slice(317)
+	deck = empty_state.zones[SupplyService.SHOP_DECK_ID] as ZoneData
+	while not deck.card_instance_ids.is_empty():
+		var card_id: StringName = deck.card_instance_ids.back()
+		ZoneService.move_card(empty_state, card_id, SupplyService.SHOP_DECK_ID, &"p1:discard-pile")
+		(empty_state.cards[card_id] as Dictionary)["owner_id"] = "p1"
+	var empty_events: Array[Dictionary] = []
+	var empty_error := EffectResolver.resolve(empty_state, &"p1", [draft_effect], empty_events, definitions)
+	_expect(empty_error.is_empty() and empty_state.effect_state.is_empty(), "empty supply should complete without pending choice")
+	_expect(_events_contain(empty_events, "effect_resolved"), "empty supply should emit effect completion")
+	var p2_start := GameStateData.create_vertical_slice(319)
+	p2_start.active_player_id = &"p2"
+	var p2_events: Array[Dictionary] = []
+	var p2_error := EffectResolver.resolve(p2_start, &"p2", [draft_effect], p2_events, definitions)
+	_expect(p2_error.is_empty(), "lamia draft should support a non-starting-player defeater")
+	_expect(
+		p2_start.effect_state.get("selection_order") == ["p2", "p1"] \
+				and p2_start.effect_state.get("required_actor_id") == "p2",
+		"draft order should rotate from the actual defeater"
+	)
 
 
 func _test_automaton_archer_pending_choice() -> void:
@@ -3426,6 +3817,90 @@ func _test_fire_elemental_hud_integration() -> void:
 			"fire elemental HUD execution should restore the locked hand size"
 		)
 	app.queue_free()
+
+
+func _test_mimic_and_lamia_hud_integration() -> void:
+	var packed := load("res://scenes/boot/main.tscn") as PackedScene
+	var mimic_app := packed.instantiate() as GameApp
+	root.add_child(mimic_app)
+	await process_frame
+	var expose_error := _expose_monster(
+		mimic_app.session.state,
+		&"card-monster-mimic-01",
+		&"card-monster-rabbit-demon-01"
+	)
+	_expect(expose_error.is_empty(), "mimic HUD fixture should expose the target")
+	var phase_result := mimic_app.session.end_phase()
+	_expect(bool(phase_result.get("ok", false)), "mimic HUD fixture should enter combat")
+	await process_frame
+	var preview_found := false
+	for child: Node in mimic_app.hud.market_actions.get_children():
+		if child is Button and "1／2 → 1、3／4 → 2、5／6 → 3 購買力" in (child as Button).text:
+			preview_found = true
+	_expect(preview_found, "mimic HUD should preview the complete dice rule")
+	var attack_result := mimic_app.session.attack_target(&"card-monster-mimic-01", true)
+	_expect(bool(attack_result.get("ok", false)), "mimic HUD attack should resolve")
+	await process_frame
+	_expect(
+		"寶箱怪擲出" in mimic_app.hud.event_label.text \
+				and "購買力" in mimic_app.hud.event_label.text,
+		"mimic HUD should show the rolled face and gained purchase power"
+	)
+	mimic_app.queue_free()
+	await process_frame
+
+	var lamia_app := packed.instantiate() as GameApp
+	root.add_child(lamia_app)
+	await process_frame
+	expose_error = _expose_monster(
+		lamia_app.session.state,
+		&"card-monster-lamia-01",
+		&"card-monster-rabbit-demon-01"
+	)
+	_expect(expose_error.is_empty(), "lamia HUD fixture should expose the target")
+	phase_result = lamia_app.session.end_phase()
+	_expect(bool(phase_result.get("ok", false)), "lamia HUD fixture should enter combat")
+	var lamia_attack := lamia_app.session.attack_target(&"card-monster-lamia-01", true)
+	_expect(bool(lamia_attack.get("ok", false)), "lamia HUD attack should create the draft")
+	await process_frame
+	_expect(lamia_app.hud.hand_title.text == "蛇妖物資輪抽", "lamia HUD should show its draft title")
+	_expect(
+		"目前應選：玩家一" in lamia_app.hud.hand_summary.text \
+				and "剩餘 2 張" in lamia_app.hud.hand_summary.text,
+		"lamia HUD should show current chooser and remaining count"
+	)
+	var first_buttons: Array[Button] = []
+	var candidate_labels := 0
+	for child: Node in lamia_app.hud.hand_actions.get_children():
+		if child is Button and (child as Button).text == "從物資輪抽區取得此牌":
+			first_buttons.append(child as Button)
+		elif child is Label and ("道具" in (child as Label).text or "裝備" in (child as Label).text):
+			candidate_labels += 1
+	_expect(first_buttons.size() == 2 and candidate_labels == 2, "lamia HUD should show both candidates with type and values")
+	if first_buttons.size() == 2:
+		_expect(
+			first_buttons[0].focus_neighbor_top == first_buttons[1].get_path() \
+					and first_buttons[1].focus_neighbor_bottom == first_buttons[0].get_path(),
+			"lamia mandatory choice focus should wrap within candidates"
+		)
+		first_buttons[0].pressed.emit()
+		await process_frame
+		_expect(
+			lamia_app.session.state.active_player_id == &"p1" \
+					and lamia_app.session.state.effect_state.get("required_actor_id") == "p2",
+			"lamia HUD pick should rotate chooser without changing active player"
+		)
+		_expect("目前應選：玩家二" in lamia_app.hud.hand_summary.text, "lamia HUD should update to player two")
+		var second_button: Button
+		for child: Node in lamia_app.hud.hand_actions.get_children():
+			if child is Button and (child as Button).text == "從物資輪抽區取得此牌":
+				second_button = child as Button
+		if second_button != null:
+			second_button.pressed.emit()
+			await process_frame
+			_expect(lamia_app.session.state.effect_state.is_empty(), "lamia HUD final pick should clear pending choice")
+			_expect(not lamia_app.hud.end_phase_button.disabled, "lamia HUD should restore active-player controls")
+	lamia_app.queue_free()
 
 
 func _test_play_adventurer_capacity_and_equipment_departure() -> void:

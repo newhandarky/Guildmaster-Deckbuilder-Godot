@@ -6,8 +6,8 @@ const PlayerStateDataType = preload("res://domain/state/player_state_data.gd")
 
 var schema_version: int = 1
 var game_id: StringName = &"game-demo-001"
-var content_version: String = "0.13.0"
-var ruleset_version: String = "0.13.0"
+var content_version: String = "0.14.0"
+var ruleset_version: String = "0.14.0"
 var seed_value: int = 20260909
 var rng_state: int = 0
 var revision: int = 0
@@ -37,6 +37,36 @@ static func create_vertical_slice(seed: int = 20260909) -> GameStateData:
 		player_two.player_id: player_two,
 	}
 	state.cards = {
+		&"card-monster-mimic-01": {
+			"instance_id": "card-monster-mimic-01",
+			"definition_id": "base:monster/monster-02",
+			"owner_id": "",
+			"state": {"target_id": "target-monster-02-01"},
+		},
+		&"card-monster-mimic-02": {
+			"instance_id": "card-monster-mimic-02",
+			"definition_id": "base:monster/monster-02",
+			"owner_id": "",
+			"state": {"target_id": "target-monster-02-02"},
+		},
+		&"card-monster-mimic-03": {
+			"instance_id": "card-monster-mimic-03",
+			"definition_id": "base:monster/monster-02",
+			"owner_id": "",
+			"state": {"target_id": "target-monster-02-03"},
+		},
+		&"card-monster-lamia-01": {
+			"instance_id": "card-monster-lamia-01",
+			"definition_id": "base:monster/monster-05",
+			"owner_id": "",
+			"state": {"target_id": "target-monster-05-01"},
+		},
+		&"card-monster-lamia-02": {
+			"instance_id": "card-monster-lamia-02",
+			"definition_id": "base:monster/monster-05",
+			"owner_id": "",
+			"state": {"target_id": "target-monster-05-02"},
+		},
 		&"card-monster-skeleton-01": {
 			"instance_id": "card-monster-skeleton-01",
 			"definition_id": "base:monster/monster-01",
@@ -211,6 +241,11 @@ static func create_vertical_slice(seed: int = 20260909) -> GameStateData:
 	)
 	monster_cycle.metadata = {"cycle_anchor": "card-monster-skeleton-01"}
 	monster_cycle.card_instance_ids.assign([
+		&"card-monster-mimic-01",
+		&"card-monster-mimic-02",
+		&"card-monster-mimic-03",
+		&"card-monster-lamia-01",
+		&"card-monster-lamia-02",
 		&"card-monster-skeleton-02",
 		&"card-monster-skeleton-03",
 		&"card-monster-rabbit-demon-02",
@@ -404,7 +439,13 @@ static func _add_vertical_slice_supplies(state: GameStateData) -> void:
 	var recruit_row := ZoneDataType.new(SupplyService.RECRUIT_ROW_ID, &"face_up_row", &"public")
 	var shop_deck := ZoneDataType.new(SupplyService.SHOP_DECK_ID, &"ordered_deck", &"hidden")
 	var shop_row := ZoneDataType.new(SupplyService.SHOP_ROW_ID, &"face_up_row", &"public")
-	for zone: ZoneData in [recruit_deck, recruit_row, shop_deck, shop_row]:
+	var resource_draft_row := ZoneDataType.new(
+		SupplyService.RESOURCE_DRAFT_ROW_ID, &"face_up_row", &"public"
+	)
+	resource_draft_row.metadata = {"temporary_choice_zone": true}
+	for zone: ZoneData in [
+		recruit_deck, recruit_row, shop_deck, shop_row, resource_draft_row
+	]:
 		state.zones[zone.zone_id] = zone
 
 	for definition_id: String in [

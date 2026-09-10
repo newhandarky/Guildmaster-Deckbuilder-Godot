@@ -100,7 +100,7 @@ static func preview_attack(
 	for effect: Dictionary in target_definition.effects:
 		if StringName(effect.get("timing", "")) == &"on_defeat":
 			var operation := StringName(effect.get("op", ""))
-			if operation in [&"choose_remove_card", &"choose_gain_card"]:
+			if operation in [&"choose_remove_card", &"choose_gain_card", &"draft_gain_card"]:
 				deferred_choice = true
 			else:
 				optional_reward = optional_reward or bool(effect.get("optional", false))
@@ -138,6 +138,10 @@ static func preview_attack(
 						int(effect.get("max_cost", 0)),
 						filter_label,
 					])
+				&"roll_resource_reward":
+					reward_parts.append(_dice_reward_summary(effect))
+				&"draft_gain_card":
+					reward_parts.append("公開等同玩家數的物資牌，從擊敗者開始依序輪抽至手牌")
 	var returns_to_cycle := &"cycle_anchor" in target_definition.tags
 	if not returns_to_cycle:
 		reward_parts.append("取得此卡（購買力 %s／榮譽 %s）" % [
@@ -291,3 +295,28 @@ static func _join_labels_with_or(labels: Array[String]) -> String:
 	if labels.size() < 2:
 		return "" if labels.is_empty() else labels[0]
 	return "%s或%s" % ["、".join(labels.slice(0, -1)), labels.back()]
+
+
+static func _dice_reward_summary(effect: Dictionary) -> String:
+	var sides := int(effect.get("die_sides", 0))
+	var divisor := int(effect.get("divisor", 1))
+	var resource_label: String = {
+		&"purchase_power": "購買力",
+		&"combat": "戰力",
+	}.get(StringName(effect.get("resource", "")), str(effect.get("resource", "資源")))
+	var groups: Array[String] = []
+	var group_start := 1
+	var previous_amount := 1
+	for face in range(2, sides + 2):
+		var amount: int = int((face + divisor - 1) / divisor) if face <= sides else -1
+		if amount == previous_amount:
+			continue
+		var face_label := (
+			str(group_start)
+			if group_start == face - 1
+			else "%d／%d" % [group_start, face - 1]
+		)
+		groups.append("%s → %d" % [face_label, previous_amount])
+		group_start = face
+		previous_amount = amount
+	return "擲 1 顆 D%d：%s %s" % [sides, "、".join(groups), resource_label]

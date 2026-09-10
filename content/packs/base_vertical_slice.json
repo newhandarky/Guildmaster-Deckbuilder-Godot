@@ -1,7 +1,7 @@
 {
   "manifest": {
     "pack_id": "base:vertical-slice",
-    "version": "0.13.0",
+    "version": "0.14.0",
     "includes_custom_adventurers": false
   },
   "definitions": [
@@ -70,6 +70,27 @@
       "presentation_id": "base:presentation/monster-skeleton"
     },
     {
+      "definition_id": "base:monster/monster-02",
+      "display_name": "寶箱怪",
+      "card_type": "monster",
+      "copies": 3,
+      "combat": 5,
+      "purchase_power": 2,
+      "honor": 5,
+      "tags": ["enemy", "monster"],
+      "effects": [
+        {
+          "op": "roll_resource_reward",
+          "die_sides": 6,
+          "resource": "purchase_power",
+          "conversion": "ceil_divide",
+          "divisor": 2,
+          "timing": "on_defeat"
+        }
+      ],
+      "presentation_id": "base:presentation/monster-mimic"
+    },
+    {
       "definition_id": "base:monster/monster-03",
       "display_name": "蜥蜴人法師",
       "card_type": "monster",
@@ -110,6 +131,29 @@
         }
       ],
       "presentation_id": "base:presentation/monster-arcane-slime"
+    },
+    {
+      "definition_id": "base:monster/monster-05",
+      "display_name": "蛇妖",
+      "card_type": "monster",
+      "copies": 2,
+      "combat": 4,
+      "purchase_power": 1,
+      "honor": 3,
+      "tags": ["enemy", "monster"],
+      "effects": [
+        {
+          "op": "draft_gain_card",
+          "source_deck_zone_id": "shared:resource-supply",
+          "choice_zone_id": "shared:resource-draft-row",
+          "cards_per_player": 1,
+          "destination_zone_key": "hand",
+          "choice_title": "蛇妖物資輪抽",
+          "prompt": "選擇 1 張公開物資加入自己的手牌",
+          "timing": "on_defeat"
+        }
+      ],
+      "presentation_id": "base:presentation/monster-lamia"
     },
     {
       "definition_id": "base:monster/monster-06",

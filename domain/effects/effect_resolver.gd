@@ -9,6 +9,8 @@ const SUPPORTED_OPERATIONS: Array[StringName] = [
 	&"conditional_combat",
 	&"choose_remove_card",
 	&"choose_gain_card",
+	&"roll_resource_reward",
+	&"draft_gain_card",
 ]
 
 
@@ -21,7 +23,7 @@ static func validate_effects(effects: Array[Dictionary], definition_id: StringNa
 			errors.append("Unsupported effect op %s at %s[%d]" % [operation, definition_id, index])
 		if int(effect.get("amount", 0)) < 0:
 			errors.append("Effect amount must not be negative at %s[%d]" % [definition_id, index])
-		if operation in [&"choose_remove_card", &"choose_gain_card"] \
+		if operation in [&"choose_remove_card", &"choose_gain_card", &"draft_gain_card"] \
 				and index != effects.size() - 1:
 			errors.append("Pending choice effect must be last at %s[%d]" % [definition_id, index])
 		if operation == &"choose_remove_card":
@@ -53,6 +55,21 @@ static func validate_effects(effects: Array[Dictionary], definition_id: StringNa
 				StringName(effect.get("source_zone_id", "")), allowed_card_types, allowed_tags
 			):
 				errors.append("Card gain filters do not match source at %s[%d]" % [definition_id, index])
+		if operation == &"roll_resource_reward":
+			if int(effect.get("die_sides", 0)) < 2:
+				errors.append("Dice reward requires at least two sides at %s[%d]" % [definition_id, index])
+			if StringName(effect.get("resource", "")) not in [&"purchase_power", &"combat"]:
+				errors.append("Dice reward resource is unsupported at %s[%d]" % [definition_id, index])
+			if StringName(effect.get("conversion", "")) != &"ceil_divide" \
+					or int(effect.get("divisor", 0)) < 1:
+				errors.append("Dice reward conversion is invalid at %s[%d]" % [definition_id, index])
+		if operation == &"draft_gain_card":
+			if StringName(effect.get("source_deck_zone_id", "")).is_empty() \
+					or StringName(effect.get("choice_zone_id", "")).is_empty():
+				errors.append("Draft gain requires source and choice zones at %s[%d]" % [definition_id, index])
+			if int(effect.get("cards_per_player", 0)) != 1 \
+					or StringName(effect.get("destination_zone_key", "")) != &"hand":
+				errors.append("Draft gain rule is invalid at %s[%d]" % [definition_id, index])
 	return errors
 
 
@@ -278,6 +295,130 @@ static func resolve(
 					"allowed_tags": _string_name_array_to_strings(allowed_tags),
 				})
 				continue
+			&"roll_resource_reward":
+				var die_sides := int(effect.get("die_sides", 0))
+				var divisor := int(effect.get("divisor", 0))
+				resource_key = StringName(effect.get("resource", ""))
+				var rng := DeterministicRng.new(state.seed_value, state.rng_state)
+				var die_result := rng.roll_die(die_sides)
+				state.rng_state = rng.get_state()
+				amount = (die_result + divisor - 1) / divisor
+				player.turn_resources[resource_key] = int(
+					player.turn_resources.get(resource_key, 0)
+				) + amount
+				var source_card_instance_id := str(effect.get("source_card_instance_id", ""))
+				events.append({
+					"type": "die_rolled",
+					"actor_id": str(actor_id),
+					"source_card_instance_id": source_card_instance_id,
+					"die_sides": die_sides,
+					"die_result": die_result,
+					"conversion": str(effect.get("conversion", "")),
+					"divisor": divisor,
+					"resource": str(resource_key),
+					"amount": amount,
+				})
+				events.append({
+					"type": "effect_resolved",
+					"actor_id": str(actor_id),
+					"effect_index": index,
+					"op": str(operation),
+					"source_card_instance_id": source_card_instance_id,
+					"die_sides": die_sides,
+					"die_result": die_result,
+					"amount": amount,
+					"resource": str(resource_key),
+					"new_value": int(player.turn_resources[resource_key]),
+				})
+				continue
+			&"draft_gain_card":
+				var source_deck_zone_id := StringName(effect.get("source_deck_zone_id", ""))
+				var choice_zone_id := StringName(effect.get("choice_zone_id", ""))
+				var source_deck := state.zones.get(source_deck_zone_id) as ZoneData
+				var choice_zone := state.zones.get(choice_zone_id) as ZoneData
+				if source_deck == null or choice_zone == null:
+					return "missing_draft_zone"
+				if source_deck.kind != &"ordered_deck" or source_deck.visibility != &"hidden" \
+						or choice_zone.kind != &"face_up_row" or choice_zone.visibility != &"public" \
+						or not bool(choice_zone.metadata.get("temporary_choice_zone", false)):
+					return "invalid_draft_zone"
+				if not choice_zone.card_instance_ids.is_empty():
+					return "draft_zone_not_empty"
+				if not state.effect_state.is_empty():
+					return "effect_state_occupied"
+				var reveal_count := mini(
+					state.turn_order.size() * int(effect.get("cards_per_player", 1)),
+					source_deck.card_instance_ids.size()
+				)
+				var revealed_card_ids: Array[String] = []
+				for reveal_index in reveal_count:
+					var revealed_id: StringName = source_deck.card_instance_ids.back()
+					var reveal_result := ZoneService.move_card(
+						state, revealed_id, source_deck_zone_id, choice_zone_id
+					)
+					if not bool(reveal_result.get("ok", false)):
+						return str(reveal_result.get("error", "draft_reveal_failed"))
+					var reveal_event := (reveal_result.get("event", {}) as Dictionary).duplicate(true)
+					reveal_event["reason"] = "resource_draft_reveal"
+					reveal_event["actor_id"] = str(actor_id)
+					reveal_event["source_card_instance_id"] = str(
+						effect.get("source_card_instance_id", "")
+					)
+					events.append(reveal_event)
+					revealed_card_ids.append(str(revealed_id))
+				if revealed_card_ids.is_empty():
+					events.append({
+						"type": "effect_resolved",
+						"actor_id": str(actor_id),
+						"effect_index": index,
+						"op": str(operation),
+						"selected_count": 0,
+						"reason": "source_deck_empty",
+					})
+					continue
+				var selection_order := _turn_order_from_actor(state, actor_id)
+				selection_order.resize(revealed_card_ids.size())
+				state.effect_state = {
+					"type": "pending_choice",
+					"choice_id": "choice-%06d" % (state.revision + 1),
+					"actor_id": str(actor_id),
+					"required_actor_id": selection_order[0],
+					"defeated_by_actor_id": str(actor_id),
+					"op": str(operation),
+					"choice_title": str(effect.get("choice_title", "多人輪抽")),
+					"prompt": str(effect.get("prompt", "選擇 1 張加入自己的手牌")),
+					"source_deck_zone_id": str(source_deck_zone_id),
+					"source_zone_id": str(choice_zone_id),
+					"source_zone_key": "resource_draft_row",
+					"choice_zone_id": str(choice_zone_id),
+					"destination_zone_key": str(effect.get("destination_zone_key", "hand")),
+					"eligible_card_ids": revealed_card_ids.duplicate(),
+					"remaining_card_ids": revealed_card_ids.duplicate(),
+					"selected_card_ids": [],
+					"selected_count": 0,
+					"min_selections": 1,
+					"max_selections": 1,
+					"selection_order": selection_order,
+					"selection_index": 0,
+					"completed_selections": [],
+					"effect_index": index,
+					"source_effect": effect.duplicate(true),
+					"source_card_instance_id": str(effect.get("source_card_instance_id", "")),
+				}
+				events.append({
+					"type": "choice_requested",
+					"choice_id": str(state.effect_state["choice_id"]),
+					"actor_id": str(actor_id),
+					"required_actor_id": selection_order[0],
+					"op": str(operation),
+					"eligible_card_ids": revealed_card_ids.duplicate(),
+					"remaining_card_ids": revealed_card_ids.duplicate(),
+					"selection_order": selection_order.duplicate(),
+					"source_deck_zone_id": str(source_deck_zone_id),
+					"choice_zone_id": str(choice_zone_id),
+					"optional": false,
+				})
+				continue
 			_:
 				return "effect_not_immediately_resolvable: %s" % operation
 		player.turn_resources[resource_key] = int(player.turn_resources.get(resource_key, 0)) + amount
@@ -415,4 +556,12 @@ static func _string_name_array_to_strings(values: Array[StringName]) -> Array[St
 	var result: Array[String] = []
 	for value: StringName in values:
 		result.append(str(value))
+	return result
+
+
+static func _turn_order_from_actor(state: GameStateData, actor_id: StringName) -> Array[String]:
+	var result: Array[String] = []
+	var start_index := state.turn_order.find(actor_id)
+	for offset in state.turn_order.size():
+		result.append(str(state.turn_order[(start_index + offset) % state.turn_order.size()]))
 	return result

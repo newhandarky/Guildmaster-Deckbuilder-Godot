@@ -14,10 +14,12 @@ static func get_legal_commands(
 		return commands
 	if state.status != &"active":
 		return commands
+	if not state.effect_state.is_empty():
+		if actor_id != _required_choice_actor(state.effect_state):
+			return commands
+		return ChoiceService.get_legal_commands(state, actor_id)
 	if actor_id != state.active_player_id:
 		return commands
-	if not state.effect_state.is_empty():
-		return ChoiceService.get_legal_commands(state, actor_id)
 	commands.append({
 		"type": "END_PHASE",
 		"actor_id": str(actor_id),
@@ -105,7 +107,13 @@ static func _validate_envelope(state: GameStateData, envelope: Dictionary) -> St
 		return "duplicate_command"
 	if int(envelope.get("expected_revision", -1)) != state.revision:
 		return "stale_revision"
-	if StringName(envelope.get("actor_id", "")) != state.active_player_id:
+	var actor_id := StringName(envelope.get("actor_id", ""))
+	var allowed_actor_id := (
+		_required_choice_actor(state.effect_state)
+		if not state.effect_state.is_empty()
+		else state.active_player_id
+	)
+	if actor_id != allowed_actor_id:
 		return "wrong_actor"
 	if not envelope.get("command", {}) is Dictionary:
 		return "invalid_payload"
@@ -195,3 +203,7 @@ static func _failure(code: String, state_hash: String) -> Dictionary:
 		"before_hash": state_hash,
 		"after_hash": state_hash,
 	}
+
+
+static func _required_choice_actor(choice: Dictionary) -> StringName:
+	return StringName(choice.get("required_actor_id", choice.get("actor_id", "")))

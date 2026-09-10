@@ -89,6 +89,16 @@ func show_events(events: Array[Dictionary]) -> void:
 	if events.is_empty():
 		return
 	for index in range(events.size() - 1, -1, -1):
+		var roll_event := events[index] as Dictionary
+		if roll_event.get("type") == "die_rolled":
+			event_label.text = "%s擲出 %d（D%d），獲得 %d 購買力" % [
+				_card_display_name(str(roll_event.get("source_card_instance_id", ""))),
+				int(roll_event.get("die_result", 0)),
+				int(roll_event.get("die_sides", 0)),
+				int(roll_event.get("amount", 0)),
+			]
+			return
+	for index in range(events.size() - 1, -1, -1):
 		var event := events[index] as Dictionary
 		if event.get("type") == "enemy_defeated":
 			event_label.text = "討伐成功：%s（%d 名參戰者）" % [
@@ -97,11 +107,19 @@ func show_events(events: Array[Dictionary]) -> void:
 			]
 			return
 		if event.get("type") == "choice_progressed":
-			event_label.text = "已移除：%s（%d/%d）" % [
-				_card_display_name(str(event.get("card_instance_id", ""))),
-				int(event.get("selected_count", 0)),
-				int(event.get("max_selections", 0)),
-			]
+			if StringName(event.get("op", "")) == &"draft_gain_card":
+				event_label.text = "%s 已取得 %s，輪到 %s（剩餘 %d 張）" % [
+					_player_display_name(str(event.get("actor_id", ""))),
+					_card_display_name(str(event.get("card_instance_id", ""))),
+					_player_display_name(str(event.get("required_actor_id", ""))),
+					int(event.get("remaining_count", 0)),
+				]
+			else:
+				event_label.text = "已移除：%s（%d/%d）" % [
+					_card_display_name(str(event.get("card_instance_id", ""))),
+					int(event.get("selected_count", 0)),
+					int(event.get("max_selections", 0)),
+				]
 			return
 		if event.get("type") == "choice_resolved":
 			var operation := StringName(event.get("op", ""))
@@ -113,9 +131,13 @@ func show_events(events: Array[Dictionary]) -> void:
 				event_label.text = "已完成移除（%d 張）" % int(
 					event.get("selected_count", 0)
 				)
-			elif operation == &"choose_gain_card":
+			elif operation in [&"choose_gain_card", &"draft_gain_card"]:
 				event_label.text = "已從%s取得：%s" % [
-					_localized_choice_source(StringName(event.get("source_zone_key", ""))),
+					(
+						"物資輪抽區"
+						if operation == &"draft_gain_card"
+						else _localized_choice_source(StringName(event.get("source_zone_key", "")))
+					),
 					_card_display_name(str(event.get("card_instance_id", ""))),
 				]
 			else:
@@ -212,7 +234,12 @@ func _rebuild_hand(state: Dictionary, active_player_id: String) -> void:
 			(removed.get("card_instance_ids", []) as Array).size(),
 		]
 	else:
-		hand_title.text = "待處理選擇"
+		var choice_operation := StringName(effect_state.get("op", ""))
+		hand_title.text = (
+			str(effect_state.get("choice_title", "多人輪抽"))
+			if choice_operation == &"draft_gain_card"
+			else "待處理選擇"
+		)
 		card_ids = _remaining_choice_card_ids(effect_state)
 		var selected_count := int(effect_state.get("selected_count", 0))
 		var max_selections := int(effect_state.get("max_selections", 1))
@@ -227,19 +254,30 @@ func _rebuild_hand(state: Dictionary, active_player_id: String) -> void:
 					and max_selections > 1
 			else "%d 張" % card_ids.size()
 		)
-		hand_summary.text = "待選擇：%s%s｜來源：%s（%s）" % [
-			str(effect_state.get("prompt", "請完成選擇")),
-			progress_text,
-			choice_source_label,
-			count_text,
-		]
+		if choice_operation == &"draft_gain_card":
+			hand_summary.text = "%s｜目前應選：%s｜剩餘 %d 張" % [
+				str(effect_state.get("prompt", "請完成選擇")),
+				_player_display_name(str(effect_state.get("required_actor_id", ""))),
+				card_ids.size(),
+			]
+		else:
+			hand_summary.text = "待選擇：%s%s｜來源：%s（%s）" % [
+				str(effect_state.get("prompt", "請完成選擇")),
+				progress_text,
+				choice_source_label,
+				count_text,
+			]
 
 	for raw_card_id: Variant in card_ids:
 		var card_id := str(raw_card_id)
 		var card := cards.get(card_id, {}) as Dictionary
 		var definition := definitions.get(str(card.get("definition_id", "")), {}) as Dictionary
 		var card_label := Label.new()
-		card_label.text = _hand_card_text(definition)
+		card_label.text = (
+			_draft_card_text(definition)
+			if StringName(effect_state.get("op", "")) == &"draft_gain_card"
+			else _hand_card_text(definition)
+		)
 		if StringName(effect_state.get("op", "")) == &"choose_remove_card":
 			card_label.text += "｜來源：%s" % _choice_card_source_label(
 				effect_state, card_id
@@ -383,6 +421,24 @@ func _hand_card_text(definition: Dictionary) -> String:
 	return text
 
 
+func _draft_card_text(definition: Dictionary) -> String:
+	var type_label: String = {
+		"item": "道具",
+		"equipment": "裝備",
+	}.get(str(definition.get("card_type", "")), str(definition.get("card_type", "卡牌")))
+	var text := "%s｜%s" % [str(definition.get("display_name", "未知卡片")), type_label]
+	for stat: Array in [
+		["cost", "費用"],
+		["purchase_power", "購買力"],
+		["combat", "戰力"],
+		["honor", "榮譽"],
+	]:
+		var value: Variant = definition.get(str(stat[0]), null)
+		if value != null:
+			text += "｜%s %d" % [str(stat[1]), int(value)]
+	return text
+
+
 func _localized_choice_source(source_zone_key: StringName) -> String:
 	return {
 		&"hand": "自己的手牌",
@@ -390,6 +446,7 @@ func _localized_choice_source(source_zone_key: StringName) -> String:
 		&"discard_pile": "自己的棄牌堆",
 		&"recruit_row": "招募區",
 		&"shop_row": "商店",
+		&"resource_draft_row": "物資輪抽區",
 	}.get(source_zone_key, "選擇來源區")
 
 
@@ -412,6 +469,8 @@ func _choice_card_source_label(effect_state: Dictionary, card_id: String) -> Str
 
 
 func _remaining_choice_card_ids(effect_state: Dictionary) -> Array:
+	if StringName(effect_state.get("op", "")) == &"draft_gain_card":
+		return (effect_state.get("remaining_card_ids", []) as Array).duplicate()
 	var result: Array = []
 	var selected_card_ids := effect_state.get("selected_card_ids", []) as Array
 	for raw_card_id: Variant in effect_state.get("eligible_card_ids", []):
@@ -421,11 +480,11 @@ func _remaining_choice_card_ids(effect_state: Dictionary) -> Array:
 
 
 func _choice_action_label(operation: StringName) -> String:
-	return "取得" if operation == &"choose_gain_card" else "移除"
+	return "取得" if operation in [&"choose_gain_card", &"draft_gain_card"] else "移除"
 
 
 func _choice_button_text(operation: StringName, source_label: String) -> String:
-	if operation == &"choose_gain_card":
+	if operation in [&"choose_gain_card", &"draft_gain_card"]:
 		return "從%s取得此牌" % source_label
 	return "從%s移除此牌" % source_label
 
@@ -434,6 +493,12 @@ func _card_display_name(card_instance_id: String) -> String:
 	var card := _cards.get(card_instance_id, {}) as Dictionary
 	var definition := _definitions.get(str(card.get("definition_id", "")), {}) as Dictionary
 	return str(definition.get("display_name", card_instance_id))
+
+
+func _player_display_name(player_id: String) -> String:
+	var players := _current_state.get("players", {}) as Dictionary
+	var player := players.get(player_id, {}) as Dictionary
+	return str(player.get("display_name", player_id))
 
 
 func _rebuild_market(state: Dictionary) -> void:

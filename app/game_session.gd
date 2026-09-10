@@ -6,7 +6,7 @@ signal events_committed(events: Array[Dictionary])
 signal command_rejected(error_code: String)
 
 const CONTENT_PACK_PATH := "res://content/packs/base_vertical_slice.json"
-const RULESET_FINGERPRINT := "ruleset:vertical-slice:0.13.0"
+const RULESET_FINGERPRINT := "ruleset:vertical-slice:0.14.0"
 
 var state: GameStateData
 var content_registry := ContentRegistry.new()
@@ -26,7 +26,7 @@ func start_new_game(seed_value: int = 20260909) -> PackedStringArray:
 func get_legal_commands(actor_id: StringName = &"") -> Array[Dictionary]:
 	if state == null:
 		return []
-	var resolved_actor_id := state.active_player_id if actor_id.is_empty() else actor_id
+	var resolved_actor_id := _required_choice_actor() if actor_id.is_empty() else actor_id
 	return RulesEngine.get_legal_commands(state, resolved_actor_id, content_registry.definitions)
 
 
@@ -117,7 +117,7 @@ func resolve_choice(choice_id: String, card_instance_id: StringName, skip: bool)
 		"protocol_version": 1,
 		"game_id": str(state.game_id),
 		"command_id": "cmd-%06d" % (state.revision + 1),
-		"actor_id": str(state.active_player_id),
+		"actor_id": str(_required_choice_actor()),
 		"expected_revision": state.revision,
 		"command": {
 			"type": "RESOLVE_CHOICE",
@@ -189,7 +189,7 @@ func snapshot() -> Dictionary:
 		return {}
 	return {
 		"snapshot_schema_version": 1,
-		"app_version": "0.13.0",
+		"app_version": "0.14.0",
 		"content_fingerprint": content_registry.pack_fingerprint,
 		"ruleset_fingerprint": RULESET_FINGERPRINT,
 		"state": state.to_dictionary(),
@@ -200,10 +200,18 @@ func snapshot() -> Dictionary:
 func _emit_state_changed() -> void:
 	var public_state := state.to_dictionary()
 	public_state["definitions"] = content_registry.to_public_dictionary()
-	public_state["legal_commands"] = get_legal_commands()
+	public_state["legal_commands"] = get_legal_commands(_required_choice_actor())
 	public_state["active_resources"] = ResourceService.evaluate_player(
 		state,
 		state.active_player_id,
 		content_registry.definitions
 	)
 	state_changed.emit(public_state)
+
+
+func _required_choice_actor() -> StringName:
+	if state == null or state.effect_state.is_empty():
+		return state.active_player_id if state != null else &""
+	return StringName(state.effect_state.get(
+		"required_actor_id", state.effect_state.get("actor_id", state.active_player_id)
+	))

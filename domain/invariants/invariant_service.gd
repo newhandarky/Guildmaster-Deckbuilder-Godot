@@ -82,6 +82,17 @@ static func _validate_supply_zones(state: GameStateData, errors: PackedStringArr
 			errors.append("Missing supply deck %s" % deck_zone_id)
 		elif deck.kind != &"ordered_deck" or deck.visibility != &"hidden":
 			errors.append("Supply deck %s must be a hidden ordered deck" % deck_zone_id)
+	var resource_draft_row := state.zones.get(SupplyService.RESOURCE_DRAFT_ROW_ID) as ZoneData
+	if resource_draft_row == null:
+		errors.append("Missing resource draft row")
+	elif resource_draft_row.kind != &"face_up_row" \
+			or resource_draft_row.visibility != &"public":
+		errors.append("Resource draft row must be a public face-up row")
+	elif resource_draft_row.card_instance_ids.size() > state.players.size():
+		errors.append("Resource draft row exceeds player count")
+	elif StringName(state.effect_state.get("op", "")) != &"draft_gain_card" \
+			and not resource_draft_row.card_instance_ids.is_empty():
+		errors.append("Resource draft row must be empty outside its pending choice")
 	var monster_row := state.zones.get(SupplyService.MONSTER_ROW_ID) as ZoneData
 	var monster_cycle := state.zones.get(SupplyService.MONSTER_CYCLE_ID) as ZoneData
 	if monster_row == null:
@@ -249,6 +260,9 @@ static func _validate_effect_state(state: GameStateData, errors: PackedStringArr
 	var actor_id := StringName(choice.get("actor_id", ""))
 	if actor_id != state.active_player_id or not state.players.has(actor_id):
 		errors.append("Pending choice must belong to the active player")
+	var required_actor_id := StringName(choice.get("required_actor_id", actor_id))
+	if not state.players.has(required_actor_id):
+		errors.append("Pending choice required actor must be a player")
 	var choice_id := str(choice.get("choice_id", ""))
 	if choice_id.is_empty():
 		errors.append("Pending choice requires a choice ID")
@@ -292,6 +306,8 @@ static func _validate_effect_state(state: GameStateData, errors: PackedStringArr
 				)
 				if int(choice.get("max_cost", -1)) < 0 or not valid_tags:
 					errors.append("Pending gain filter is invalid")
+			&"draft_gain_card":
+				_validate_draft_choice(state, choice, actor_id, required_actor_id, errors)
 			_:
 				errors.append("Unsupported pending choice operation")
 	if not choice.get("eligible_card_ids", []) is Array:
@@ -336,6 +352,10 @@ static func _validate_effect_state(state: GameStateData, errors: PackedStringArr
 			var card := state.cards.get(card_instance_id) as Dictionary
 			if card == null or not StringName(card.get("owner_id", "")).is_empty():
 				errors.append("Pending gain card %s must be unowned" % card_instance_id)
+		elif operation == &"draft_gain_card":
+			_validate_draft_candidate(
+				state, choice, card_instance_id, selected_seen.has(card_instance_id), errors
+			)
 	for selected_id: Variant in selected_card_ids:
 		if not eligible_seen.has(StringName(str(selected_id))):
 			errors.append("Pending choice selected cards must be locked candidates")
@@ -352,6 +372,102 @@ static func _validate_effect_state(state: GameStateData, errors: PackedStringArr
 			and (int(choice.get("selected_count", -1)) != selected_card_ids.size() \
 			or selected_card_ids.size() >= maximum):
 		errors.append("Pending choice selection progress is invalid")
+	if operation == &"draft_gain_card" \
+			and int(choice.get("selected_count", -1)) != selected_card_ids.size():
+		errors.append("Pending draft selection progress is invalid")
+
+
+static func _validate_draft_choice(
+	state: GameStateData,
+	choice: Dictionary,
+	defeated_by_actor_id: StringName,
+	required_actor_id: StringName,
+	errors: PackedStringArray
+) -> void:
+	if StringName(choice.get("defeated_by_actor_id", "")) != defeated_by_actor_id:
+		errors.append("Pending draft defeater must match its actor")
+	if not choice.get("source_effect", {}) is Dictionary:
+		errors.append("Pending draft source effect must be a Dictionary")
+		return
+	var source_effect := choice.get("source_effect", {}) as Dictionary
+	if StringName(source_effect.get("op", "")) != &"draft_gain_card" \
+			or StringName(source_effect.get("source_deck_zone_id", "")) \
+			!= StringName(choice.get("source_deck_zone_id", "")) \
+			or StringName(source_effect.get("choice_zone_id", "")) \
+			!= StringName(choice.get("choice_zone_id", "")) \
+			or StringName(source_effect.get("destination_zone_key", "")) \
+			!= StringName(choice.get("destination_zone_key", "")):
+		errors.append("Pending draft source effect does not match its locked rules")
+	var source_deck := state.zones.get(
+		StringName(choice.get("source_deck_zone_id", ""))
+	) as ZoneData
+	var choice_zone := state.zones.get(StringName(choice.get("choice_zone_id", ""))) as ZoneData
+	if source_deck == null or source_deck.kind != &"ordered_deck" \
+			or source_deck.visibility != &"hidden" or choice_zone == null \
+			or choice_zone.kind != &"face_up_row" or choice_zone.visibility != &"public" \
+			or not bool(choice_zone.metadata.get("temporary_choice_zone", false)) \
+			or StringName(choice.get("source_zone_id", "")) != choice_zone.zone_id:
+		errors.append("Pending draft zones are invalid")
+	if StringName(choice.get("destination_zone_key", "")) != &"hand":
+		errors.append("Pending draft destination rule must be player hand")
+	for field_name: String in ["remaining_card_ids", "selection_order", "completed_selections"]:
+		if not choice.get(field_name, []) is Array:
+			errors.append("Pending draft %s must be an Array" % field_name)
+			return
+	var remaining := choice.get("remaining_card_ids", []) as Array
+	if remaining.is_empty():
+		errors.append("Pending draft requires remaining candidates")
+	var order := choice.get("selection_order", []) as Array
+	var selection_index := int(choice.get("selection_index", -1))
+	if selection_index < 0 or selection_index >= order.size() \
+			or StringName(str(order[selection_index])) != required_actor_id:
+		errors.append("Pending draft required actor must match selection order")
+	if order.is_empty() or order.size() != (choice.get("eligible_card_ids", []) as Array).size():
+		errors.append("Pending draft selection order must match revealed cards")
+	var expected_order: Array[String] = []
+	var start_index := state.turn_order.find(defeated_by_actor_id)
+	for offset in order.size():
+		expected_order.append(str(state.turn_order[(start_index + offset) % state.turn_order.size()]))
+	if order != expected_order:
+		errors.append("Pending draft selection order must follow turn order")
+
+
+static func _validate_draft_candidate(
+	state: GameStateData,
+	choice: Dictionary,
+	card_instance_id: StringName,
+	is_selected: bool,
+	errors: PackedStringArray
+) -> void:
+	var remaining := choice.get("remaining_card_ids", []) as Array
+	var location := ZoneService.find_card_zone(state, card_instance_id)
+	var card := state.cards.get(card_instance_id) as Dictionary
+	if not is_selected:
+		if str(card_instance_id) not in remaining \
+				or location != StringName(choice.get("choice_zone_id", "")):
+			errors.append("Pending draft card %s must remain in its choice zone" % card_instance_id)
+		if card == null or not StringName(card.get("owner_id", "")).is_empty():
+			errors.append("Pending draft candidate %s must be unowned" % card_instance_id)
+		return
+	if str(card_instance_id) in remaining:
+		errors.append("Pending draft selected card %s cannot remain available" % card_instance_id)
+		return
+	var completed := choice.get("completed_selections", []) as Array
+	var matched := false
+	for raw_record: Variant in completed:
+		if not raw_record is Dictionary:
+			continue
+		var record := raw_record as Dictionary
+		if StringName(record.get("card_instance_id", "")) != card_instance_id:
+			continue
+		var owner_id := StringName(record.get("actor_id", ""))
+		var owner := state.players.get(owner_id) as PlayerStateData
+		matched = owner != null \
+				and location == StringName(owner.zone_ids.get(&"hand", &"")) \
+				and card != null and StringName(card.get("owner_id", "")) == owner_id
+		break
+	if not matched:
+		errors.append("Pending draft selected card %s must be in its chooser hand" % card_instance_id)
 
 
 static func _validate_removal_choice_sources(
