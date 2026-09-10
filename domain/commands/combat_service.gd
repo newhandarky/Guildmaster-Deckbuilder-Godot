@@ -1,6 +1,9 @@
 class_name CombatService
 extends RefCounted
 
+const BossServiceType = preload("res://domain/state/boss_service.gd")
+const BossRuleEvaluatorType = preload("res://domain/rules/boss_rule_evaluator.gd")
+
 
 static func get_legal_commands(
 	state: GameStateData,
@@ -10,10 +13,12 @@ static func get_legal_commands(
 	var commands: Array[Dictionary] = []
 	if state.phase != &"combat":
 		return commands
-	var row := state.zones.get(SupplyService.MONSTER_ROW_ID) as ZoneData
-	if row == null:
-		return commands
-	for target_card_id: StringName in row.card_instance_ids:
+	var target_ids: Array[StringName] = []
+	for zone_id: StringName in [BossServiceType.BOSS_ACTIVE_ID, SupplyService.MONSTER_ROW_ID]:
+		var row := state.zones.get(zone_id) as ZoneData
+		if row != null:
+			target_ids.append_array(row.card_instance_ids)
+	for target_card_id: StringName in target_ids:
 		var preview := preview_attack(state, actor_id, target_card_id, definitions)
 		if not bool(preview.get("legal", false)):
 			continue
@@ -52,13 +57,17 @@ static func preview_attack(
 		"reward_summary": "",
 		"returns_to_cycle": false,
 		"deferred_choice": false,
+		"target_type": "",
+		"equipment_suppressed": false,
+		"requirement_modifiers": [],
 	}
 	var player := state.players.get(actor_id) as PlayerStateData
 	if player == null:
 		result["error"] = "missing_player"
 		return result
-	if ZoneService.find_card_zone(state, target_card_id) != SupplyService.MONSTER_ROW_ID:
-		result["error"] = "target_not_in_monster_row"
+	var target_zone_id := ZoneService.find_card_zone(state, target_card_id)
+	if target_zone_id not in [SupplyService.MONSTER_ROW_ID, BossServiceType.BOSS_ACTIVE_ID]:
+		result["error"] = "target_not_in_enemy_zone"
 		return result
 	var target_card := state.cards.get(target_card_id) as Dictionary
 	if target_card == null:
@@ -70,23 +79,44 @@ static func preview_attack(
 	if target_definition == null:
 		result["error"] = "missing_definition"
 		return result
-	if target_definition.card_type != &"monster" or target_definition.combat == null:
+	if target_definition.card_type not in [&"monster", &"boss"] or target_definition.combat == null:
 		result["error"] = "unsupported_target_type"
+		return result
+	if target_definition.card_type == &"boss" and not target_definition.framework_ready:
+		result["error"] = "boss_rules_not_implemented"
+		result["target_type"] = "boss"
+		result["reward_summary"] = target_definition.reward_text
 		return result
 	var party := state.zones.get(player.zone_ids.get(&"party", &"")) as ZoneData
 	if party == null:
 		result["error"] = "missing_party"
 		return result
-	var requirement := int(target_definition.combat)
+	var target_rules := {
+		"requirement": int(target_definition.combat),
+		"participant_limit": -1,
+		"equipment_suppressed": false,
+		"modifiers": [],
+	}
+	if target_definition.card_type == &"boss":
+		target_rules = BossRuleEvaluatorType.evaluate(state, actor_id, target_definition, definitions)
+	var requirement := int(target_rules["requirement"])
 	var total := int(player.turn_resources.get("combat", 0))
 	var participants: Array[String] = []
 	var contributions: Array[Dictionary] = []
 	for party_index in party.card_instance_ids.size():
+		if int(target_rules["participant_limit"]) >= 0 \
+				and participants.size() >= int(target_rules["participant_limit"]):
+			break
 		if total >= requirement and not participants.is_empty():
 			break
 		var card_instance_id := party.card_instance_ids[party_index]
 		var contribution := ResourceService.evaluate_party_member_combat(
-			state, definitions, card_instance_id, party_index, party
+			state,
+			definitions,
+			card_instance_id,
+			party_index,
+			party,
+			not bool(target_rules["equipment_suppressed"])
 		)
 		participants.append(str(card_instance_id))
 		contributions.append({
@@ -142,8 +172,10 @@ static func preview_attack(
 					reward_parts.append(_dice_reward_summary(effect))
 				&"draft_gain_card":
 					reward_parts.append("公開等同玩家數的物資牌，從擊敗者開始依序輪抽至手牌")
+	if target_definition.card_type == &"boss" and not target_definition.reward_text.is_empty():
+		reward_parts.assign([target_definition.reward_text])
 	var returns_to_cycle := &"cycle_anchor" in target_definition.tags
-	if not returns_to_cycle:
+	if target_definition.card_type == &"monster" and not returns_to_cycle:
 		reward_parts.append("取得此卡（購買力 %s／榮譽 %s）" % [
 			_printed_label(target_definition.purchase_power),
 			_printed_label(target_definition.honor),
@@ -160,6 +192,9 @@ static func preview_attack(
 	result["reward_summary"] = "、".join(reward_parts)
 	result["returns_to_cycle"] = returns_to_cycle
 	result["deferred_choice"] = deferred_choice
+	result["target_type"] = str(target_definition.card_type)
+	result["equipment_suppressed"] = bool(target_rules["equipment_suppressed"])
+	result["requirement_modifiers"] = (target_rules["modifiers"] as Array).duplicate(true)
 	return result
 
 
@@ -236,7 +271,11 @@ static func apply(
 	if not effect_error.is_empty():
 		return effect_error
 	var supply_error: String
-	if &"cycle_anchor" in target_definition.tags:
+	if target_definition.card_type == &"boss":
+		supply_error = BossServiceType.claim_defeated_boss(
+			state, target_card_id, player, events
+		)
+	elif &"cycle_anchor" in target_definition.tags:
 		supply_error = SupplyService.cycle_defeated_monster(state, target_card_id, events)
 	else:
 		supply_error = SupplyService.claim_defeated_monster(
@@ -245,21 +284,39 @@ static func apply(
 	if not supply_error.is_empty():
 		return supply_error
 	player.turn_facts[&"defeated_enemy"] = true
-	player.turn_facts[&"defeated_monster_count"] = int(
-		player.turn_facts.get(&"defeated_monster_count", 0)
-	) + 1
+	var counter_key := (
+		&"defeated_boss_count" if target_definition.card_type == &"boss" \
+		else &"defeated_monster_count"
+	)
+	player.turn_facts[counter_key] = int(player.turn_facts.get(counter_key, 0)) + 1
+	if target_definition.card_type == &"boss":
+		player.counters[&"defeated_boss_count"] = int(
+			player.counters.get(&"defeated_boss_count", 0)
+		) + 1
+		events.append({
+			"type": "boss_defeated",
+			"actor_id": str(actor_id),
+			"target_card_id": str(target_card_id),
+			"participant_ids": participant_ids.duplicate(),
+			"defeated_boss_count": int(player.counters[&"defeated_boss_count"]),
+		})
+		var boss_active := state.zones[BossServiceType.BOSS_ACTIVE_ID] as ZoneData
+		if bool(boss_active.metadata.get("all_bosses_defeated", false)):
+			events.append({"type": "all_bosses_defeated", "actor_id": str(actor_id)})
+		else:
+			events.append({"type": "boss_reveal_deferred", "phase": "rest"})
 	events.append({
 		"type": "enemy_defeated",
 		"actor_id": str(actor_id),
 		"target_card_id": str(target_card_id),
 		"participant_ids": participant_ids.duplicate(),
 		"claimed_optional_reward": claim_optional_reward,
-		"destination": (
-			str(SupplyService.MONSTER_CYCLE_ID)
-			if &"cycle_anchor" in target_definition.tags
-			else str(player.zone_ids[&"discard_pile"])
-		),
-		"defeated_monster_count": int(player.turn_facts[&"defeated_monster_count"]),
+		"target_type": str(target_definition.card_type),
+		"destination": str(SupplyService.MONSTER_CYCLE_ID) \
+			if &"cycle_anchor" in target_definition.tags \
+			else str(player.zone_ids[&"discard_pile"]),
+		"defeated_count": int(player.turn_facts[counter_key]),
+		"defeated_monster_count": int(player.turn_facts.get(&"defeated_monster_count", 0)),
 	})
 	return ""
 

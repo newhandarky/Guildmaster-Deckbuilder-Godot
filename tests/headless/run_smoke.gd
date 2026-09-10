@@ -1,5 +1,8 @@
 extends SceneTree
 
+const BossService = preload("res://domain/state/boss_service.gd")
+const BossRuleEvaluator = preload("res://domain/rules/boss_rule_evaluator.gd")
+
 var _failures: PackedStringArray = []
 
 
@@ -29,6 +32,8 @@ func _run() -> void:
 	_test_effect_resolution_fifo()
 	_test_equipment_survives_rest()
 	_test_monster_supply_setup_and_anchor()
+	_test_boss_content_and_supply()
+	_test_boss_combat_and_rest_reveal()
 	_test_combat_preview_and_reward()
 	_test_combat_optional_reward_skip()
 	_test_standard_monster_claim_and_draw_rewards()
@@ -51,6 +56,7 @@ func _run() -> void:
 	_test_market_refresh_selection_order_is_deterministic()
 	await _test_market_refresh_hud_integration()
 	await _test_combat_hud_integration()
+	await _test_boss_hud_integration()
 	await _test_pending_choice_hud_integration()
 	await _test_discard_choice_hud_integration()
 	await _test_multi_zone_removal_hud_integration()
@@ -81,7 +87,7 @@ func _test_content_pack() -> void:
 	var registry := ContentRegistry.new()
 	var errors := registry.load_pack("res://content/packs/base_vertical_slice.json")
 	_expect(errors.is_empty(), "base content pack should validate: %s" % "; ".join(errors))
-	_expect(registry.definitions.size() == 27, "vertical slice should load twenty-seven base definitions")
+	_expect(registry.definitions.size() == 38, "vertical slice should load thirty-eight base definitions")
 	var mimic := registry.definitions.get(&"base:monster/monster-02") as CardDefinition
 	_expect(
 		mimic != null and mimic.copies == 3 and mimic.combat == 5 \
@@ -155,6 +161,13 @@ func _test_content_pack() -> void:
 			monster_copy_count += definition.copies
 	_expect(monster_definition_ids.size() == 14, "all fourteen base monster definitions should exist")
 	_expect(monster_copy_count == 32, "base monster definitions should total thirty-two instances")
+	var boss_count := 0
+	for definition_id: StringName in registry.definitions:
+		var definition := registry.definitions[definition_id] as CardDefinition
+		if definition.card_type == &"boss":
+			boss_count += 1
+			_expect(definition.copies == 1, "each base boss should have exactly one copy")
+	_expect(boss_count == 11, "all eleven formal base boss definitions should exist")
 
 
 func _test_content_pack_reload() -> void:
@@ -163,7 +176,7 @@ func _test_content_pack_reload() -> void:
 	var first_fingerprint := registry.pack_fingerprint
 	var second_errors := registry.load_pack("res://content/packs/base_vertical_slice.json")
 	_expect(first_errors.is_empty() and second_errors.is_empty(), "content pack should be safely reloadable")
-	_expect(registry.definitions.size() == 27, "content reload must not retain duplicate definitions")
+	_expect(registry.definitions.size() == 38, "content reload must not retain duplicate definitions")
 	_expect(registry.pack_fingerprint == first_fingerprint, "same content should keep the same fingerprint")
 
 
@@ -189,7 +202,7 @@ func _test_two_player_state() -> void:
 
 func _test_official_starting_setup() -> void:
 	var state := GameStateData.create_vertical_slice()
-	_expect(state.cards.size() == 66, "setup should create player cards, thirty-two monsters, and fourteen market cards")
+	_expect(state.cards.size() == 77, "setup should include eleven formal boss instances")
 	var monster_instance_count := 0
 	var monster_definition_ids: Dictionary = {}
 	for card_instance_id: StringName in state.cards:
@@ -534,6 +547,108 @@ func _test_monster_supply_setup_and_anchor() -> void:
 		not InvariantService.validate(broken).is_empty(),
 		"moving the cycle anchor outside its supply should fail invariants"
 	)
+
+
+func _test_boss_content_and_supply() -> void:
+	var definitions := _load_definitions()
+	var expected_values := [
+		["base:boss/boss-01", 9, 3, 10], ["base:boss/boss-02", 9, 3, 10],
+		["base:boss/boss-03", 10, 3, 10], ["base:boss/boss-04", 5, 3, 10],
+		["base:boss/boss-05", 9, 3, 10], ["base:boss/boss-06", 8, 3, 10],
+		["base:boss/boss-07", 9, 3, 8], ["base:boss/boss-08", 9, 3, 8],
+		["base:boss/boss-09", 8, 3, 8], ["base:boss/boss-10", 14, 3, 8],
+		["base:boss/boss-11", 6, 3, 8],
+	]
+	for values: Array in expected_values:
+		var definition := definitions.get(StringName(values[0])) as CardDefinition
+		_expect(
+			definition != null and definition.copies == 1 and definition.card_type == &"boss"
+					and definition.combat == values[1] and definition.purchase_power == values[2]
+					and definition.honor == values[3],
+			"boss %s should use confirmed formal values" % values[0]
+		)
+	var state := GameStateData.create_vertical_slice(503)
+	var equipment_rule := BossRuleEvaluator.evaluate(
+		state, &"p1", definitions[&"base:boss/boss-05"], definitions
+	)
+	var limit_rule := BossRuleEvaluator.evaluate(
+		state, &"p1", definitions[&"base:boss/boss-08"], definitions
+	)
+	var left_rule := BossRuleEvaluator.evaluate(
+		state, &"p1", definitions[&"base:boss/boss-09"], definitions
+	)
+	_expect(bool(equipment_rule.get("equipment_suppressed", false)), "shared boss rules should suppress equipment when declared")
+	_expect(int(limit_rule.get("participant_limit", -1)) == 3, "shared boss rules should apply participant limits")
+	_expect(int(left_rule.get("requirement", 0)) == 13, "shared boss rules should evaluate the left player's five public professions")
+	var active := state.zones[BossService.BOSS_ACTIVE_ID] as ZoneData
+	var deck := state.zones[BossService.BOSS_DECK_ID] as ZoneData
+	var reserve := state.zones[BossService.BOSS_RESERVE_ID] as ZoneData
+	_expect(active.card_instance_ids.size() == 1, "setup should reveal one boss")
+	_expect(deck.card_instance_ids.size() == 3, "two-player setup should keep three bosses in its deck")
+	_expect(reserve.card_instance_ids.size() == 7, "unselected bosses should remain in the formal reserve")
+	_expect(active.card_instance_ids.size() + deck.card_instance_ids.size() + reserve.card_instance_ids.size() == 11, "every boss instance should occupy exactly one boss zone")
+	var repeated := GameStateData.create_vertical_slice(503)
+	_expect(
+		CanonicalJson.sha256(state.to_dictionary()) == CanonicalJson.sha256(repeated.to_dictionary()),
+		"boss selection and reveal should be deterministic for the same seed"
+	)
+	var restored := GameStateData.from_dictionary(state.to_dictionary())
+	_expect(
+		CanonicalJson.sha256(restored.to_dictionary()) == CanonicalJson.sha256(state.to_dictionary()),
+		"boss zones should survive snapshot-shaped round trip"
+	)
+
+
+func _test_boss_combat_and_rest_reveal() -> void:
+	var definitions := _load_definitions()
+	var state := GameStateData.create_vertical_slice(509)
+	var setup_error := _expose_boss(state, &"card-boss-10")
+	_expect(setup_error.is_empty(), "boss combat fixture should expose slime girl")
+	if not setup_error.is_empty():
+		return
+	state.phase = &"combat"
+	(state.players[&"p1"] as PlayerStateData).turn_resources["combat"] = 20
+	var preview := CombatService.preview_attack(state, &"p1", &"card-boss-10", definitions)
+	_expect(bool(preview.get("legal", false)) and preview.get("target_type") == "boss", "ready boss should enter shared target-aware combat")
+	_expect(int(preview.get("requirement", -1)) == 9, "slime girl should subtract five distinct starting professions")
+	var deck_target := (state.zones[BossService.BOSS_DECK_ID] as ZoneData).card_instance_ids[0]
+	var before_invalid := CanonicalJson.sha256(state.to_dictionary())
+	var invalid := RulesEngine.dispatch(
+		state,
+		_command_envelope(state, {"type": "ATTACK_TARGET", "target_card_id": str(deck_target), "claim_optional_reward": true}, "cmd-boss-invalid"),
+		definitions
+	)
+	_expect(not bool(invalid.get("ok", false)) and invalid.get("after_hash") == before_invalid, "boss attacks from a non-active zone should be rejected atomically")
+	var envelope := _command_envelope(
+		state,
+		{"type": "ATTACK_TARGET", "target_card_id": "card-boss-10", "claim_optional_reward": true},
+		"cmd-boss-defeat"
+	)
+	var first := RulesEngine.dispatch(state, envelope, definitions)
+	var second := RulesEngine.dispatch(state.clone_state(), envelope, definitions)
+	_expect(bool(first.get("ok", false)) and first.get("after_hash") == second.get("after_hash"), "boss combat should replay to the same canonical hash")
+	if not bool(first.get("ok", false)):
+		return
+	state = first["state"] as GameStateData
+	var player := state.players[&"p1"] as PlayerStateData
+	_expect(int(player.turn_resources.get("purchase_power", 0)) == 5, "boss reward should grant purchase power")
+	_expect(int(player.counters.get(&"defeated_boss_count", 0)) == 1, "boss defeat should update persistent player statistics")
+	_expect(ZoneService.find_card_zone(state, &"card-boss-10") == player.zone_ids[&"discard_pile"], "defeated boss should enter the winner discard pile with ownership")
+	_expect((state.zones[BossService.BOSS_ACTIVE_ID] as ZoneData).card_instance_ids.is_empty(), "defeated boss should leave an empty active slot until rest")
+	var event_types: Array[String] = []
+	for event: Dictionary in first.get("events", []):
+		event_types.append(str(event.get("type", "")))
+	_expect(event_types.find("effect_resolved") < event_types.find("boss_defeated") and event_types.find("boss_defeated") < event_types.find("enemy_defeated"), "boss rewards, defeat, and enemy completion events should stay ordered")
+	var restored := GameStateData.from_dictionary(state.to_dictionary())
+	_expect(CanonicalJson.sha256(restored.to_dictionary()) == CanonicalJson.sha256(state.to_dictionary()), "post-defeat boss transition should round-trip")
+	for index in 4:
+		var phase_result := RulesEngine.dispatch(state, _end_phase_envelope(state, "cmd-boss-rest-%d" % index), definitions)
+		_expect(bool(phase_result.get("ok", false)), "boss rest transition %d should dispatch" % index)
+		if not bool(phase_result.get("ok", false)):
+			return
+		state = phase_result["state"] as GameStateData
+	_expect((state.zones[BossService.BOSS_ACTIVE_ID] as ZoneData).card_instance_ids.size() == 1, "rest should reveal the next boss")
+	_expect(InvariantService.validate(state).is_empty(), "boss defeat and reveal should preserve zone uniqueness")
 
 
 func _test_combat_preview_and_reward() -> void:
@@ -3462,6 +3577,32 @@ func _test_combat_hud_integration() -> void:
 	app.queue_free()
 
 
+func _test_boss_hud_integration() -> void:
+	var packed := load("res://scenes/boot/main.tscn") as PackedScene
+	var app := packed.instantiate() as GameApp
+	root.add_child(app)
+	await process_frame
+	var expose_error := _expose_boss(app.session.state, &"card-boss-10")
+	_expect(expose_error.is_empty(), "boss HUD fixture should expose slime girl")
+	app.session.state.phase = &"combat"
+	(app.session.state.players[&"p1"] as PlayerStateData).turn_resources["combat"] = 20
+	app.session._emit_state_changed()
+	await process_frame
+	var boss_info_found := false
+	var boss_attack_button: Button
+	for child: Node in app.hud.market_actions.get_children():
+		if child is Label and "史萊姆娘｜戰力 14" in (child as Label).text \
+				and "自己完整隊伍" in (child as Label).text:
+			boss_info_found = true
+		elif child is Button and "抽 3 張牌" in (child as Button).text:
+			boss_attack_button = child as Button
+	_expect(boss_info_found, "HUD should show public boss stats, rules, and reward text")
+	_expect(boss_attack_button != null, "HUD should expose the ready boss attack preview")
+	if boss_attack_button != null:
+		_expect(not boss_attack_button.focus_neighbor_top.is_empty() and not boss_attack_button.focus_neighbor_bottom.is_empty(), "boss attack should participate in keyboard/gamepad focus flow")
+	app.queue_free()
+
+
 func _test_pending_choice_hud_integration() -> void:
 	var packed := load("res://scenes/boot/main.tscn") as PackedScene
 	var app := packed.instantiate() as GameApp
@@ -4358,6 +4499,25 @@ func _expose_monster(
 	)
 	return "" if bool(move_result.get("ok", false)) else str(
 		move_result.get("error", "fixture_target_failed")
+	)
+
+
+func _expose_boss(state: GameStateData, target_card_id: StringName) -> String:
+	var active := state.zones[BossService.BOSS_ACTIVE_ID] as ZoneData
+	if target_card_id in active.card_instance_ids:
+		return ""
+	var current_id := active.card_instance_ids[0]
+	var move_result := ZoneService.move_card(
+		state, current_id, BossService.BOSS_ACTIVE_ID, BossService.BOSS_DECK_ID, 0
+	)
+	if not bool(move_result.get("ok", false)):
+		return str(move_result.get("error", "boss_fixture_replacement_failed"))
+	var source_zone_id := ZoneService.find_card_zone(state, target_card_id)
+	move_result = ZoneService.move_card(
+		state, target_card_id, source_zone_id, BossService.BOSS_ACTIVE_ID
+	)
+	return "" if bool(move_result.get("ok", false)) else str(
+		move_result.get("error", "boss_fixture_target_failed")
 	)
 
 

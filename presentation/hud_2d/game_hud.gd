@@ -100,6 +100,16 @@ func show_events(events: Array[Dictionary]) -> void:
 			return
 	for index in range(events.size() - 1, -1, -1):
 		var event := events[index] as Dictionary
+		if event.get("type") == "boss_revealed":
+			event_label.text = "Boss 揭示：%s" % _card_display_name(
+				str(event.get("card_instance_id", ""))
+			)
+			return
+		if event.get("type") == "boss_defeated":
+			event_label.text = "Boss 討伐成功：%s" % _card_display_name(
+				str(event.get("target_card_id", ""))
+			)
+			return
 		if event.get("type") == "enemy_defeated":
 			event_label.text = "討伐成功：%s（%d 名參戰者）" % [
 				_card_display_name(str(event.get("target_card_id", ""))),
@@ -510,6 +520,7 @@ func _rebuild_market(state: Dictionary) -> void:
 	var refresh_command := _find_refresh_command(legal_commands)
 	var refresh_rows := refresh_command.get("rows", {}) as Dictionary
 	var market_buttons: Array[Button] = []
+	_append_boss_info(zones)
 	var attack_target_count := _append_combat_actions(legal_commands, market_buttons)
 	var row_specs := [
 		["shared:recruit-row", "招募區"],
@@ -599,6 +610,40 @@ func _rebuild_market(state: Dictionary) -> void:
 func _definition_for_instance(card_instance_id: String) -> Dictionary:
 	var card := _cards.get(card_instance_id, {}) as Dictionary
 	return _definitions.get(str(card.get("definition_id", "")), {}) as Dictionary
+
+
+func _append_boss_info(zones: Dictionary) -> void:
+	var active := zones.get("shared:boss-active", {}) as Dictionary
+	var deck := zones.get("shared:boss-deck", {}) as Dictionary
+	var card_ids := active.get("card_instance_ids", []) as Array
+	var title := Label.new()
+	title.text = "Boss｜牌庫剩餘 %d" % (deck.get("card_instance_ids", []) as Array).size()
+	title.add_theme_color_override("font_color", Color(1.0, 0.48, 0.42))
+	market_actions.add_child(title)
+	if card_ids.is_empty():
+		var empty_label := Label.new()
+		var metadata := active.get("metadata", {}) as Dictionary
+		empty_label.text = (
+			"已全數擊敗"
+			if bool(metadata.get("all_bosses_defeated", false))
+			else "等待休息階段揭示下一名 Boss"
+		)
+		market_actions.add_child(empty_label)
+		return
+	var card_id := str(card_ids[0])
+	var definition := _definition_for_instance(card_id)
+	var boss_label := Label.new()
+	boss_label.text = "%s｜戰力 %d｜購買力 %d｜榮譽 %d\n規則：%s\n獎勵：%s%s" % [
+		str(definition.get("display_name", card_id)),
+		int(definition.get("combat", 0)),
+		int(definition.get("purchase_power", 0)),
+		int(definition.get("honor", 0)),
+		str(definition.get("rules_text", "")),
+		str(definition.get("reward_text", "")),
+		"\n此 Boss 的單卡規則尚未啟用" if not bool(definition.get("framework_ready", true)) else "",
+	]
+	boss_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	market_actions.add_child(boss_label)
 
 
 func _find_buy_command(commands: Array, card_instance_id: String, row_id: String) -> Dictionary:

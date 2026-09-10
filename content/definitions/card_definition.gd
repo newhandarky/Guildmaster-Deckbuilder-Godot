@@ -11,6 +11,10 @@ extends Resource
 @export var honor: Variant = null
 @export var tags: Array[StringName] = []
 @export var effects: Array[Dictionary] = []
+@export var special_rules: Array[Dictionary] = []
+@export var rules_text: String = ""
+@export var reward_text: String = ""
+@export var framework_ready: bool = true
 @export var presentation_id: StringName
 
 
@@ -29,6 +33,12 @@ static func from_dictionary(data: Dictionary) -> CardDefinition:
 	for effect: Variant in data.get("effects", []):
 		if effect is Dictionary:
 			definition.effects.append((effect as Dictionary).duplicate(true))
+	for rule: Variant in data.get("special_rules", []):
+		if rule is Dictionary:
+			definition.special_rules.append((rule as Dictionary).duplicate(true))
+	definition.rules_text = str(data.get("rules_text", ""))
+	definition.reward_text = str(data.get("reward_text", ""))
+	definition.framework_ready = bool(data.get("framework_ready", true))
 	definition.presentation_id = StringName(data.get("presentation_id", ""))
 	return definition
 
@@ -63,5 +73,9 @@ func to_dictionary() -> Dictionary:
 		"honor": honor,
 		"tags": serialized_tags,
 		"effects": effects.duplicate(true),
+		"special_rules": special_rules.duplicate(true),
+		"rules_text": rules_text,
+		"reward_text": reward_text,
+		"framework_ready": framework_ready,
 		"presentation_id": str(presentation_id),
 	}

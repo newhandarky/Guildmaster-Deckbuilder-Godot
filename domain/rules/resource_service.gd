@@ -40,7 +40,8 @@ static func evaluate_party_member_combat(
 	definitions: Dictionary,
 	card_instance_id: StringName,
 	party_index: int,
-	party: ZoneData = null
+	party: ZoneData = null,
+	include_equipment: bool = true
 ) -> int:
 	if party == null:
 		var card := state.cards.get(card_instance_id) as Dictionary
@@ -57,12 +58,13 @@ static func evaluate_party_member_combat(
 	combat += _continuous_combat_bonus(
 		state, definitions, card_instance_id, party_index, party
 	)
-	var card := state.cards.get(card_instance_id) as Dictionary
-	var card_state := card.get("state", {}) as Dictionary if card != null else {}
-	for raw_equipment_id: Variant in card_state.get("equipment_ids", []) as Array:
-		var equipment_id := StringName(str(raw_equipment_id))
-		combat += _printed_value(state, definitions, equipment_id, &"combat")
-		combat += _continuous_combat_bonus(state, definitions, equipment_id, -1, party)
+	if include_equipment:
+		var card := state.cards.get(card_instance_id) as Dictionary
+		var card_state := card.get("state", {}) as Dictionary if card != null else {}
+		for raw_equipment_id: Variant in card_state.get("equipment_ids", []) as Array:
+			var equipment_id := StringName(str(raw_equipment_id))
+			combat += _printed_value(state, definitions, equipment_id, &"combat")
+			combat += _continuous_combat_bonus(state, definitions, equipment_id, -1, party)
 	return maxi(0, combat)
 
 

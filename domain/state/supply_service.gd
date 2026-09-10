@@ -1,6 +1,8 @@
 class_name SupplyService
 extends RefCounted
 
+const BossServiceType = preload("res://domain/state/boss_service.gd")
+
 const RECRUIT_DECK_ID := &"shared:adventurer-supply"
 const RECRUIT_ROW_ID := &"shared:recruit-row"
 const SHOP_DECK_ID := &"shared:resource-supply"
@@ -20,6 +22,9 @@ static func refill_vertical_slice_rows(state: GameStateData, events: Array[Dicti
 		var error := refill_row(state, pair[0], pair[1], ROW_SIZE, events)
 		if not error.is_empty():
 			return error
+	var boss_error: String = BossServiceType.reveal_pending(state, events)
+	if not boss_error.is_empty():
+		return boss_error
 	return ""
 
 

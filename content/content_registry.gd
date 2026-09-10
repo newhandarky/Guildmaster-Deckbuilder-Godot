@@ -2,6 +2,7 @@ class_name ContentRegistry
 extends RefCounted
 
 const CardDefinitionType = preload("res://content/definitions/card_definition.gd")
+const BossRuleEvaluatorType = preload("res://domain/rules/boss_rule_evaluator.gd")
 
 var pack_id: StringName
 var pack_version: String
@@ -43,6 +44,7 @@ func load_pack(path: String) -> PackedStringArray:
 		var definition: CardDefinition = CardDefinitionType.from_dictionary(raw_definition)
 		errors.append_array(definition.validate())
 		errors.append_array(EffectResolver.validate_effects(definition.effects, definition.definition_id))
+		errors.append_array(BossRuleEvaluatorType.validate_rules(definition))
 		if definitions.has(definition.definition_id):
 			errors.append("Duplicate definition_id: %s" % definition.definition_id)
 		else:

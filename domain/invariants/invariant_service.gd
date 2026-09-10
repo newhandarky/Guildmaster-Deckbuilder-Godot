@@ -1,6 +1,8 @@
 class_name InvariantService
 extends RefCounted
 
+const BossServiceType = preload("res://domain/state/boss_service.gd")
+
 
 static func validate(state: GameStateData) -> PackedStringArray:
 	var errors := PackedStringArray()
@@ -68,6 +70,7 @@ static func validate(state: GameStateData) -> PackedStringArray:
 
 
 static func _validate_supply_zones(state: GameStateData, errors: PackedStringArray) -> void:
+	_validate_boss_zones(state, errors)
 	for row_zone_id: StringName in [SupplyService.RECRUIT_ROW_ID, SupplyService.SHOP_ROW_ID]:
 		var row := state.zones.get(row_zone_id) as ZoneData
 		if row == null:
@@ -112,6 +115,24 @@ static func _validate_supply_zones(state: GameStateData, errors: PackedStringArr
 		elif anchor_id not in monster_row.card_instance_ids \
 				and anchor_id not in monster_cycle.card_instance_ids:
 			errors.append("Monster cycle anchor is not continuous")
+
+
+static func _validate_boss_zones(state: GameStateData, errors: PackedStringArray) -> void:
+	var deck := state.zones.get(BossServiceType.BOSS_DECK_ID) as ZoneData
+	var active := state.zones.get(BossServiceType.BOSS_ACTIVE_ID) as ZoneData
+	var reserve := state.zones.get(BossServiceType.BOSS_RESERVE_ID) as ZoneData
+	if deck == null or deck.kind != &"ordered_deck" or deck.visibility != &"hidden":
+		errors.append("Boss deck must be a hidden ordered deck")
+	if reserve == null or reserve.kind != &"ordered_deck" or reserve.visibility != &"hidden":
+		errors.append("Boss reserve must be a hidden ordered deck")
+	if active == null or active.kind != &"face_up_row" or active.visibility != &"public":
+		errors.append("Boss active zone must be a public face-up row")
+	elif active.card_instance_ids.size() > 1:
+		errors.append("Boss active zone exceeds capacity")
+	elif active.card_instance_ids.is_empty() \
+			and not bool(active.metadata.get("pending_reveal", false)) \
+			and not bool(active.metadata.get("all_bosses_defeated", false)):
+		errors.append("Empty boss active zone requires a progression marker")
 
 
 static func _validate_equipment_attachments(
