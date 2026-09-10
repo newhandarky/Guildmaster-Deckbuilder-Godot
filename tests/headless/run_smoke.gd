@@ -32,6 +32,7 @@ func _run() -> void:
 	_test_combat_preview_and_reward()
 	_test_combat_optional_reward_skip()
 	_test_standard_monster_claim_and_draw_rewards()
+	_test_automaton_archer_pending_choice()
 	_test_combat_rejection_is_atomic()
 	_test_combat_equipment_departure()
 	_test_supply_setup_and_determinism()
@@ -43,6 +44,7 @@ func _run() -> void:
 	_test_market_refresh_selection_order_is_deterministic()
 	await _test_market_refresh_hud_integration()
 	await _test_combat_hud_integration()
+	await _test_pending_choice_hud_integration()
 	_test_play_adventurer_capacity_and_equipment_departure()
 	_test_use_item_draw_and_rest_cleanup()
 	_test_turn_rotation()
@@ -66,7 +68,7 @@ func _test_content_pack() -> void:
 	var registry := ContentRegistry.new()
 	var errors := registry.load_pack("res://content/packs/base_vertical_slice.json")
 	_expect(errors.is_empty(), "base content pack should validate: %s" % "; ".join(errors))
-	_expect(registry.definitions.size() == 16, "vertical slice should load sixteen base definitions")
+	_expect(registry.definitions.size() == 17, "vertical slice should load seventeen base definitions")
 	_expect(not registry.definitions.has(&"custom:adventurer/melee-01"), "custom adventurers must stay disabled")
 	_expect(not registry.pack_fingerprint.is_empty(), "content pack should expose a deterministic fingerprint")
 
@@ -77,7 +79,7 @@ func _test_content_pack_reload() -> void:
 	var first_fingerprint := registry.pack_fingerprint
 	var second_errors := registry.load_pack("res://content/packs/base_vertical_slice.json")
 	_expect(first_errors.is_empty() and second_errors.is_empty(), "content pack should be safely reloadable")
-	_expect(registry.definitions.size() == 16, "content reload must not retain duplicate definitions")
+	_expect(registry.definitions.size() == 17, "content reload must not retain duplicate definitions")
 	_expect(registry.pack_fingerprint == first_fingerprint, "same content should keep the same fingerprint")
 
 
@@ -103,17 +105,19 @@ func _test_two_player_state() -> void:
 
 func _test_official_starting_setup() -> void:
 	var state := GameStateData.create_vertical_slice()
-	_expect(state.cards.size() == 41, "setup should create player cards, seven monsters, and fourteen market cards")
+	_expect(state.cards.size() == 43, "setup should create player cards, nine monsters, and fourteen market cards")
 	for player_id: StringName in state.turn_order:
 		var player := state.players[player_id] as PlayerStateData
 		var party := state.zones[player.zone_ids[&"party"]] as ZoneData
 		var hand := state.zones[player.zone_ids[&"hand"]] as ZoneData
 		var draw_pile := state.zones[player.zone_ids[&"draw_pile"]] as ZoneData
 		var discard_pile := state.zones[player.zone_ids[&"discard_pile"]] as ZoneData
+		var removed := state.zones[player.zone_ids[&"removed"]] as ZoneData
 		_expect(party.card_instance_ids.size() == 5, "player %s should start with five adventurers in party" % player_id)
 		_expect(hand.card_instance_ids.size() == 5, "player %s should start with five cards in hand" % player_id)
 		_expect(draw_pile.card_instance_ids.is_empty(), "official setup should not shuffle starting hand into draw pile")
 		_expect(discard_pile.card_instance_ids.is_empty(), "official setup should start with an empty discard pile")
+		_expect(removed.card_instance_ids.is_empty(), "official setup should start with an empty removed zone")
 		var stone_count := 0
 		var crystal_count := 0
 		for card_instance_id: StringName in hand.card_instance_ids:
@@ -176,8 +180,24 @@ func _test_command_legality_guards() -> void:
 	_expect(str(inactive_result.get("error", "")) == "game_not_active", "dispatcher must reject commands after game end")
 
 	var pending := GameStateData.create_vertical_slice()
-	pending.effect_state = {"pending_choice": "test"}
-	_expect(RulesEngine.get_legal_commands(pending, &"p1").is_empty(), "pending effect should expose no END_PHASE")
+	pending.effect_state = {
+		"type": "pending_choice",
+		"choice_id": "choice-test",
+		"actor_id": "p1",
+		"op": "choose_remove_from_hand",
+		"prompt": "test",
+		"source_zone_id": "p1:hand",
+		"destination_zone_id": "p1:removed",
+		"eligible_card_ids": ["card-p1-summoning-stone-01"],
+		"min_selections": 0,
+		"max_selections": 1,
+		"effect_index": 0,
+		"source_card_instance_id": "test-source",
+	}
+	_expect(
+		not _commands_contain(RulesEngine.get_legal_commands(pending, &"p1"), "END_PHASE"),
+		"pending effect should expose no END_PHASE"
+	)
 	var pending_result := RulesEngine.dispatch(pending, _end_phase_envelope(pending, "cmd-pending"))
 	_expect(str(pending_result.get("error", "")) == "effects_pending", "dispatcher must enforce pending-effect legality")
 
@@ -379,7 +399,7 @@ func _test_monster_supply_setup_and_anchor() -> void:
 	var row := state.zones[SupplyService.MONSTER_ROW_ID] as ZoneData
 	var cycle := state.zones[SupplyService.MONSTER_CYCLE_ID] as ZoneData
 	_expect(row.card_instance_ids.size() == 3, "vertical slice should reveal three monsters")
-	_expect(cycle.card_instance_ids.size() == 4, "vertical slice cycle should retain four monsters")
+	_expect(cycle.card_instance_ids.size() == 6, "vertical slice cycle should retain six monsters")
 	_expect(
 		row.card_instance_ids == [
 			&"card-monster-skeleton-01",
@@ -687,6 +707,166 @@ func _test_standard_monster_claim_and_draw_rewards() -> void:
 			"defeated slime should enter the winner discard pile"
 		)
 		_expect(InvariantService.validate(slime_defeated).is_empty(), "slime claim should preserve invariants")
+
+
+func _test_automaton_archer_pending_choice() -> void:
+	var definitions := _load_definitions()
+	var state := GameStateData.create_vertical_slice(235)
+	var archer_id := &"card-monster-automaton-archer-01"
+	var expose_error := _expose_monster(
+		state, archer_id, &"card-monster-rabbit-demon-01"
+	)
+	_expect(expose_error.is_empty(), "archer fixture should expose the target: %s" % expose_error)
+	if not expose_error.is_empty():
+		return
+	var phase_result := RulesEngine.dispatch(
+		state,
+		_end_phase_envelope(state, "cmd-archer-combat-setup"),
+		definitions
+	)
+	_expect(bool(phase_result.get("ok", false)), "archer fixture should enter combat")
+	if not bool(phase_result.get("ok", false)):
+		return
+	state = phase_result["state"] as GameStateData
+	var preview := CombatService.preview_attack(state, &"p1", archer_id, definitions)
+	_expect(bool(preview.get("legal", false)), "automaton archer should be attackable")
+	_expect(
+		preview.get("reward_summary") == "可從手牌移除 1 張、取得此卡（購買力 2／榮譽 3）",
+		"archer preview should describe its deferred removal reward"
+	)
+	_expect(
+		bool(preview.get("deferred_choice", false)) and not bool(preview.get("optional_reward", true)),
+		"archer removal should defer its optional decision instead of duplicating attack buttons"
+	)
+	var attack_result := RulesEngine.dispatch(
+		state,
+		_command_envelope(state, {
+			"type": "ATTACK_TARGET",
+			"target_card_id": str(archer_id),
+			"claim_optional_reward": true,
+		}, "cmd-attack-archer"),
+		definitions
+	)
+	_expect(bool(attack_result.get("ok", false)), "archer attack should commit into a pending choice")
+	if not bool(attack_result.get("ok", false)):
+		return
+	var pending := attack_result["state"] as GameStateData
+	var player := pending.players[&"p1"] as PlayerStateData
+	_expect(
+		StringName(pending.effect_state.get("type", "")) == &"pending_choice",
+		"archer reward should create a serializable pending choice"
+	)
+	_expect(
+		ZoneService.find_card_zone(pending, archer_id) == player.zone_ids[&"discard_pile"],
+		"archer should be claimed before its removal choice resolves"
+	)
+	var choice_commands := RulesEngine.get_legal_commands(pending, &"p1", definitions)
+	_expect(choice_commands.size() == 6, "five hand choices plus one optional skip should be legal")
+	var only_choice_commands := not choice_commands.is_empty()
+	for command: Dictionary in choice_commands:
+		only_choice_commands = only_choice_commands and command.get("type") == "RESOLVE_CHOICE"
+	_expect(only_choice_commands, "pending choice should lock every unrelated command")
+	_expect(
+		not _commands_contain(choice_commands, "END_PHASE"),
+		"pending choice must block phase advancement"
+	)
+	var pending_snapshot := SnapshotCodec.encode(pending, "content-test", "rules-test")
+	var decoded := SnapshotCodec.decode(pending_snapshot, "content-test", "rules-test")
+	_expect(bool(decoded.get("ok", false)), "snapshot should round-trip a pending choice")
+	if bool(decoded.get("ok", false)):
+		_expect(
+			CanonicalJson.stringify((decoded["state"] as GameStateData).effect_state)
+				== CanonicalJson.stringify(pending.effect_state),
+			"pending choice snapshot should preserve every choice field"
+		)
+
+	var before_invalid := CanonicalJson.sha256(pending.to_dictionary())
+	var invalid := RulesEngine.dispatch(
+		pending,
+		_command_envelope(pending, {
+			"type": "RESOLVE_CHOICE",
+			"choice_id": str(pending.effect_state.get("choice_id", "")),
+			"card_instance_id": "card-p2-summoning-stone-01",
+			"skip": false,
+		}, "cmd-invalid-archer-choice"),
+		definitions
+	)
+	_expect(
+		str(invalid.get("error", "")) == "ineligible_choice_card",
+		"choice must reject a card outside the captured hand"
+	)
+	_expect(
+		CanonicalJson.sha256(pending.to_dictionary()) == before_invalid,
+		"invalid removal choice must remain atomic"
+	)
+	var selected_card_id := StringName(
+		(pending.effect_state.get("eligible_card_ids", []) as Array)[0]
+	)
+	var resolve_result := RulesEngine.dispatch(
+		pending,
+		_command_envelope(pending, {
+			"type": "RESOLVE_CHOICE",
+			"choice_id": str(pending.effect_state.get("choice_id", "")),
+			"card_instance_id": str(selected_card_id),
+			"skip": false,
+		}, "cmd-resolve-archer-choice"),
+		definitions
+	)
+	_expect(bool(resolve_result.get("ok", false)), "eligible hand card should resolve the choice")
+	if bool(resolve_result.get("ok", false)):
+		var resolved := resolve_result["state"] as GameStateData
+		_expect(resolved.effect_state.is_empty(), "resolved choice should clear pending state")
+		_expect(
+			ZoneService.find_card_zone(resolved, selected_card_id) == player.zone_ids[&"removed"],
+			"selected card should enter the permanent removed zone"
+		)
+		_expect(
+			_commands_contain(RulesEngine.get_legal_commands(resolved, &"p1", definitions), "END_PHASE"),
+			"normal combat commands should resume after resolving the choice"
+		)
+		_expect(InvariantService.validate(resolved).is_empty(), "resolved removal should preserve invariants")
+
+	var skip_state := GameStateData.create_vertical_slice(236)
+	_expose_monster(skip_state, archer_id, &"card-monster-rabbit-demon-01")
+	phase_result = RulesEngine.dispatch(
+		skip_state,
+		_end_phase_envelope(skip_state, "cmd-archer-skip-combat-setup"),
+		definitions
+	)
+	skip_state = phase_result["state"] as GameStateData
+	attack_result = RulesEngine.dispatch(
+		skip_state,
+		_command_envelope(skip_state, {
+			"type": "ATTACK_TARGET",
+			"target_card_id": str(archer_id),
+			"claim_optional_reward": true,
+		}, "cmd-attack-archer-skip"),
+		definitions
+	)
+	skip_state = attack_result["state"] as GameStateData
+	var skip_command: Dictionary = {}
+	for command: Dictionary in RulesEngine.get_legal_commands(skip_state, &"p1", definitions):
+		if bool(command.get("skip", false)):
+			skip_command = command
+			break
+	var hand_size := (skip_state.zones[&"p1:hand"] as ZoneData).card_instance_ids.size()
+	var skip_result := RulesEngine.dispatch(
+		skip_state,
+		_command_envelope(skip_state, skip_command, "cmd-skip-archer-choice"),
+		definitions
+	)
+	_expect(bool(skip_result.get("ok", false)), "optional archer removal should allow skipping")
+	if bool(skip_result.get("ok", false)):
+		var skipped := skip_result["state"] as GameStateData
+		_expect(skipped.effect_state.is_empty(), "skipping should clear the pending choice")
+		_expect(
+			(skipped.zones[&"p1:hand"] as ZoneData).card_instance_ids.size() == hand_size,
+			"skipping removal should preserve the hand"
+		)
+		_expect(
+			(skipped.zones[&"p1:removed"] as ZoneData).card_instance_ids.is_empty(),
+			"skipping removal should leave the removed zone empty"
+		)
 
 
 func _test_combat_rejection_is_atomic() -> void:
@@ -1097,6 +1277,59 @@ func _test_combat_hud_integration() -> void:
 			preview_labels += 1
 	_expect(attack_buttons == 4, "combat HUD should show optional skeleton and mandatory draw rewards")
 	_expect(preview_labels == 3, "combat HUD should preview participants for each target")
+	app.queue_free()
+
+
+func _test_pending_choice_hud_integration() -> void:
+	var packed := load("res://scenes/boot/main.tscn") as PackedScene
+	var app := packed.instantiate() as GameApp
+	root.add_child(app)
+	await process_frame
+	var expose_error := _expose_monster(
+		app.session.state,
+		&"card-monster-automaton-archer-01",
+		&"card-monster-rabbit-demon-01"
+	)
+	_expect(expose_error.is_empty(), "choice HUD fixture should expose the archer")
+	var phase_result := app.session.end_phase()
+	_expect(bool(phase_result.get("ok", false)), "choice HUD fixture should enter combat")
+	var attack_result := app.session.attack_target(&"card-monster-automaton-archer-01", true)
+	_expect(bool(attack_result.get("ok", false)), "choice HUD fixture should attack the archer")
+	await process_frame
+	var remove_buttons: Array[Button] = []
+	var skip_choice_buttons := 0
+	var skip_choice_button: Button
+	for child: Node in app.hud.hand_actions.get_children():
+		if child is Button and (child as Button).text == "從牌庫移除此牌":
+			remove_buttons.append(child as Button)
+		elif child is Button and (child as Button).text == "略過移除":
+			skip_choice_buttons += 1
+			skip_choice_button = child as Button
+	_expect(remove_buttons.size() == 5, "choice HUD should expose one removal button per hand card")
+	_expect(skip_choice_buttons == 1, "choice HUD should expose the optional skip action")
+	_expect(app.hud.end_phase_button.disabled, "choice HUD should disable phase advancement")
+	_expect(
+		app.hud.hand_summary.text.begins_with("待選擇："),
+		"choice HUD should replace the hand summary with an explicit prompt"
+	)
+	if not remove_buttons.is_empty() and skip_choice_button != null:
+		_expect(
+			remove_buttons[0].focus_neighbor_top == skip_choice_button.get_path(),
+			"pending choice focus should wrap within the choice controls"
+		)
+		_expect(
+			skip_choice_button.focus_neighbor_bottom == remove_buttons[0].get_path(),
+			"pending choice focus should not escape to disabled phase controls"
+		)
+	if not remove_buttons.is_empty():
+		remove_buttons[0].pressed.emit()
+		await process_frame
+		_expect(app.session.state.effect_state.is_empty(), "choice button should resolve through GameApp")
+		_expect(
+			(app.session.state.zones[&"p1:removed"] as ZoneData).card_instance_ids.size() == 1,
+			"choice button should move exactly one card into the removed zone"
+		)
+		_expect(not app.hud.end_phase_button.disabled, "phase control should re-enable after choice")
 	app.queue_free()
 
 
@@ -1529,6 +1762,33 @@ func _find_instance_by_definition(state: GameStateData, definition_id: StringNam
 		if StringName(card.get("definition_id", "")) == definition_id:
 			return card_instance_id
 	return &""
+
+
+func _expose_monster(
+	state: GameStateData,
+	target_card_id: StringName,
+	replaced_card_id: StringName
+) -> String:
+	var target_zone_id := ZoneService.find_card_zone(state, target_card_id)
+	if target_zone_id == SupplyService.MONSTER_ROW_ID:
+		return ""
+	var move_result := ZoneService.move_card(
+		state,
+		replaced_card_id,
+		SupplyService.MONSTER_ROW_ID,
+		SupplyService.MONSTER_CYCLE_ID
+	)
+	if not bool(move_result.get("ok", false)):
+		return str(move_result.get("error", "fixture_replacement_failed"))
+	move_result = ZoneService.move_card(
+		state,
+		target_card_id,
+		target_zone_id,
+		SupplyService.MONSTER_ROW_ID
+	)
+	return "" if bool(move_result.get("ok", false)) else str(
+		move_result.get("error", "fixture_target_failed")
+	)
 
 
 func _string_names_to_strings(values: Array[StringName]) -> Array[String]:

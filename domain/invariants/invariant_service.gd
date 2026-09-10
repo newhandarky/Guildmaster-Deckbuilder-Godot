@@ -7,6 +7,7 @@ static func validate(state: GameStateData) -> PackedStringArray:
 	_validate_turn_order(state, errors)
 	_validate_players(state, errors)
 	_validate_supply_zones(state, errors)
+	_validate_effect_state(state, errors)
 	var locations: Dictionary = {}
 	for zone_id: Variant in state.zones:
 		var zone := state.zones[zone_id] as ZoneData
@@ -195,6 +196,7 @@ static func _validate_players(state: GameStateData, errors: PackedStringArray) -
 		&"equipment": &"equipment",
 		&"play_area": &"play_area",
 		&"bonds": &"bonds",
+		&"removed": &"removed",
 	}
 	for player_id: Variant in state.players:
 		var player := state.players[player_id] as PlayerStateData
@@ -235,3 +237,42 @@ static func _validate_players(state: GameStateData, errors: PackedStringArray) -
 			var expected_visibility: StringName = &"owner_only" if zone_key in [&"draw_pile", &"hand", &"bonds"] else &"public"
 			if zone != null and zone.visibility != expected_visibility:
 				errors.append("Player zone %s has invalid visibility %s" % [zone_id, zone.visibility])
+
+
+static func _validate_effect_state(state: GameStateData, errors: PackedStringArray) -> void:
+	if state.effect_state.is_empty():
+		return
+	var choice := state.effect_state
+	if StringName(choice.get("type", "")) != &"pending_choice":
+		errors.append("Unsupported effect state type")
+		return
+	var actor_id := StringName(choice.get("actor_id", ""))
+	if actor_id != state.active_player_id or not state.players.has(actor_id):
+		errors.append("Pending choice must belong to the active player")
+	var choice_id := str(choice.get("choice_id", ""))
+	if choice_id.is_empty():
+		errors.append("Pending choice requires a choice ID")
+	var source_zone_id := StringName(choice.get("source_zone_id", ""))
+	var destination_zone_id := StringName(choice.get("destination_zone_id", ""))
+	var player := state.players.get(actor_id) as PlayerStateData
+	if player != null:
+		if source_zone_id != StringName(player.zone_ids.get(&"hand", &"")):
+			errors.append("Pending choice source must be the actor hand")
+		if destination_zone_id != StringName(player.zone_ids.get(&"removed", &"")):
+			errors.append("Pending choice destination must be the actor removed zone")
+	if not choice.get("eligible_card_ids", []) is Array:
+		errors.append("Pending choice eligible cards must be an Array")
+		return
+	var eligible_seen: Dictionary = {}
+	for raw_card_id: Variant in choice.get("eligible_card_ids", []):
+		var card_instance_id := StringName(str(raw_card_id))
+		if card_instance_id.is_empty() or eligible_seen.has(card_instance_id):
+			errors.append("Pending choice eligible cards must be unique and non-empty")
+			continue
+		eligible_seen[card_instance_id] = true
+		if ZoneService.find_card_zone(state, card_instance_id) != source_zone_id:
+			errors.append("Pending choice card %s is not in its source zone" % card_instance_id)
+	var minimum := int(choice.get("min_selections", -1))
+	var maximum := int(choice.get("max_selections", -1))
+	if minimum < 0 or maximum < minimum or maximum > 1:
+		errors.append("Pending choice selection bounds are invalid")

@@ -6,8 +6,8 @@ const PlayerStateDataType = preload("res://domain/state/player_state_data.gd")
 
 var schema_version: int = 1
 var game_id: StringName = &"game-demo-001"
-var content_version: String = "0.7.0"
-var ruleset_version: String = "0.7.0"
+var content_version: String = "0.8.0"
+var ruleset_version: String = "0.8.0"
 var seed_value: int = 20260909
 var rng_state: int = 0
 var revision: int = 0
@@ -79,6 +79,18 @@ static func create_vertical_slice(seed: int = 20260909) -> GameStateData:
 			"owner_id": "",
 			"state": {"target_id": "target-monster-14-02"},
 		},
+		&"card-monster-automaton-archer-01": {
+			"instance_id": "card-monster-automaton-archer-01",
+			"definition_id": "base:monster/monster-10",
+			"owner_id": "",
+			"state": {"target_id": "target-monster-10-01"},
+		},
+		&"card-monster-automaton-archer-02": {
+			"instance_id": "card-monster-automaton-archer-02",
+			"definition_id": "base:monster/monster-10",
+			"owner_id": "",
+			"state": {"target_id": "target-monster-10-02"},
+		},
 	}
 	for player_id: StringName in state.turn_order:
 		var player := state.players[player_id] as PlayerStateData
@@ -95,6 +107,8 @@ static func create_vertical_slice(seed: int = 20260909) -> GameStateData:
 		&"card-monster-skeleton-03",
 		&"card-monster-rabbit-demon-02",
 		&"card-monster-slime-02",
+		&"card-monster-automaton-archer-01",
+		&"card-monster-automaton-archer-02",
 	])
 	var monster_rng := DeterministicRng.new(state.seed_value, state.rng_state)
 	monster_rng.shuffle(monster_cycle.card_instance_ids)
@@ -215,9 +229,12 @@ static func _add_player_zones(state: GameStateData, player: PlayerStateData) -> 
 		&"equipment": &"equipment",
 		&"play_area": &"play_area",
 		&"bonds": &"bonds",
+		&"removed": &"removed",
 	}
 	for zone_key: StringName in PlayerStateData.REQUIRED_ZONE_KEYS:
-		var visibility: StringName = &"owner_only" if zone_key in [&"draw_pile", &"hand", &"bonds"] else &"public"
+		var visibility: StringName = (
+			&"owner_only" if zone_key in [&"draw_pile", &"hand", &"bonds"] else &"public"
+		)
 		var zone := ZoneDataType.new(player.zone_ids[zone_key], zone_kinds[zone_key], visibility)
 		zone.metadata = {"owner_id": str(player.player_id)}
 		state.zones[zone.zone_id] = zone

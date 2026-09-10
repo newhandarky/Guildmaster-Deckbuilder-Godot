@@ -51,6 +51,7 @@ static func preview_attack(
 		"optional_reward": false,
 		"reward_summary": "",
 		"returns_to_cycle": false,
+		"deferred_choice": false,
 	}
 	var player := state.players.get(actor_id) as PlayerStateData
 	if player == null:
@@ -94,15 +95,22 @@ static func preview_attack(
 		})
 		total += contribution
 	var optional_reward := false
+	var deferred_choice := false
 	var reward_parts: Array[String] = []
 	for effect: Dictionary in target_definition.effects:
 		if StringName(effect.get("timing", "")) == &"on_defeat":
-			optional_reward = optional_reward or bool(effect.get("optional", false))
-			match StringName(effect.get("op", "")):
+			var operation := StringName(effect.get("op", ""))
+			if operation == &"choose_remove_from_hand":
+				deferred_choice = true
+			else:
+				optional_reward = optional_reward or bool(effect.get("optional", false))
+			match operation:
 				&"grant_purchase_power":
 					reward_parts.append("+%d 購買力" % int(effect.get("amount", 0)))
 				&"draw":
 					reward_parts.append("抽 %d 張" % int(effect.get("amount", 0)))
+				&"choose_remove_from_hand":
+					reward_parts.append("可從手牌移除 %d 張" % int(effect.get("amount", 0)))
 	var returns_to_cycle := &"cycle_anchor" in target_definition.tags
 	if not returns_to_cycle:
 		reward_parts.append("取得此卡（購買力 %s／榮譽 %s）" % [
@@ -120,6 +128,7 @@ static func preview_attack(
 	result["optional_reward"] = optional_reward
 	result["reward_summary"] = "、".join(reward_parts)
 	result["returns_to_cycle"] = returns_to_cycle
+	result["deferred_choice"] = deferred_choice
 	return result
 
 
@@ -187,7 +196,9 @@ static func apply(
 	for effect: Dictionary in target_definition.effects:
 		if StringName(effect.get("timing", "")) == &"on_defeat" \
 				and (not bool(effect.get("optional", false)) or claim_optional_reward):
-			reward_effects.append(effect)
+			var reward_effect := effect.duplicate(true)
+			reward_effect["source_card_instance_id"] = str(target_card_id)
+			reward_effects.append(reward_effect)
 	var effect_error := EffectResolver.resolve(state, actor_id, reward_effects, events)
 	if not effect_error.is_empty():
 		return effect_error

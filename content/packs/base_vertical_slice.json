@@ -1,7 +1,7 @@
 {
   "manifest": {
     "pack_id": "base:vertical-slice",
-    "version": "0.7.0",
+    "version": "0.8.0",
     "includes_custom_adventurers": false
   },
   "definitions": [
@@ -96,6 +96,28 @@
         {"op": "draw", "amount": 1, "timing": "on_defeat"}
       ],
       "presentation_id": "base:presentation/monster-slime"
+    },
+    {
+      "definition_id": "base:monster/monster-10",
+      "display_name": "自動機械弓兵",
+      "card_type": "monster",
+      "copies": 2,
+      "combat": 4,
+      "purchase_power": 2,
+      "honor": 3,
+      "tags": [
+        "enemy",
+        "monster"
+      ],
+      "effects": [
+        {
+          "op": "choose_remove_from_hand",
+          "amount": 1,
+          "timing": "on_defeat",
+          "optional": true
+        }
+      ],
+      "presentation_id": "base:presentation/monster-automaton-archer"
     },
     {
       "definition_id": "base:starter/summoning-stone",

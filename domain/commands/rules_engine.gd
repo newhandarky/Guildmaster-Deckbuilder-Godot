@@ -17,7 +17,7 @@ static func get_legal_commands(
 	if actor_id != state.active_player_id:
 		return commands
 	if not state.effect_state.is_empty():
-		return commands
+		return ChoiceService.get_legal_commands(state, actor_id)
 	commands.append({
 		"type": "END_PHASE",
 		"actor_id": str(actor_id),
@@ -67,6 +67,8 @@ static func dispatch(
 			error = PurchaseService.apply(draft, actor_id, command, definitions, events)
 		&"REFRESH_MARKET":
 			error = MarketRefreshService.apply(draft, actor_id, command, events)
+		&"RESOLVE_CHOICE":
+			error = ChoiceService.apply(draft, actor_id, command, events)
 		_:
 			return _failure("unsupported_command", before_hash)
 	if not error.is_empty():
@@ -119,6 +121,8 @@ static func _validate_command(
 	if state.status != &"active":
 		return "game_not_active"
 	if not state.effect_state.is_empty():
+		if StringName(command.get("type", "")) == &"RESOLVE_CHOICE":
+			return ChoiceService.validate(state, actor_id, command)
 		return "effects_pending"
 	match StringName(command.get("type", "")):
 		&"END_PHASE":
@@ -135,6 +139,8 @@ static func _validate_command(
 			return PurchaseService.validate(state, actor_id, command, definitions)
 		&"REFRESH_MARKET":
 			return MarketRefreshService.validate(state, actor_id, command)
+		&"RESOLVE_CHOICE":
+			return "no_pending_choice"
 		_:
 			return "unsupported_command"
 

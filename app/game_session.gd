@@ -6,7 +6,7 @@ signal events_committed(events: Array[Dictionary])
 signal command_rejected(error_code: String)
 
 const CONTENT_PACK_PATH := "res://content/packs/base_vertical_slice.json"
-const RULESET_FINGERPRINT := "ruleset:vertical-slice:0.7.0"
+const RULESET_FINGERPRINT := "ruleset:vertical-slice:0.8.0"
 
 var state: GameStateData
 var content_registry := ContentRegistry.new()
@@ -110,6 +110,25 @@ func attack_target(target_card_id: StringName, claim_optional_reward: bool) -> D
 	return submit_command(envelope)
 
 
+func resolve_choice(choice_id: String, card_instance_id: StringName, skip: bool) -> Dictionary:
+	if state == null:
+		return {"ok": false, "error": "session_not_started", "events": []}
+	var envelope := {
+		"protocol_version": 1,
+		"game_id": str(state.game_id),
+		"command_id": "cmd-%06d" % (state.revision + 1),
+		"actor_id": str(state.active_player_id),
+		"expected_revision": state.revision,
+		"command": {
+			"type": "RESOLVE_CHOICE",
+			"choice_id": choice_id,
+			"card_instance_id": str(card_instance_id),
+			"skip": skip,
+		},
+	}
+	return submit_command(envelope)
+
+
 func refresh_market(
 	discard_card_id: StringName,
 	row_id: StringName,
@@ -170,7 +189,7 @@ func snapshot() -> Dictionary:
 		return {}
 	return {
 		"snapshot_schema_version": 1,
-		"app_version": "0.7.0",
+		"app_version": "0.8.0",
 		"content_fingerprint": content_registry.pack_fingerprint,
 		"ruleset_fingerprint": RULESET_FINGERPRINT,
 		"state": state.to_dictionary(),

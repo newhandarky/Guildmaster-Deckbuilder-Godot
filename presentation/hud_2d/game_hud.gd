@@ -7,6 +7,7 @@ signal equip_item_requested(card_instance_id: StringName, target_card_id: String
 signal play_adventurer_requested(card_instance_id: StringName)
 signal use_item_requested(card_instance_id: StringName)
 signal attack_target_requested(target_card_id: StringName, claim_optional_reward: bool)
+signal resolve_choice_requested(choice_id: String, card_instance_id: StringName, skip: bool)
 signal buy_card_requested(card_instance_id: StringName, source_row_id: StringName)
 signal refresh_market_requested(
 	discard_card_id: StringName,
@@ -68,6 +69,11 @@ func update_state(state: Dictionary) -> void:
 		int(resources.get("combat", 0)),
 		int(resources.get("purchase_power", 0)),
 	]
+	var legal_commands := state.get("legal_commands", []) as Array
+	end_phase_button.disabled = not _commands_contain_type(legal_commands, "END_PHASE")
+	end_phase_button.text = (
+		"請先完成選擇" if not state.get("effect_state", {}).is_empty() else "結束目前階段"
+	)
 	_rebuild_hand(state, active_player_id)
 	_rebuild_market(state)
 
@@ -88,6 +94,15 @@ func show_events(events: Array[Dictionary]) -> void:
 				_card_display_name(str(event.get("target_card_id", ""))),
 				(event.get("participant_ids", []) as Array).size(),
 			]
+			return
+		if event.get("type") == "choice_resolved":
+			event_label.text = (
+				"已略過移除"
+				if bool(event.get("skipped", false))
+				else "已從牌庫移除：%s" % _card_display_name(
+					str(event.get("card_instance_id", ""))
+				)
+			)
 			return
 		if event.get("type") == "market_refreshed":
 			event_label.text = "市場刷新完成：已更換 %d 張公開卡" % (
@@ -164,8 +179,17 @@ func _rebuild_hand(state: Dictionary, active_player_id: String) -> void:
 	var definitions := state.get("definitions", {}) as Dictionary
 	var legal_commands := state.get("legal_commands", []) as Array
 	var refresh_command := _find_refresh_command(legal_commands)
+	var choice_commands := _find_choice_commands(legal_commands)
 	var action_buttons: Array[Button] = []
-	hand_summary.text = "目前手牌：%d 張" % card_ids.size()
+	var effect_state := state.get("effect_state", {}) as Dictionary
+	var removed := zones.get(str(zone_ids.get("removed", "")), {}) as Dictionary
+	if choice_commands.is_empty():
+		hand_summary.text = "目前手牌：%d 張　移除區：%d 張" % [
+			card_ids.size(),
+			(removed.get("card_instance_ids", []) as Array).size(),
+		]
+	else:
+		hand_summary.text = "待選擇：%s" % str(effect_state.get("prompt", "請完成選擇"))
 
 	for raw_card_id: Variant in card_ids:
 		var card_id := str(raw_card_id)
@@ -175,6 +199,21 @@ func _rebuild_hand(state: Dictionary, active_player_id: String) -> void:
 		card_label.text = _hand_card_text(definition)
 		card_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		hand_actions.add_child(card_label)
+		var choice_command := _find_choice_for_card(choice_commands, card_id)
+		if not choice_command.is_empty():
+			var remove_button := Button.new()
+			remove_button.text = "從牌庫移除此牌"
+			remove_button.custom_minimum_size = Vector2(0.0, 36.0)
+			remove_button.focus_mode = Control.FOCUS_ALL
+			remove_button.pressed.connect(
+				resolve_choice_requested.emit.bind(
+					str(choice_command.get("choice_id", "")),
+					StringName(card_id),
+					false
+				)
+			)
+			hand_actions.add_child(remove_button)
+			action_buttons.append(remove_button)
 		if card_id in (refresh_command.get("discard_card_ids", []) as Array):
 			var cost_button := Button.new()
 			cost_button.text = (
@@ -228,23 +267,48 @@ func _rebuild_hand(state: Dictionary, active_player_id: String) -> void:
 				action_buttons.append(action_button)
 				simple_action_added = true
 
+	var skip_choice := _find_skip_choice(choice_commands)
+	if not skip_choice.is_empty():
+		var skip_choice_button := Button.new()
+		skip_choice_button.text = "略過移除"
+		skip_choice_button.custom_minimum_size = Vector2(0.0, 36.0)
+		skip_choice_button.focus_mode = Control.FOCUS_ALL
+		skip_choice_button.pressed.connect(
+			resolve_choice_requested.emit.bind(
+				str(skip_choice.get("choice_id", "")), &"", true
+			)
+		)
+		hand_actions.add_child(skip_choice_button)
+		action_buttons.append(skip_choice_button)
+
 	end_phase_button.focus_neighbor_top = NodePath()
 	skip_button.focus_neighbor_top = NodePath()
 	for index in action_buttons.size():
 		var button := action_buttons[index]
-		button.focus_neighbor_top = (
-			end_phase_button.get_path()
-			if index == 0
-			else action_buttons[index - 1].get_path()
-		)
-		button.focus_neighbor_bottom = (
-			end_phase_button.get_path()
-			if index == action_buttons.size() - 1
-			else action_buttons[index + 1].get_path()
-		)
+		if not choice_commands.is_empty():
+			button.focus_neighbor_top = action_buttons[
+				(index - 1 + action_buttons.size()) % action_buttons.size()
+			].get_path()
+			button.focus_neighbor_bottom = action_buttons[
+				(index + 1) % action_buttons.size()
+			].get_path()
+		else:
+			button.focus_neighbor_top = (
+				end_phase_button.get_path()
+				if index == 0
+				else action_buttons[index - 1].get_path()
+			)
+			button.focus_neighbor_bottom = (
+				end_phase_button.get_path()
+				if index == action_buttons.size() - 1
+				else action_buttons[index + 1].get_path()
+			)
 	if not action_buttons.is_empty():
-		end_phase_button.focus_neighbor_top = action_buttons.back().get_path()
-		skip_button.focus_neighbor_top = action_buttons.back().get_path()
+		if not choice_commands.is_empty():
+			action_buttons[0].call_deferred("grab_focus")
+		else:
+			end_phase_button.focus_neighbor_top = action_buttons.back().get_path()
+			skip_button.focus_neighbor_top = action_buttons.back().get_path()
 
 
 func _hand_card_text(definition: Dictionary) -> String:
@@ -381,6 +445,38 @@ func _find_refresh_command(commands: Array) -> Dictionary:
 		if raw_command is Dictionary and (raw_command as Dictionary).get("type") == "REFRESH_MARKET":
 			return raw_command as Dictionary
 	return {}
+
+
+func _find_choice_commands(commands: Array) -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	for raw_command: Variant in commands:
+		if raw_command is Dictionary \
+				and (raw_command as Dictionary).get("type") == "RESOLVE_CHOICE":
+			result.append(raw_command as Dictionary)
+	return result
+
+
+func _find_choice_for_card(commands: Array[Dictionary], card_instance_id: String) -> Dictionary:
+	for command: Dictionary in commands:
+		if not bool(command.get("skip", false)) \
+				and str(command.get("card_instance_id", "")) == card_instance_id:
+			return command
+	return {}
+
+
+func _find_skip_choice(commands: Array[Dictionary]) -> Dictionary:
+	for command: Dictionary in commands:
+		if bool(command.get("skip", false)):
+			return command
+	return {}
+
+
+func _commands_contain_type(commands: Array, command_type: String) -> bool:
+	for raw_command: Variant in commands:
+		if raw_command is Dictionary \
+				and str((raw_command as Dictionary).get("type", "")) == command_type:
+			return true
+	return false
 
 
 func _append_combat_actions(commands: Array, action_buttons: Array[Button]) -> int:

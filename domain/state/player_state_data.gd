@@ -9,6 +9,7 @@ const REQUIRED_ZONE_KEYS: Array[StringName] = [
 	&"equipment",
 	&"play_area",
 	&"bonds",
+	&"removed",
 ]
 
 var player_id: StringName
@@ -36,6 +37,7 @@ static func create(id: StringName, seat: int, name: String) -> PlayerStateData:
 		&"equipment": StringName("%s:equipment" % id),
 		&"play_area": StringName("%s:play-area" % id),
 		&"bonds": StringName("%s:bonds" % id),
+		&"removed": StringName("%s:removed" % id),
 	}
 	return player
 
