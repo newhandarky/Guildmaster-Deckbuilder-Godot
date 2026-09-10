@@ -352,6 +352,7 @@ layout_mode = 2
 theme_override_constants/separation = 7
 
 [node name="HandTitle" type="Label" parent="Interface/HUD/HandPanel/Hand"]
+unique_name_in_owner = true
 layout_mode = 2
 theme_override_colors/font_color = Color(0.95, 0.78, 0.26, 1)
 theme_override_font_sizes/font_size = 20

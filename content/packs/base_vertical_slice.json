@@ -1,7 +1,7 @@
 {
   "manifest": {
     "pack_id": "base:vertical-slice",
-    "version": "0.8.0",
+    "version": "0.9.0",
     "includes_custom_adventurers": false
   },
   "definitions": [
@@ -111,13 +111,37 @@
       ],
       "effects": [
         {
-          "op": "choose_remove_from_hand",
+          "op": "choose_remove_card",
           "amount": 1,
+          "source_zone_key": "hand",
           "timing": "on_defeat",
           "optional": true
         }
       ],
       "presentation_id": "base:presentation/monster-automaton-archer"
+    },
+    {
+      "definition_id": "base:monster/monster-11",
+      "display_name": "自動機械戰士",
+      "card_type": "monster",
+      "copies": 2,
+      "combat": 4,
+      "purchase_power": 2,
+      "honor": 3,
+      "tags": [
+        "enemy",
+        "monster"
+      ],
+      "effects": [
+        {
+          "op": "choose_remove_card",
+          "amount": 1,
+          "source_zone_key": "discard_pile",
+          "timing": "on_defeat",
+          "optional": true
+        }
+      ],
+      "presentation_id": "base:presentation/monster-automaton-warrior"
     },
     {
       "definition_id": "base:starter/summoning-stone",

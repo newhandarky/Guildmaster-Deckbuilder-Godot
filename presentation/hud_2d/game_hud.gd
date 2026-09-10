@@ -26,6 +26,7 @@ signal refresh_market_requested(
 @onready var event_label: Label = %EventLabel
 @onready var end_phase_button: Button = %EndPhaseButton
 @onready var skip_button: Button = %SkipButton
+@onready var hand_title: Label = %HandTitle
 @onready var hand_summary: Label = %HandSummary
 @onready var hand_actions: VBoxContainer = %HandActions
 @onready var market_summary: Label = %MarketSummary
@@ -99,9 +100,10 @@ func show_events(events: Array[Dictionary]) -> void:
 			event_label.text = (
 				"已略過移除"
 				if bool(event.get("skipped", false))
-				else "已從牌庫移除：%s" % _card_display_name(
-					str(event.get("card_instance_id", ""))
-				)
+				else "已從%s移除：%s" % [
+					_localized_choice_source(StringName(event.get("source_zone_key", ""))),
+					_card_display_name(str(event.get("card_instance_id", ""))),
+				]
 			)
 			return
 		if event.get("type") == "market_refreshed":
@@ -174,7 +176,7 @@ func _rebuild_hand(state: Dictionary, active_player_id: String) -> void:
 	var zone_ids := player.get("zone_ids", {}) as Dictionary
 	var zones := state.get("zones", {}) as Dictionary
 	var hand := zones.get(str(zone_ids.get("hand", "")), {}) as Dictionary
-	var card_ids := hand.get("card_instance_ids", []) as Array
+	var hand_card_ids := hand.get("card_instance_ids", []) as Array
 	var cards := state.get("cards", {}) as Dictionary
 	var definitions := state.get("definitions", {}) as Dictionary
 	var legal_commands := state.get("legal_commands", []) as Array
@@ -183,13 +185,24 @@ func _rebuild_hand(state: Dictionary, active_player_id: String) -> void:
 	var action_buttons: Array[Button] = []
 	var effect_state := state.get("effect_state", {}) as Dictionary
 	var removed := zones.get(str(zone_ids.get("removed", "")), {}) as Dictionary
+	var card_ids := hand_card_ids
+	var choice_source_label := _localized_choice_source(
+		StringName(effect_state.get("source_zone_key", ""))
+	)
 	if choice_commands.is_empty():
+		hand_title.text = "手牌與合法操作"
 		hand_summary.text = "目前手牌：%d 張　移除區：%d 張" % [
 			card_ids.size(),
 			(removed.get("card_instance_ids", []) as Array).size(),
 		]
 	else:
-		hand_summary.text = "待選擇：%s" % str(effect_state.get("prompt", "請完成選擇"))
+		hand_title.text = "待處理選擇"
+		card_ids = effect_state.get("eligible_card_ids", []) as Array
+		hand_summary.text = "待選擇：%s｜來源：%s（%d 張）" % [
+			str(effect_state.get("prompt", "請完成選擇")),
+			choice_source_label,
+			card_ids.size(),
+		]
 
 	for raw_card_id: Variant in card_ids:
 		var card_id := str(raw_card_id)
@@ -202,7 +215,7 @@ func _rebuild_hand(state: Dictionary, active_player_id: String) -> void:
 		var choice_command := _find_choice_for_card(choice_commands, card_id)
 		if not choice_command.is_empty():
 			var remove_button := Button.new()
-			remove_button.text = "從牌庫移除此牌"
+			remove_button.text = "從%s移除此牌" % choice_source_label
 			remove_button.custom_minimum_size = Vector2(0.0, 36.0)
 			remove_button.focus_mode = Control.FOCUS_ALL
 			remove_button.pressed.connect(
@@ -320,6 +333,13 @@ func _hand_card_text(definition: Dictionary) -> String:
 	if combat != null:
 		text += "｜戰力 %d" % int(combat)
 	return text
+
+
+func _localized_choice_source(source_zone_key: StringName) -> String:
+	return {
+		&"hand": "自己的手牌",
+		&"discard_pile": "自己的棄牌堆",
+	}.get(source_zone_key, "選擇來源區")
 
 
 func _card_display_name(card_instance_id: String) -> String:

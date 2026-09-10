@@ -100,7 +100,7 @@ static func preview_attack(
 	for effect: Dictionary in target_definition.effects:
 		if StringName(effect.get("timing", "")) == &"on_defeat":
 			var operation := StringName(effect.get("op", ""))
-			if operation == &"choose_remove_from_hand":
+			if operation == &"choose_remove_card":
 				deferred_choice = true
 			else:
 				optional_reward = optional_reward or bool(effect.get("optional", false))
@@ -109,8 +109,11 @@ static func preview_attack(
 					reward_parts.append("+%d 購買力" % int(effect.get("amount", 0)))
 				&"draw":
 					reward_parts.append("抽 %d 張" % int(effect.get("amount", 0)))
-				&"choose_remove_from_hand":
-					reward_parts.append("可從手牌移除 %d 張" % int(effect.get("amount", 0)))
+				&"choose_remove_card":
+					reward_parts.append("可從%s移除 %d 張" % [
+						_source_zone_label(StringName(effect.get("source_zone_key", ""))),
+						int(effect.get("amount", 0)),
+					])
 	var returns_to_cycle := &"cycle_anchor" in target_definition.tags
 	if not returns_to_cycle:
 		reward_parts.append("取得此卡（購買力 %s／榮譽 %s）" % [
@@ -233,3 +236,10 @@ static func apply(
 
 static func _printed_label(value: Variant) -> String:
 	return "—" if value == null else str(int(value))
+
+
+static func _source_zone_label(source_zone_key: StringName) -> String:
+	return {
+		&"hand": "手牌",
+		&"discard_pile": "自己的棄牌堆",
+	}.get(source_zone_key, str(source_zone_key))

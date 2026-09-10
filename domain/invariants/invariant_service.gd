@@ -253,11 +253,14 @@ static func _validate_effect_state(state: GameStateData, errors: PackedStringArr
 	if choice_id.is_empty():
 		errors.append("Pending choice requires a choice ID")
 	var source_zone_id := StringName(choice.get("source_zone_id", ""))
+	var source_zone_key := StringName(choice.get("source_zone_key", ""))
 	var destination_zone_id := StringName(choice.get("destination_zone_id", ""))
 	var player := state.players.get(actor_id) as PlayerStateData
 	if player != null:
-		if source_zone_id != StringName(player.zone_ids.get(&"hand", &"")):
-			errors.append("Pending choice source must be the actor hand")
+		if source_zone_key not in [&"hand", &"discard_pile"]:
+			errors.append("Pending choice has an unsupported source zone key")
+		elif source_zone_id != StringName(player.zone_ids.get(source_zone_key, &"")):
+			errors.append("Pending choice source must belong to the actor")
 		if destination_zone_id != StringName(player.zone_ids.get(&"removed", &"")):
 			errors.append("Pending choice destination must be the actor removed zone")
 	if not choice.get("eligible_card_ids", []) is Array:

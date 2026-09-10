@@ -96,6 +96,8 @@ static func apply(
 		"card_instance_id": str(card_instance_id),
 		"skipped": skip,
 		"source_card_instance_id": str(choice.get("source_card_instance_id", "")),
+		"source_zone_id": str(choice.get("source_zone_id", "")),
+		"source_zone_key": str(choice.get("source_zone_key", "")),
 	})
 	events.append({
 		"type": "effect_resolved",

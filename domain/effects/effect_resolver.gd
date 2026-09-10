@@ -6,7 +6,7 @@ const SUPPORTED_OPERATIONS: Array[StringName] = [
 	&"grant_combat",
 	&"draw",
 	&"conditional_combat",
-	&"choose_remove_from_hand",
+	&"choose_remove_card",
 ]
 
 
@@ -19,10 +19,14 @@ static func validate_effects(effects: Array[Dictionary], definition_id: StringNa
 			errors.append("Unsupported effect op %s at %s[%d]" % [operation, definition_id, index])
 		if int(effect.get("amount", 0)) < 0:
 			errors.append("Effect amount must not be negative at %s[%d]" % [definition_id, index])
-		if operation == &"choose_remove_from_hand" and index != effects.size() - 1:
+		if operation == &"choose_remove_card" and index != effects.size() - 1:
 			errors.append("Pending choice effect must be last at %s[%d]" % [definition_id, index])
-		if operation == &"choose_remove_from_hand" and int(effect.get("amount", 0)) != 1:
-			errors.append("Hand removal choice amount must be 1 at %s[%d]" % [definition_id, index])
+		if operation == &"choose_remove_card" and int(effect.get("amount", 0)) != 1:
+			errors.append("Card removal choice amount must be 1 at %s[%d]" % [definition_id, index])
+		if operation == &"choose_remove_card" \
+				and StringName(effect.get("source_zone_key", "")) \
+				not in [&"hand", &"discard_pile"]:
+			errors.append("Unsupported removal source at %s[%d]" % [definition_id, index])
 	return errors
 
 
@@ -63,13 +67,17 @@ static func resolve(
 					"drawn_count": int(draw_result.get("drawn_count", 0)),
 				})
 				continue
-			&"choose_remove_from_hand":
-				var hand := state.zones.get(player.zone_ids.get(&"hand", &"")) as ZoneData
+			&"choose_remove_card":
+				var source_zone_key := StringName(effect.get("source_zone_key", ""))
+				var source := state.zones.get(
+					player.zone_ids.get(source_zone_key, &"")
+				) as ZoneData
 				var removed := state.zones.get(player.zone_ids.get(&"removed", &"")) as ZoneData
-				if hand == null or removed == null:
+				if source == null or removed == null:
 					return "missing_choice_zone"
+				var source_zone_label := _source_zone_label(source_zone_key)
 				var eligible_card_ids: Array[String] = []
-				for card_instance_id: StringName in hand.card_instance_ids:
+				for card_instance_id: StringName in source.card_instance_ids:
 					eligible_card_ids.append(str(card_instance_id))
 				if eligible_card_ids.is_empty() or amount == 0:
 					events.append({
@@ -78,6 +86,9 @@ static func resolve(
 						"effect_index": index,
 						"op": str(operation),
 						"selected_count": 0,
+						"source_zone_id": str(source.zone_id),
+						"source_zone_key": str(source_zone_key),
+						"reason": "no_eligible_candidates",
 					})
 					continue
 				if not state.effect_state.is_empty():
@@ -87,8 +98,9 @@ static func resolve(
 					"choice_id": "choice-%06d" % (state.revision + 1),
 					"actor_id": str(actor_id),
 					"op": str(operation),
-					"prompt": "可以從手牌移除 1 張牌",
-					"source_zone_id": str(hand.zone_id),
+					"prompt": "可以從自己的%s移除 1 張牌" % source_zone_label,
+					"source_zone_id": str(source.zone_id),
+					"source_zone_key": str(source_zone_key),
 					"destination_zone_id": str(removed.zone_id),
 					"eligible_card_ids": eligible_card_ids,
 					"min_selections": 0 if bool(effect.get("optional", false)) else 1,
@@ -105,6 +117,8 @@ static func resolve(
 					"op": str(operation),
 					"eligible_card_ids": eligible_card_ids.duplicate(),
 					"optional": bool(effect.get("optional", false)),
+					"source_zone_id": str(source.zone_id),
+					"source_zone_key": str(source_zone_key),
 				})
 				continue
 			_:
@@ -120,3 +134,10 @@ static func resolve(
 			"new_value": int(player.turn_resources[resource_key]),
 		})
 	return ""
+
+
+static func _source_zone_label(source_zone_key: StringName) -> String:
+	return {
+		&"hand": "手牌",
+		&"discard_pile": "棄牌堆",
+	}.get(source_zone_key, str(source_zone_key))

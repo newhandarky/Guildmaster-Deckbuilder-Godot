@@ -33,6 +33,7 @@ func _run() -> void:
 	_test_combat_optional_reward_skip()
 	_test_standard_monster_claim_and_draw_rewards()
 	_test_automaton_archer_pending_choice()
+	_test_automaton_warrior_discard_choice()
 	_test_combat_rejection_is_atomic()
 	_test_combat_equipment_departure()
 	_test_supply_setup_and_determinism()
@@ -45,6 +46,7 @@ func _run() -> void:
 	await _test_market_refresh_hud_integration()
 	await _test_combat_hud_integration()
 	await _test_pending_choice_hud_integration()
+	await _test_discard_choice_hud_integration()
 	_test_play_adventurer_capacity_and_equipment_departure()
 	_test_use_item_draw_and_rest_cleanup()
 	_test_turn_rotation()
@@ -68,7 +70,13 @@ func _test_content_pack() -> void:
 	var registry := ContentRegistry.new()
 	var errors := registry.load_pack("res://content/packs/base_vertical_slice.json")
 	_expect(errors.is_empty(), "base content pack should validate: %s" % "; ".join(errors))
-	_expect(registry.definitions.size() == 17, "vertical slice should load seventeen base definitions")
+	_expect(registry.definitions.size() == 18, "vertical slice should load eighteen base definitions")
+	var warrior := registry.definitions.get(&"base:monster/monster-11") as CardDefinition
+	_expect(
+		warrior != null and warrior.copies == 2 and warrior.combat == 4 \
+				and warrior.purchase_power == 2 and warrior.honor == 3,
+		"automaton warrior should use the confirmed 2 copies and 4/2/3 values"
+	)
 	_expect(not registry.definitions.has(&"custom:adventurer/melee-01"), "custom adventurers must stay disabled")
 	_expect(not registry.pack_fingerprint.is_empty(), "content pack should expose a deterministic fingerprint")
 
@@ -79,7 +87,7 @@ func _test_content_pack_reload() -> void:
 	var first_fingerprint := registry.pack_fingerprint
 	var second_errors := registry.load_pack("res://content/packs/base_vertical_slice.json")
 	_expect(first_errors.is_empty() and second_errors.is_empty(), "content pack should be safely reloadable")
-	_expect(registry.definitions.size() == 17, "content reload must not retain duplicate definitions")
+	_expect(registry.definitions.size() == 18, "content reload must not retain duplicate definitions")
 	_expect(registry.pack_fingerprint == first_fingerprint, "same content should keep the same fingerprint")
 
 
@@ -105,7 +113,7 @@ func _test_two_player_state() -> void:
 
 func _test_official_starting_setup() -> void:
 	var state := GameStateData.create_vertical_slice()
-	_expect(state.cards.size() == 43, "setup should create player cards, nine monsters, and fourteen market cards")
+	_expect(state.cards.size() == 45, "setup should create player cards, eleven monsters, and fourteen market cards")
 	for player_id: StringName in state.turn_order:
 		var player := state.players[player_id] as PlayerStateData
 		var party := state.zones[player.zone_ids[&"party"]] as ZoneData
@@ -184,9 +192,10 @@ func _test_command_legality_guards() -> void:
 		"type": "pending_choice",
 		"choice_id": "choice-test",
 		"actor_id": "p1",
-		"op": "choose_remove_from_hand",
+		"op": "choose_remove_card",
 		"prompt": "test",
 		"source_zone_id": "p1:hand",
+		"source_zone_key": "hand",
 		"destination_zone_id": "p1:removed",
 		"eligible_card_ids": ["card-p1-summoning-stone-01"],
 		"min_selections": 0,
@@ -399,7 +408,7 @@ func _test_monster_supply_setup_and_anchor() -> void:
 	var row := state.zones[SupplyService.MONSTER_ROW_ID] as ZoneData
 	var cycle := state.zones[SupplyService.MONSTER_CYCLE_ID] as ZoneData
 	_expect(row.card_instance_ids.size() == 3, "vertical slice should reveal three monsters")
-	_expect(cycle.card_instance_ids.size() == 6, "vertical slice cycle should retain six monsters")
+	_expect(cycle.card_instance_ids.size() == 8, "vertical slice cycle should retain eight monsters")
 	_expect(
 		row.card_instance_ids == [
 			&"card-monster-skeleton-01",
@@ -869,6 +878,257 @@ func _test_automaton_archer_pending_choice() -> void:
 		)
 
 
+func _test_automaton_warrior_discard_choice() -> void:
+	var definitions := _load_definitions()
+	var no_candidate := GameStateData.create_vertical_slice(237)
+	var no_candidate_events: Array[Dictionary] = []
+	var no_candidate_error := EffectResolver.resolve(
+		no_candidate,
+		&"p1",
+		[{
+			"op": "choose_remove_card",
+			"amount": 1,
+			"source_zone_key": "discard_pile",
+			"optional": true,
+		}],
+		no_candidate_events
+	)
+	_expect(no_candidate_error.is_empty(), "empty discard removal effect should resolve cleanly")
+	_expect(
+		no_candidate.effect_state.is_empty(),
+		"empty discard pile must not create a pending choice"
+	)
+	_expect(
+		no_candidate_events.size() == 1 \
+				and no_candidate_events[0].get("reason") == "no_eligible_candidates",
+		"empty discard effect should emit a deterministic no-candidate resolution"
+	)
+	_expect(
+		not _events_contain(no_candidate_events, "choice_requested"),
+		"empty discard effect must not request a choice"
+	)
+
+	var state := GameStateData.create_vertical_slice(239)
+	var warrior_id := &"card-monster-automaton-warrior-01"
+	var expose_error := _expose_monster(
+		state, warrior_id, &"card-monster-rabbit-demon-01"
+	)
+	_expect(expose_error.is_empty(), "warrior fixture should expose the target: %s" % expose_error)
+	if not expose_error.is_empty():
+		return
+	var phase_result := RulesEngine.dispatch(
+		state,
+		_end_phase_envelope(state, "cmd-warrior-combat-setup"),
+		definitions
+	)
+	_expect(bool(phase_result.get("ok", false)), "warrior fixture should enter combat")
+	if not bool(phase_result.get("ok", false)):
+		return
+	state = phase_result["state"] as GameStateData
+	var preview := CombatService.preview_attack(state, &"p1", warrior_id, definitions)
+	_expect(
+		preview.get("reward_summary") \
+				== "可從自己的棄牌堆移除 1 張、取得此卡（購買力 2／榮譽 3）",
+		"warrior preview should show its exact source and printed values"
+	)
+	var attack_envelope := _command_envelope(state, {
+		"type": "ATTACK_TARGET",
+		"target_card_id": str(warrior_id),
+		"claim_optional_reward": true,
+	}, "cmd-attack-warrior")
+	var attack_result := RulesEngine.dispatch(state, attack_envelope, definitions)
+	var repeated_attack := RulesEngine.dispatch(state.clone_state(), attack_envelope, definitions)
+	_expect(bool(attack_result.get("ok", false)), "warrior attack should commit")
+	_expect(
+		attack_result.get("after_hash") == repeated_attack.get("after_hash"),
+		"identical warrior attacks should produce the same pending-state hash"
+	)
+	if not bool(attack_result.get("ok", false)):
+		return
+	var pending := attack_result["state"] as GameStateData
+	var player := pending.players[&"p1"] as PlayerStateData
+	var discard := pending.zones[player.zone_ids[&"discard_pile"]] as ZoneData
+	_expect(
+		StringName(pending.effect_state.get("source_zone_key", "")) == &"discard_pile" \
+				and StringName(pending.effect_state.get("source_zone_id", "")) \
+				== player.zone_ids[&"discard_pile"],
+		"warrior choice source must be the active player's discard pile"
+	)
+	_expect(
+		(pending.effect_state.get("eligible_card_ids", []) as Array).size() \
+				== discard.card_instance_ids.size() - 1 \
+				and str(warrior_id) not in (
+					pending.effect_state.get("eligible_card_ids", []) as Array
+				),
+		"warrior should lock the discard pile before the defeated card is claimed"
+	)
+	var choice_commands := RulesEngine.get_legal_commands(pending, &"p1", definitions)
+	_expect(
+		choice_commands.size() \
+				== (pending.effect_state.get("eligible_card_ids", []) as Array).size() + 1,
+		"warrior legal commands should include each discard card and one skip"
+	)
+	for command: Dictionary in choice_commands:
+		if bool(command.get("skip", false)):
+			continue
+		_expect(
+			ZoneService.find_card_zone(
+				pending, StringName(command.get("card_instance_id", ""))
+			) == player.zone_ids[&"discard_pile"],
+			"warrior legal choice must not leak cards from another zone"
+		)
+
+	var attack_events := attack_result.get("events", []) as Array
+	var departure_index := -1
+	var requested_index := -1
+	var claim_index := -1
+	var defeated_index := -1
+	for index in attack_events.size():
+		var event := attack_events[index] as Dictionary
+		if event.get("reason") == "combat_departure" and departure_index < 0:
+			departure_index = index
+		elif event.get("type") == "choice_requested":
+			requested_index = index
+		elif event.get("reason") == "defeated_monster_claimed":
+			claim_index = index
+		elif event.get("type") == "enemy_defeated":
+			defeated_index = index
+	_expect(
+		departure_index >= 0 and departure_index < requested_index \
+				and requested_index < claim_index and claim_index < defeated_index,
+		"warrior events should order departure, choice request, claim, then defeat"
+	)
+
+	var snapshot := SnapshotCodec.encode(pending, "content-warrior", "rules-warrior")
+	var decoded := SnapshotCodec.decode(snapshot, "content-warrior", "rules-warrior")
+	_expect(bool(decoded.get("ok", false)), "warrior pending choice should survive snapshot restore")
+	if bool(decoded.get("ok", false)):
+		_expect(
+			CanonicalJson.stringify((decoded["state"] as GameStateData).effect_state)
+				== CanonicalJson.stringify(pending.effect_state),
+			"warrior snapshot should preserve its locked discard candidates"
+		)
+
+	var choice_id := str(pending.effect_state.get("choice_id", ""))
+	for invalid_card_id: String in [
+		"card-p1-summoning-stone-01",
+		"card-p1-starter-adventurer-04",
+		"card-p2-summoning-stone-01",
+	]:
+		var before_invalid := CanonicalJson.sha256(pending.to_dictionary())
+		var invalid := RulesEngine.dispatch(
+			pending,
+			_command_envelope(pending, {
+				"type": "RESOLVE_CHOICE",
+				"choice_id": choice_id,
+				"card_instance_id": invalid_card_id,
+				"skip": false,
+			}, "cmd-invalid-warrior-%s" % invalid_card_id),
+			definitions
+		)
+		_expect(
+			str(invalid.get("error", "")) == "ineligible_choice_card",
+			"warrior must reject hand, party, and opponent cards"
+		)
+		_expect(
+			CanonicalJson.sha256(pending.to_dictionary()) == before_invalid,
+			"wrong-source warrior choice must remain atomic"
+		)
+
+	var selected_card_id := StringName(
+		(pending.effect_state.get("eligible_card_ids", []) as Array)[0]
+	)
+	var tampered := pending.clone_state()
+	var tamper_move := ZoneService.move_card(
+		tampered,
+		selected_card_id,
+		player.zone_ids[&"discard_pile"],
+		player.zone_ids[&"hand"]
+	)
+	_expect(bool(tamper_move.get("ok", false)), "tamper fixture should move a locked candidate")
+	var tampered_hash := CanonicalJson.sha256(tampered.to_dictionary())
+	var tampered_result := RulesEngine.dispatch(
+		tampered,
+		_command_envelope(tampered, {
+			"type": "RESOLVE_CHOICE",
+			"choice_id": choice_id,
+			"card_instance_id": str(selected_card_id),
+			"skip": false,
+		}, "cmd-tampered-warrior-choice"),
+		definitions
+	)
+	_expect(
+		str(tampered_result.get("error", "")).begins_with("invalid_state:"),
+		"dispatch should revalidate a stale locked discard candidate"
+	)
+	_expect(
+		tampered_result.get("before_hash") == tampered_hash \
+				and tampered_result.get("after_hash") == tampered_hash \
+				and CanonicalJson.sha256(tampered.to_dictionary()) == tampered_hash,
+		"tampered pending-choice rejection must remain atomic"
+	)
+
+	var resolve_envelope := _command_envelope(pending, {
+		"type": "RESOLVE_CHOICE",
+		"choice_id": choice_id,
+		"card_instance_id": str(selected_card_id),
+		"skip": false,
+	}, "cmd-resolve-warrior-choice")
+	var resolve_result := RulesEngine.dispatch(pending, resolve_envelope, definitions)
+	var repeated_pending := repeated_attack["state"] as GameStateData
+	var repeated_resolve := RulesEngine.dispatch(
+		repeated_pending, resolve_envelope, definitions
+	)
+	_expect(bool(resolve_result.get("ok", false)), "warrior should remove a locked discard card")
+	_expect(
+		resolve_result.get("after_hash") == repeated_resolve.get("after_hash"),
+		"identical warrior choices should produce the same committed hash"
+	)
+	if bool(resolve_result.get("ok", false)):
+		var resolved := resolve_result["state"] as GameStateData
+		_expect(
+			ZoneService.find_card_zone(resolved, selected_card_id) == player.zone_ids[&"removed"],
+			"warrior selection should move the discard card to the removed zone"
+		)
+		var resolved_events := resolve_result.get("events", []) as Array
+		_expect(
+			resolved_events.size() == 3 \
+					and (resolved_events[0] as Dictionary).get("reason") == "card_removed" \
+					and (resolved_events[1] as Dictionary).get("type") == "choice_resolved" \
+					and (resolved_events[2] as Dictionary).get("type") == "effect_resolved",
+			"warrior resolution events should order move, choice, then effect completion"
+		)
+
+	var skip_command: Dictionary = {}
+	for command: Dictionary in choice_commands:
+		if bool(command.get("skip", false)):
+			skip_command = command
+			break
+	var discard_before_skip := discard.card_instance_ids.duplicate()
+	var skip_result := RulesEngine.dispatch(
+		pending,
+		_command_envelope(pending, skip_command, "cmd-skip-warrior-choice"),
+		definitions
+	)
+	_expect(bool(skip_result.get("ok", false)), "warrior discard removal should be optional")
+	if bool(skip_result.get("ok", false)):
+		var skipped := skip_result["state"] as GameStateData
+		_expect(skipped.effect_state.is_empty(), "warrior skip should clear pending choice")
+		_expect(
+			(skipped.zones[player.zone_ids[&"discard_pile"]] as ZoneData).card_instance_ids \
+				== discard_before_skip,
+			"warrior skip should not alter the discard pile"
+		)
+		var skip_events := skip_result.get("events", []) as Array
+		_expect(
+			skip_events.size() == 2 \
+					and (skip_events[0] as Dictionary).get("type") == "choice_resolved" \
+					and bool((skip_events[0] as Dictionary).get("skipped", false)) \
+					and (skip_events[1] as Dictionary).get("type") == "effect_resolved",
+			"warrior skip events should order choice then effect completion"
+		)
+
+
 func _test_combat_rejection_is_atomic() -> void:
 	var definitions := _load_definitions()
 	var wrong_phase := GameStateData.create_vertical_slice(227)
@@ -1300,7 +1560,7 @@ func _test_pending_choice_hud_integration() -> void:
 	var skip_choice_buttons := 0
 	var skip_choice_button: Button
 	for child: Node in app.hud.hand_actions.get_children():
-		if child is Button and (child as Button).text == "從牌庫移除此牌":
+		if child is Button and (child as Button).text == "從自己的手牌移除此牌":
 			remove_buttons.append(child as Button)
 		elif child is Button and (child as Button).text == "略過移除":
 			skip_choice_buttons += 1
@@ -1330,6 +1590,53 @@ func _test_pending_choice_hud_integration() -> void:
 			"choice button should move exactly one card into the removed zone"
 		)
 		_expect(not app.hud.end_phase_button.disabled, "phase control should re-enable after choice")
+	app.queue_free()
+
+
+func _test_discard_choice_hud_integration() -> void:
+	var packed := load("res://scenes/boot/main.tscn") as PackedScene
+	var app := packed.instantiate() as GameApp
+	root.add_child(app)
+	await process_frame
+	var expose_error := _expose_monster(
+		app.session.state,
+		&"card-monster-automaton-warrior-01",
+		&"card-monster-rabbit-demon-01"
+	)
+	_expect(expose_error.is_empty(), "discard-choice HUD fixture should expose the warrior")
+	var phase_result := app.session.end_phase()
+	_expect(bool(phase_result.get("ok", false)), "discard-choice HUD should enter combat")
+	var attack_result := app.session.attack_target(&"card-monster-automaton-warrior-01", true)
+	_expect(bool(attack_result.get("ok", false)), "discard-choice HUD should attack the warrior")
+	await process_frame
+	var remove_buttons: Array[Button] = []
+	var skip_choice_button: Button
+	for child: Node in app.hud.hand_actions.get_children():
+		if child is Button and (child as Button).text == "從自己的棄牌堆移除此牌":
+			remove_buttons.append(child as Button)
+		elif child is Button and (child as Button).text == "略過移除":
+			skip_choice_button = child as Button
+	_expect(remove_buttons.size() == 3, "discard-choice HUD should show three departed candidates")
+	_expect(skip_choice_button != null, "discard-choice HUD should retain the optional skip")
+	_expect(app.hud.hand_title.text == "待處理選擇", "discard choice should replace the panel title")
+	_expect(
+		"可以從自己的棄牌堆移除 1 張牌" in app.hud.hand_summary.text \
+				and "來源：自己的棄牌堆（3 張）" in app.hud.hand_summary.text,
+		"discard-choice HUD should show the complete prompt and source zone"
+	)
+	if not remove_buttons.is_empty() and skip_choice_button != null:
+		_expect(
+			remove_buttons[0].focus_neighbor_top == skip_choice_button.get_path() \
+				and skip_choice_button.focus_neighbor_bottom == remove_buttons[0].get_path(),
+			"discard choice should reuse the trapped keyboard focus loop"
+		)
+		remove_buttons[0].pressed.emit()
+		await process_frame
+		_expect(app.session.state.effect_state.is_empty(), "discard choice HUD should submit selection")
+		_expect(
+			(app.session.state.zones[&"p1:removed"] as ZoneData).card_instance_ids.size() == 1,
+			"discard choice HUD should remove exactly one selected card"
+		)
 	app.queue_free()
 
 
