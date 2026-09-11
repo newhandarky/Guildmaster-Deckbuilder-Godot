@@ -19,6 +19,8 @@ func _init() -> void:
 
 func _run() -> void:
 	_test_content_pack()
+	_test_official_adventurer_content_and_supply()
+	_test_official_adventurer_shared_operations()
 	_test_content_pack_reload()
 	_test_initial_invariants()
 	_test_two_player_state()
@@ -59,6 +61,7 @@ func _run() -> void:
 	_test_market_refresh_rejection_is_atomic()
 	_test_market_refresh_selection_order_is_deterministic()
 	await _test_market_refresh_hud_integration()
+	await _test_official_adventurer_hud_integration()
 	await _test_combat_hud_integration()
 	await _test_boss_hud_integration()
 	await _test_boss_choice_hud_integration()
@@ -92,7 +95,7 @@ func _test_content_pack() -> void:
 	var registry := ContentRegistry.new()
 	var errors := registry.load_pack("res://content/packs/base_vertical_slice.json")
 	_expect(errors.is_empty(), "base content pack should validate: %s" % "; ".join(errors))
-	_expect(registry.definitions.size() == 38, "vertical slice should load thirty-eight base definitions")
+	_expect(registry.definitions.size() == 65, "base pack should load sixty-five formal definitions")
 	var mimic := registry.definitions.get(&"base:monster/monster-02") as CardDefinition
 	_expect(
 		mimic != null and mimic.copies == 3 and mimic.combat == 5 \
@@ -181,8 +184,162 @@ func _test_content_pack_reload() -> void:
 	var first_fingerprint := registry.pack_fingerprint
 	var second_errors := registry.load_pack("res://content/packs/base_vertical_slice.json")
 	_expect(first_errors.is_empty() and second_errors.is_empty(), "content pack should be safely reloadable")
-	_expect(registry.definitions.size() == 38, "content reload must not retain duplicate definitions")
+	_expect(registry.definitions.size() == 65, "content reload must not retain duplicate definitions")
 	_expect(registry.pack_fingerprint == first_fingerprint, "same content should keep the same fingerprint")
+
+
+func _test_official_adventurer_content_and_supply() -> void:
+	var definitions := _load_definitions()
+	var expected := [
+		["麥娜",4,2,2,"support"], ["托妮卡",3,3,2,"melee"],
+		["卡儂",4,3,1,"mage"], ["修爾蒂",4,2,2,"tank"],
+		["哈貝妮",3,1,1,"support"], ["莉茲米",4,2,2,"melee"],
+		["辛芙妮",3,2,1,"ranged"], ["旋律",3,2,1,"melee"],
+		["芙尼姆",3,2,1,"tank"], ["慕莎",4,2,2,"melee"],
+		["布蕾斯",4,1,1,"mage"], ["安比夏",3,2,2,"tank"],
+		["芭米爾",4,1,1,"support"], ["席夢娜",4,0,1,"melee"],
+		["阿爾可",3,2,2,"ranged"], ["神樂",4,3,2,"tank"],
+		["蕾普莉絲",3,1,1,"support"], ["羅絲瑪莉",4,2,2,"melee"],
+		["賽席莉亞",4,2,2,"mage"], ["費歐娜",3,5,1,"mage"],
+		["阿爾梅斯",4,2,2,"melee"], ["露希艾拉",3,1,1,"tank"],
+		["拉菲娜",3,1,1,"mage"], ["索娜莉亞",4,1,1,"melee"],
+		["米莉安",4,2,2,"tank"], ["莉莉西斯",4,3,2,"ranged"],
+		["娜塔莉絲",3,1,1,"support"], ["塔菲娜",3,1,1,"support"],
+		["莉迪亞",4,1,1,"mage"], ["尤伊爾",5,0,3,"support"],
+	]
+	var total_copies := 0
+	for index in expected.size():
+		var definition_id := StringName("base:adventurer/adventurer-%02d" % (index + 1))
+		var definition := definitions.get(definition_id) as CardDefinition
+		var values: Array = expected[index]
+		_expect(
+			definition != null and definition.display_name == values[0] \
+					and definition.copies == 2 and definition.cost == values[1] \
+					and definition.combat == values[2] and definition.honor == values[3] \
+					and &"adventurer" in definition.tags \
+					and StringName(values[4]) in definition.tags \
+					and not definition.rules_text.is_empty(),
+			"official adventurer %02d should match confirmed data" % (index + 1)
+		)
+		if definition != null:
+			total_copies += definition.copies
+	_expect(total_copies == 60, "thirty official adventurers should total sixty copies")
+	for definition_id: StringName in definitions:
+		_expect(not str(definition_id).begins_with("custom:"), "custom adventurers must not enter the formal content pack")
+	var first := GameStateData.create_vertical_slice(1700, definitions)
+	var second := GameStateData.create_vertical_slice(1700, definitions)
+	var first_deck := first.zones[SupplyService.RECRUIT_DECK_ID] as ZoneData
+	var first_row := first.zones[SupplyService.RECRUIT_ROW_ID] as ZoneData
+	_expect(first_deck.card_instance_ids.size() + first_row.card_instance_ids.size() == 60, "official recruit supply should contain sixty unique instances")
+	_expect(
+		first_deck.card_instance_ids == (second.zones[SupplyService.RECRUIT_DECK_ID] as ZoneData).card_instance_ids \
+				and first_row.card_instance_ids == (second.zones[SupplyService.RECRUIT_ROW_ID] as ZoneData).card_instance_ids,
+		"official recruit supply order should be deterministic for the same seed"
+	)
+	var seen: Dictionary = {}
+	for zone: ZoneData in [first_deck, first_row]:
+		for card_id: StringName in zone.card_instance_ids:
+			seen[str(card_id)] = true
+	_expect(seen.size() == 60, "official recruit instances must be unique across deck and row")
+
+
+func _test_official_adventurer_shared_operations() -> void:
+	var definitions := _load_definitions()
+	var state := GameStateData.create_vertical_slice(1701, definitions)
+	var player := state.players[&"p1"] as PlayerStateData
+	var recovered_id := &"card-p1-starter-adventurer-01"
+	ZoneService.move_card(state, recovered_id, player.zone_ids[&"party"], player.zone_ids[&"discard_pile"])
+	var events: Array[Dictionary] = []
+	var recover_effect: Array[Dictionary] = [{
+		"op":"choose_move_card", "source_zone_key":"discard_pile",
+		"destination_zone_key":"hand", "allowed_tags":["adventurer"],
+		"amount":1, "optional":true, "prompt":"取回冒險者",
+		"source_card_instance_id":"card-p1-starter-adventurer-02",
+	}]
+	var recover_error := EffectResolver.resolve(state, &"p1", recover_effect, events, definitions)
+	_expect(recover_error.is_empty() and state.effect_state.get("op") == "choose_move_card", "shared move operation should create a serialized optional choice")
+	var pending_hash := CanonicalJson.sha256(state.to_dictionary())
+	var snapshot := SnapshotCodec.encode(state, "content-adventurer", "rules-adventurer")
+	var restored := SnapshotCodec.decode(snapshot, "content-adventurer", "rules-adventurer")
+	_expect(bool(restored.get("ok", false)) and CanonicalJson.sha256((restored.get("state") as GameStateData).to_dictionary()) == pending_hash, "adventurer pending move should round-trip")
+	var illegal := RulesEngine.dispatch(state, _command_envelope(state, {
+		"type":"RESOLVE_CHOICE", "choice_id":str(state.effect_state.get("choice_id", "")),
+		"card_instance_id":"card-p1-summoning-stone-01", "skip":false,
+	}, "cmd-adventurer-illegal"), definitions)
+	_expect(not bool(illegal.get("ok", false)) and illegal.get("after_hash") == pending_hash, "invalid adventurer candidate must be atomic")
+	var legal := RulesEngine.dispatch(state, _command_envelope(state, {
+		"type":"RESOLVE_CHOICE", "choice_id":str(state.effect_state.get("choice_id", "")),
+		"card_instance_id":str(recovered_id), "skip":false,
+	}, "cmd-adventurer-recover"), definitions)
+	_expect(bool(legal.get("ok", false)) and ZoneService.find_card_zone(legal["state"], recovered_id) == player.zone_ids[&"hand"], "shared move operation should recover the locked owned card")
+
+	var inspect_state := GameStateData.create_vertical_slice(1702, definitions)
+	var inspect_player := inspect_state.players[&"p1"] as PlayerStateData
+	for raw_id: Variant in (inspect_state.zones[inspect_player.zone_ids[&"hand"]] as ZoneData).card_instance_ids.slice(0, 3):
+		ZoneService.move_card(inspect_state, StringName(str(raw_id)), inspect_player.zone_ids[&"hand"], inspect_player.zone_ids[&"draw_pile"])
+	var inspect_events: Array[Dictionary] = []
+	var inspect_error := EffectResolver.resolve(inspect_state, &"p1", [{
+		"op":"inspect_deck_top", "amount":3, "remove_max":1, "optional":true,
+		"prompt":"查看並排序", "source_card_instance_id":"card-p1-starter-adventurer-02",
+	}], inspect_events, definitions)
+	_expect(inspect_error.is_empty() and inspect_state.effect_state.get("op") == "inspect_deck_top" and (inspect_state.zones[inspect_player.zone_ids[&"inspection"]] as ZoneData).card_instance_ids.size() == 3, "deck inspection must use a formal owner-only zone")
+	var skip_command: Dictionary = {}
+	for command: Dictionary in RulesEngine.get_legal_commands(inspect_state, &"p1", definitions):
+		if bool(command.get("skip", false)):
+			skip_command = command
+	var skipped := RulesEngine.dispatch(inspect_state, _command_envelope(inspect_state, skip_command, "cmd-inspect-remove-skip"), definitions)
+	_expect(bool(skipped.get("ok", false)) and (skipped["state"] as GameStateData).effect_state.get("op") == "order_deck_top", "inspection skip should continue into mandatory ordering: %s" % str(skipped.get("error", "wrong pending op")))
+	if bool(skipped.get("ok", false)):
+		var ordering := skipped["state"] as GameStateData
+		var order_steps := 0
+		while not ordering.effect_state.is_empty() and order_steps < 3:
+			var commands := RulesEngine.get_legal_commands(ordering, &"p1", definitions)
+			var ordered := RulesEngine.dispatch(ordering, _command_envelope(ordering, commands[0], "cmd-order-%d" % order_steps), definitions)
+			_expect(bool(ordered.get("ok", false)), "each deck ordering step should commit")
+			if not bool(ordered.get("ok", false)):
+				break
+			ordering = ordered["state"] as GameStateData
+			order_steps += 1
+		_expect(ordering.effect_state.is_empty() and (ordering.zones[inspect_player.zone_ids[&"inspection"]] as ZoneData).card_instance_ids.is_empty(), "deck ordering should restore every inspected card and clear pending state")
+
+	var target_state := GameStateData.create_vertical_slice(1703, definitions)
+	var target_events: Array[Dictionary] = []
+	var target_error := EffectResolver.resolve(target_state, &"p1", [{
+		"op":"choose_target_combat_modifier", "source_zone_id":str(SupplyService.MONSTER_ROW_ID),
+		"allowed_card_types":["monster"], "amount":-2, "optional":true,
+		"prompt":"指定魔物", "source_card_instance_id":"card-p1-starter-adventurer-02",
+	}], target_events, definitions)
+	var target_command := RulesEngine.get_legal_commands(target_state, &"p1", definitions)[0]
+	var target_result := RulesEngine.dispatch(target_state, _command_envelope(target_state, target_command, "cmd-target-modifier"), definitions)
+	_expect(target_error.is_empty() and bool(target_result.get("ok", false)) and not ((target_result["state"] as GameStateData).players[&"p1"] as PlayerStateData).turn_bonuses.get("target_combat_modifiers", {}).is_empty(), "public target modifier should lock and apply one legal monster")
+
+	var departure_base := GameStateData.create_vertical_slice(1704, definitions)
+	var departure_player := departure_base.players[&"p1"] as PlayerStateData
+	var departure_party := departure_base.zones[departure_player.zone_ids[&"party"]] as ZoneData
+	for starter_id: StringName in departure_party.card_instance_ids.duplicate():
+		ZoneService.move_card(departure_base, starter_id, departure_player.zone_ids[&"party"], departure_player.zone_ids[&"discard_pile"])
+	var almes_id := _find_instance_by_definition(departure_base, &"base:adventurer/adventurer-21")
+	var almes_card := departure_base.cards[almes_id] as Dictionary
+	almes_card["owner_id"] = "p1"
+	ZoneService.move_card(departure_base, almes_id, ZoneService.find_card_zone(departure_base, almes_id), departure_player.zone_ids[&"party"])
+	departure_base.phase = &"combat"
+	departure_player.turn_resources[&"combat"] = 3
+	var use_state := departure_base.clone_state()
+	var skip_state := departure_base.clone_state()
+	var use_command: Dictionary = {}
+	var skip_departure_command: Dictionary = {}
+	for command: Dictionary in RulesEngine.get_legal_commands(departure_base, &"p1", definitions):
+		if command.get("target_card_id") != "card-monster-skeleton-01" or not bool(command.get("claim_optional_reward", false)):
+			continue
+		if bool(command.get("use_optional_departures", true)):
+			use_command = command
+		else:
+			skip_departure_command = command
+	_expect(not use_command.is_empty() and not skip_departure_command.is_empty(), "optional combat departure should expose execute and skip legal commands")
+	var used := RulesEngine.dispatch(use_state, _command_envelope(use_state, use_command, "cmd-departure-use"), definitions)
+	var declined := RulesEngine.dispatch(skip_state, _command_envelope(skip_state, skip_departure_command, "cmd-departure-skip"), definitions)
+	_expect(bool(used.get("ok", false)) and ZoneService.find_card_zone(used["state"], almes_id) == departure_player.zone_ids[&"draw_pile"], "accepted departure replacement should place the adventurer on its own deck top")
+	_expect(bool(declined.get("ok", false)) and ZoneService.find_card_zone(declined["state"], almes_id) == departure_player.zone_ids[&"discard_pile"], "declined departure replacement should use normal combat discard")
 
 
 func _test_initial_invariants() -> void:
@@ -207,7 +364,7 @@ func _test_two_player_state() -> void:
 
 func _test_official_starting_setup() -> void:
 	var state := GameStateData.create_vertical_slice()
-	_expect(state.cards.size() == 77, "setup should include eleven formal boss instances")
+	_expect(state.cards.size() == 131, "setup should include all formal supply and boss instances")
 	var monster_instance_count := 0
 	var monster_definition_ids: Dictionary = {}
 	for card_instance_id: StringName in state.cards:
@@ -3523,7 +3680,7 @@ func _test_supply_setup_and_determinism() -> void:
 		var second_row := second.zones[row_id] as ZoneData
 		_expect(first_row.card_instance_ids.size() == 3, "supply row %s should start with three cards" % row_id)
 		_expect(first_row.card_instance_ids == second_row.card_instance_ids, "same seed should produce the same %s order" % row_id)
-	_expect((first.zones[SupplyService.RECRUIT_DECK_ID] as ZoneData).card_instance_ids.size() == 3, "recruit deck should retain three vertical-slice cards")
+	_expect((first.zones[SupplyService.RECRUIT_DECK_ID] as ZoneData).card_instance_ids.size() == 57, "recruit deck should retain fifty-seven official adventurers")
 	_expect((first.zones[SupplyService.SHOP_DECK_ID] as ZoneData).card_instance_ids.size() == 5, "shop deck should retain five vertical-slice cards")
 	_expect(InvariantService.validate(first).is_empty(), "initial supply should satisfy invariants")
 
@@ -3606,6 +3763,11 @@ func _test_supply_depletion_event_once() -> void:
 	var row := state.zones[SupplyService.RECRUIT_ROW_ID] as ZoneData
 	for card_instance_id: StringName in row.card_instance_ids.duplicate():
 		ZoneService.move_card(state, card_instance_id, SupplyService.RECRUIT_ROW_ID, &"p1:discard-pile")
+	var deck := state.zones[SupplyService.RECRUIT_DECK_ID] as ZoneData
+	while deck.card_instance_ids.size() > 3:
+		ZoneService.move_card(
+			state, deck.card_instance_ids[0], SupplyService.RECRUIT_DECK_ID, &"p1:discard-pile"
+		)
 	var events: Array[Dictionary] = []
 	var error := SupplyService.refill_row(state, SupplyService.RECRUIT_DECK_ID, SupplyService.RECRUIT_ROW_ID, 3, events)
 	_expect(error.is_empty(), "supply depletion fixture should refill")
@@ -3777,6 +3939,22 @@ func _test_market_refresh_selection_order_is_deterministic() -> void:
 		first.get("after_hash") == reversed.get("after_hash"),
 		"selection click order must not alter deterministic refresh results"
 	)
+
+
+func _test_official_adventurer_hud_integration() -> void:
+	var packed := load("res://scenes/boot/main.tscn") as PackedScene
+	var app := packed.instantiate() as GameApp
+	root.add_child(app)
+	await process_frame
+	var full_detail_found := false
+	for node: Node in app.hud.market_actions.find_children("*", "Label", true, false):
+		var label := node as Label
+		if label != null and "職業" in label.text and "效果：" in label.text \
+				and "費用" in label.text and "戰力" in label.text and "榮譽" in label.text:
+			full_detail_found = true
+			break
+	_expect(full_detail_found, "recruit HUD should show full official adventurer stats, profession, and rules text")
+	app.queue_free()
 
 
 func _test_market_refresh_hud_integration() -> void:
@@ -4810,6 +4988,26 @@ func _expose_boss(state: GameStateData, target_card_id: StringName) -> String:
 	if target_card_id in active.card_instance_ids:
 		return ""
 	var current_id := active.card_instance_ids[0]
+	var current_card := state.cards[current_id] as Dictionary
+	var current_state := current_card.get("state", {}) as Dictionary
+	var definitions := _load_definitions()
+	for raw_attachment_id: Variant in (current_state.get("attachment_ids", []) as Array).duplicate():
+		var attachment_id := StringName(str(raw_attachment_id))
+		var attachment := state.cards[attachment_id] as Dictionary
+		var attachment_state := attachment.get("state", {}) as Dictionary
+		attachment_state.erase("attached_to")
+		attachment["state"] = attachment_state
+		var attachment_definition := definitions.get(
+			StringName(attachment.get("definition_id", ""))
+		) as CardDefinition
+		var destination := SupplyService.RECRUIT_DECK_ID \
+				if attachment_definition != null and attachment_definition.card_type == &"adventurer" \
+				else SupplyService.SHOP_DECK_ID
+		ZoneService.move_card(
+			state, attachment_id, BossService.BOSS_ATTACHMENT_ID, destination
+		)
+	current_state["attachment_ids"] = []
+	current_card["state"] = current_state
 	var move_result := ZoneService.move_card(
 		state, current_id, BossService.BOSS_ACTIVE_ID, BossService.BOSS_DECK_ID, 0
 	)

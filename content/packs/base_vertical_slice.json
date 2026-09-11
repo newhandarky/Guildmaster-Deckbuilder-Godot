@@ -1,7 +1,7 @@
 {
   "manifest": {
     "pack_id": "base:vertical-slice",
-    "version": "0.16.0",
+    "version": "0.17.0",
     "includes_custom_adventurers": false
   },
   "definitions": [
@@ -359,48 +359,36 @@
       "effects": [],
       "presentation_id": "base:presentation/spirit-crystal"
     },
-    {
-      "definition_id": "base:adventurer/adventurer-09",
-      "display_name": "芙尼姆",
-      "card_type": "adventurer",
-      "copies": 2,
-      "cost": 3,
-      "combat": 2,
-      "honor": 1,
-      "tags": ["adventurer", "tank"],
-      "effects": [
-        {"op": "conditional_combat", "amount": 1, "timing": "continuous", "condition": "has_equipment"}
-      ],
-      "presentation_id": "base:presentation/adventurer-tank"
-    },
-    {
-      "definition_id": "base:adventurer/adventurer-10",
-      "display_name": "慕莎",
-      "card_type": "adventurer",
-      "copies": 2,
-      "cost": 4,
-      "combat": 2,
-      "honor": 2,
-      "tags": ["adventurer", "melee"],
-      "effects": [
-        {"op": "conditional_combat", "amount": 2, "timing": "continuous", "condition": "party_index_0"}
-      ],
-      "presentation_id": "base:presentation/adventurer-melee"
-    },
-    {
-      "definition_id": "base:adventurer/adventurer-15",
-      "display_name": "阿爾可",
-      "card_type": "adventurer",
-      "copies": 2,
-      "cost": 3,
-      "combat": 2,
-      "honor": 2,
-      "tags": ["adventurer", "ranged"],
-      "effects": [
-        {"op": "conditional_combat", "amount": 1, "timing": "continuous", "condition": "party_index_3_or_4"}
-      ],
-      "presentation_id": "base:presentation/adventurer-ranged"
-    },
+    {"definition_id":"base:adventurer/adventurer-01","display_name":"麥娜","card_type":"adventurer","copies":2,"cost":4,"combat":2,"honor":2,"tags":["adventurer","support"],"rules_text":"討伐階段結束時，若本回合有擊敗魔物或魔王，可以從棄牌堆取回 1 張冒險者至手牌。","effects":[{"op":"choose_move_card","timing":"on_combat_end","condition":"defeated_enemy","source_zone_key":"discard_pile","destination_zone_key":"hand","allowed_tags":["adventurer"],"amount":1,"optional":true,"prompt":"可以從自己的棄牌堆取回 1 張冒險者至手牌"}],"presentation_id":"base:presentation/adventurer-support"},
+    {"definition_id":"base:adventurer/adventurer-02","display_name":"托妮卡","card_type":"adventurer","copies":2,"cost":3,"combat":3,"honor":2,"tags":["adventurer","melee"],"rules_text":"此冒險者無法配戴裝備。","effects":[{"op":"equipment_policy","timing":"continuous","capacity":0}],"presentation_id":"base:presentation/adventurer-melee"},
+    {"definition_id":"base:adventurer/adventurer-03","display_name":"卡儂","card_type":"adventurer","copies":2,"cost":4,"combat":3,"honor":1,"tags":["adventurer","mage"],"rules_text":"討伐階段開始時，可以擲 1 顆骰子；若為單數，此冒險者本回合戰力 +1。","effects":[{"op":"roll_self_combat","timing":"on_combat_start","die_sides":6,"odd_amount":1,"optional":true,"prompt":"擲 1 顆六面骰；若為單數，卡儂本回合戰力 +1"}],"presentation_id":"base:presentation/adventurer-mage"},
+    {"definition_id":"base:adventurer/adventurer-04","display_name":"修爾蒂","card_type":"adventurer","copies":2,"cost":4,"combat":2,"honor":2,"tags":["adventurer","tank"],"rules_text":"隊伍第一位的其他冒險者戰力 +2。","effects":[{"op":"party_combat_aura","timing":"continuous","selector":"first","exclude_source":true,"amount":2}],"presentation_id":"base:presentation/adventurer-tank"},
+    {"definition_id":"base:adventurer/adventurer-05","display_name":"哈貝妮","card_type":"adventurer","copies":2,"cost":3,"combat":1,"honor":1,"tags":["adventurer","support"],"rules_text":"購買階段時，商店內所有裝備費用減少 1。","effects":[{"op":"purchase_cost_modifier","timing":"continuous","source_zone_id":"shared:shop-row","card_type":"equipment","amount":-1}],"presentation_id":"base:presentation/adventurer-support"},
+    {"definition_id":"base:adventurer/adventurer-06","display_name":"莉茲米","card_type":"adventurer","copies":2,"cost":4,"combat":2,"honor":2,"tags":["adventurer","melee"],"rules_text":"討伐階段結束時，若本回合有擊敗魔物或魔王，可以從物資牌庫取得 1 張牌至棄牌堆。","effects":[{"op":"gain_from_supply_deck","timing":"on_combat_end","condition":"defeated_enemy","source_deck_zone_id":"shared:resource-supply","destination_zone_key":"discard_pile","amount":1,"optional":true,"prompt":"可以從物資牌庫取得 1 張牌至自己的棄牌堆"}],"presentation_id":"base:presentation/adventurer-melee"},
+    {"definition_id":"base:adventurer/adventurer-07","display_name":"辛芙妮","card_type":"adventurer","copies":2,"cost":3,"combat":2,"honor":1,"tags":["adventurer","ranged"],"rules_text":"進入隊伍時，可以將場上任意數量的魔物依原順序放回魔物牌庫底，並補出等量魔物。","effects":[{"op":"choose_refresh_row","timing":"on_enter_party","source_zone_id":"shared:monster-row","destination_zone_id":"shared:monster-cycle","amount":3,"optional":true,"prompt":"可以選擇 0 至 3 張公開魔物放回牌庫底並補牌"}],"presentation_id":"base:presentation/adventurer-ranged"},
+    {"definition_id":"base:adventurer/adventurer-08","display_name":"旋律","card_type":"adventurer","copies":2,"cost":3,"combat":2,"honor":1,"tags":["adventurer","melee"],"rules_text":"進入隊伍時，可以指定場上 1 隻魔物；該魔物本回合戰力 -2。","effects":[{"op":"choose_target_combat_modifier","timing":"on_enter_party","source_zone_id":"shared:monster-row","allowed_card_types":["monster"],"amount":-2,"expiry":"turn_end","optional":true,"prompt":"可以指定 1 隻公開魔物，本回合戰力 -2"}],"presentation_id":"base:presentation/adventurer-melee"},
+    {"definition_id":"base:adventurer/adventurer-09","display_name":"芙尼姆","card_type":"adventurer","copies":2,"cost":3,"combat":2,"honor":1,"tags":["adventurer","tank"],"rules_text":"當此冒險者有配戴裝備時，戰力 +1。","effects":[{"op":"conditional_combat","amount":1,"timing":"continuous","condition":"has_equipment"}],"presentation_id":"base:presentation/adventurer-tank"},
+    {"definition_id":"base:adventurer/adventurer-10","display_name":"慕莎","card_type":"adventurer","copies":2,"cost":4,"combat":2,"honor":2,"tags":["adventurer","melee"],"rules_text":"若此冒險者在隊伍第一位，戰力 +2。","effects":[{"op":"conditional_combat","amount":2,"timing":"continuous","condition":"party_index_0"}],"presentation_id":"base:presentation/adventurer-melee"},
+    {"definition_id":"base:adventurer/adventurer-11","display_name":"布蕾斯","card_type":"adventurer","copies":2,"cost":4,"combat":1,"honor":1,"tags":["adventurer","mage"],"rules_text":"進入隊伍時，可以查看自己牌庫頂 3 張牌，移除其中最多 1 張，再任意排序其餘牌。","effects":[{"op":"inspect_deck_top","timing":"on_enter_party","amount":3,"remove_max":1,"optional":true,"prompt":"查看自己牌庫頂最多 3 張；可移除 1 張，再決定其餘牌的牌庫頂順序"}],"presentation_id":"base:presentation/adventurer-mage"},
+    {"definition_id":"base:adventurer/adventurer-12","display_name":"安比夏","card_type":"adventurer","copies":2,"cost":3,"combat":2,"honor":2,"tags":["adventurer","tank"],"rules_text":"進入隊伍時，可以將此冒險者移動到隊伍第一位。","effects":[{"op":"reposition_source","timing":"on_enter_party","destination_index":0,"optional":true,"prompt":"可以將安比夏移動到隊伍第一位"}],"presentation_id":"base:presentation/adventurer-tank"},
+    {"definition_id":"base:adventurer/adventurer-13","display_name":"芭米爾","card_type":"adventurer","copies":2,"cost":4,"combat":1,"honor":1,"tags":["adventurer","support"],"rules_text":"進入隊伍時，可以移除自己棄牌堆中的 1 張牌。","effects":[{"op":"choose_remove_card","timing":"on_enter_party","source_zone_keys":["discard_pile"],"amount":1,"optional":true,"prompt":"可以從自己的棄牌堆移除 1 張牌"}],"presentation_id":"base:presentation/adventurer-support"},
+    {"definition_id":"base:adventurer/adventurer-14","display_name":"席夢娜","card_type":"adventurer","copies":2,"cost":4,"combat":0,"honor":1,"tags":["adventurer","melee"],"rules_text":"隊伍中其他冒險者戰力 +1；若此冒險者成為隊伍第一位，立即棄置。","effects":[{"op":"party_combat_aura","timing":"continuous","selector":"all","exclude_source":true,"amount":1},{"op":"position_departure","timing":"state_based","party_index":0,"destination_zone_key":"discard_pile"}],"presentation_id":"base:presentation/adventurer-melee"},
+    {"definition_id":"base:adventurer/adventurer-15","display_name":"阿爾可","card_type":"adventurer","copies":2,"cost":3,"combat":2,"honor":2,"tags":["adventurer","ranged"],"rules_text":"位於隊伍第四或第五位時，戰力 +1。","effects":[{"op":"conditional_combat","amount":1,"timing":"continuous","condition":"party_index_3_or_4"}],"presentation_id":"base:presentation/adventurer-ranged"},
+    {"definition_id":"base:adventurer/adventurer-16","display_name":"神樂","card_type":"adventurer","copies":2,"cost":4,"combat":3,"honor":2,"tags":["adventurer","tank"],"rules_text":"進入隊伍時，可以查看自己牌庫頂；若為道具或裝備，公開並加入手牌。","effects":[{"op":"reveal_top_if_type","timing":"on_enter_party","allowed_card_types":["item","equipment"],"destination_zone_key":"hand","optional":true,"prompt":"可以查看自己的牌庫頂；若為道具或裝備，公開並加入手牌"}],"presentation_id":"base:presentation/adventurer-tank"},
+    {"definition_id":"base:adventurer/adventurer-17","display_name":"蕾普莉絲","card_type":"adventurer","copies":2,"cost":3,"combat":1,"honor":1,"tags":["adventurer","support"],"rules_text":"進入隊伍時，可以抽 3 張牌，然後從手牌棄 1 張牌。","effects":[{"op":"draw_then_choose_discard","timing":"on_enter_party","draw_amount":3,"discard_amount":1,"optional":true,"prompt":"可以抽 3 張牌，然後從手牌棄置 1 張牌"}],"presentation_id":"base:presentation/adventurer-support"},
+    {"definition_id":"base:adventurer/adventurer-18","display_name":"羅絲瑪莉","card_type":"adventurer","copies":2,"cost":4,"combat":2,"honor":2,"tags":["adventurer","melee"],"rules_text":"討伐階段結束時，若本回合有擊敗魔物或魔王，可以獲得購買力 2。","effects":[{"op":"grant_purchase_power","timing":"on_combat_end","condition":"defeated_enemy","amount":2,"optional":true,"prompt":"可以獲得購買力 2"}],"presentation_id":"base:presentation/adventurer-melee"},
+    {"definition_id":"base:adventurer/adventurer-19","display_name":"賽席莉亞","card_type":"adventurer","copies":2,"cost":4,"combat":2,"honor":2,"tags":["adventurer","mage"],"rules_text":"可以將已取得的魔物或魔王作為裝備；因戰鬥離場時，可以棄置 1 張敵卡附件代替自身離場。","effects":[{"op":"equipment_policy","timing":"continuous","allowed_card_types":["equipment","monster","boss"],"capacity":1},{"op":"combat_departure_replacement","timing":"on_combat_departure","attachment_card_types":["monster","boss"],"attachment_destination_zone_key":"discard_pile","source_destination_zone_key":"party","optional":true,"prompt":"可以棄置配戴的魔物或魔王，讓賽席莉亞留在隊伍"}],"presentation_id":"base:presentation/adventurer-mage"},
+    {"definition_id":"base:adventurer/adventurer-20","display_name":"費歐娜","card_type":"adventurer","copies":2,"cost":3,"combat":5,"honor":1,"tags":["adventurer","mage"],"rules_text":"戰力減去隊伍中其他冒險者的數量，最低為 0。","effects":[{"op":"conditional_combat","timing":"continuous","condition":"minus_other_party_count","amount":-1}],"presentation_id":"base:presentation/adventurer-mage"},
+    {"definition_id":"base:adventurer/adventurer-21","display_name":"阿爾梅斯","card_type":"adventurer","copies":2,"cost":4,"combat":2,"honor":2,"tags":["adventurer","melee"],"rules_text":"因戰鬥將棄置時，可以改放到自己的牌庫頂；裝備仍進棄牌堆。","effects":[{"op":"combat_departure_replacement","timing":"on_combat_departure","source_destination_zone_key":"draw_pile","insertion":"top","equipment_destination_zone_key":"discard_pile","optional":true,"prompt":"可以讓阿爾梅斯改放到自己的牌庫頂"}],"presentation_id":"base:presentation/adventurer-melee"},
+    {"definition_id":"base:adventurer/adventurer-22","display_name":"露希艾拉","card_type":"adventurer","copies":2,"cost":3,"combat":1,"honor":1,"tags":["adventurer","tank"],"rules_text":"可以將已取得的魔物或魔王作為裝備；戰力增加附件的印刷購買力。","effects":[{"op":"equipment_policy","timing":"continuous","allowed_card_types":["equipment","monster","boss"],"capacity":1},{"op":"attached_value_combat","timing":"continuous","card_types":["monster","boss"],"field":"purchase_power"}],"presentation_id":"base:presentation/adventurer-tank"},
+    {"definition_id":"base:adventurer/adventurer-23","display_name":"拉菲娜","card_type":"adventurer","copies":2,"cost":3,"combat":1,"honor":1,"tags":["adventurer","mage"],"rules_text":"討伐階段開始時，可以擲 1 顆骰子並指定 1 隻公開魔物；該魔物本回合戰力減少骰值一半（向上取整）。","effects":[{"op":"roll_target_combat_modifier","timing":"on_combat_start","die_sides":6,"divisor":2,"rounding":"ceil","source_zone_id":"shared:monster-row","allowed_card_types":["monster"],"expiry":"turn_end","optional":true,"prompt":"可以擲骰並指定 1 隻公開魔物，本回合降低其戰力"}],"presentation_id":"base:presentation/adventurer-mage"},
+    {"definition_id":"base:adventurer/adventurer-24","display_name":"索娜莉亞","card_type":"adventurer","copies":2,"cost":4,"combat":1,"honor":1,"tags":["adventurer","melee"],"rules_text":"本回合討伐對象為魔物時，戰力 +3。","effects":[{"op":"conditional_combat","timing":"continuous","condition":"target_card_type","target_card_type":"monster","amount":3}],"presentation_id":"base:presentation/adventurer-melee"},
+    {"definition_id":"base:adventurer/adventurer-25","display_name":"米莉安","card_type":"adventurer","copies":2,"cost":4,"combat":2,"honor":2,"tags":["adventurer","tank","convertible_equipment"],"rules_text":"可以作為裝備配戴在其他冒險者上；裝備者戰力 +2。","effects":[{"op":"self_as_equipment","timing":"action","amount":2,"optional":true,"prompt":"可以將米莉安作為裝備配戴在另一名冒險者上"}],"presentation_id":"base:presentation/adventurer-tank"},
+    {"definition_id":"base:adventurer/adventurer-26","display_name":"莉莉西斯","card_type":"adventurer","copies":2,"cost":4,"combat":3,"honor":2,"tags":["adventurer","ranged"],"rules_text":"進入隊伍的回合，購買階段時，手牌中的每張魔物或魔王購買力 +1。","effects":[{"op":"hand_purchase_power_modifier","timing":"continuous","condition":"entered_party_this_turn","card_types":["monster","boss"],"amount":1}],"presentation_id":"base:presentation/adventurer-ranged"},
+    {"definition_id":"base:adventurer/adventurer-27","display_name":"娜塔莉絲","card_type":"adventurer","copies":2,"cost":3,"combat":1,"honor":1,"tags":["adventurer","support"],"rules_text":"相鄰的冒險者戰力 +1。","effects":[{"op":"party_combat_aura","timing":"continuous","selector":"adjacent","exclude_source":true,"amount":1}],"presentation_id":"base:presentation/adventurer-support"},
+    {"definition_id":"base:adventurer/adventurer-28","display_name":"塔菲娜","card_type":"adventurer","copies":2,"cost":3,"combat":1,"honor":1,"tags":["adventurer","support"],"rules_text":"進入隊伍時可以抽 1 張牌；每次成功配戴裝備時可以抽 1 張牌。","effects":[{"op":"draw","timing":"on_enter_party","amount":1,"optional":true,"prompt":"可以抽 1 張牌"},{"op":"draw","timing":"on_equipment_attached","amount":1,"optional":true,"prompt":"塔菲娜配戴裝備後，可以抽 1 張牌"}],"presentation_id":"base:presentation/adventurer-support"},
+    {"definition_id":"base:adventurer/adventurer-29","display_name":"莉迪亞","card_type":"adventurer","copies":2,"cost":4,"combat":1,"honor":1,"tags":["adventurer","mage"],"rules_text":"此冒險者最多可以配戴 3 張裝備；第四件時由玩家選擇替換。","effects":[{"op":"equipment_policy","timing":"continuous","capacity":3,"replacement":"choose"}],"presentation_id":"base:presentation/adventurer-mage"},
+    {"definition_id":"base:adventurer/adventurer-30","display_name":"尤伊爾","card_type":"adventurer","copies":2,"cost":5,"combat":0,"honor":3,"tags":["adventurer","support"],"rules_text":"討伐階段結束時，若本回合有擊敗魔物或魔王，可以從自己的手牌、隊伍或棄牌堆移除 1 張牌。","effects":[{"op":"choose_remove_card","timing":"on_combat_end","condition":"defeated_enemy","source_zone_keys":["hand","party","discard_pile"],"amount":1,"optional":true,"prompt":"可以從自己的手牌、隊伍或棄牌堆移除 1 張牌"}],"presentation_id":"base:presentation/adventurer-support"},
     {
       "definition_id": "base:resource/resource-02",
       "display_name": "火焰拳套",

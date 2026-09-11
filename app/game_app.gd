@@ -58,8 +58,12 @@ func _on_use_item_requested(card_instance_id: StringName) -> void:
 	session.use_item(card_instance_id)
 
 
-func _on_attack_target_requested(target_card_id: StringName, claim_optional_reward: bool) -> void:
-	session.attack_target(target_card_id, claim_optional_reward)
+func _on_attack_target_requested(
+	target_card_id: StringName,
+	claim_optional_reward: bool,
+	use_optional_departures: bool
+) -> void:
+	session.attack_target(target_card_id, claim_optional_reward, use_optional_departures)
 
 
 func _on_resolve_choice_requested(

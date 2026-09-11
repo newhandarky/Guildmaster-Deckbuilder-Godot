@@ -88,6 +88,73 @@ static func validate(
 	if card == null:
 		return "missing_choice_card"
 	match operation:
+		&"choose_equipment_replacement":
+			var player := state.players.get(actor_id) as PlayerStateData
+			var target_id := StringName(choice.get("target_card_id", ""))
+			var pending_id := StringName(choice.get("pending_equipment_id", ""))
+			if player == null or ZoneService.find_card_zone(state, card_instance_id) \
+					!= StringName(player.zone_ids.get(&"equipment", &"")):
+				return "choice_card_moved"
+			if ZoneService.find_card_zone(state, target_id) != StringName(player.zone_ids.get(&"party", &"")) \
+					or ZoneService.find_card_zone(state, pending_id) \
+					!= StringName(choice.get("pending_equipment_source_zone_id", "")):
+				return "choice_source_moved"
+			var target := state.cards.get(target_id) as Dictionary
+			if target == null or str(card_instance_id) not in ((target.get("state", {}) as Dictionary).get("equipment_ids", []) as Array):
+				return "attachment_link_missing"
+		&"inspect_deck_top", &"order_deck_top":
+			var player := state.players.get(actor_id) as PlayerStateData
+			if player == null or StringName(choice.get("source_zone_id", "")) \
+					!= StringName(player.zone_ids.get(&"inspection", &"")) \
+					or ZoneService.find_card_zone(state, card_instance_id) \
+					!= StringName(player.zone_ids.get(&"inspection", &"")):
+				return "choice_card_moved"
+			if StringName(card.get("owner_id", "")) != actor_id:
+				return "choice_card_not_owned"
+		&"confirm_effect":
+			if ZoneService.find_card_zone(state, card_instance_id) \
+					!= StringName(choice.get("source_zone_id", "")):
+				return "choice_card_moved"
+			if str(card_instance_id) != str(choice.get("source_card_instance_id", "")):
+				return "ineligible_choice_card"
+			var source_card := state.cards.get(card_instance_id) as Dictionary
+			if source_card == null or StringName(source_card.get("owner_id", "")) != actor_id:
+				return "choice_card_not_owned"
+		&"choose_move_card":
+			var source_zone_key := StringName(choice.get("source_zone_key", ""))
+			var destination_zone_id := StringName(choice.get("destination_zone_id", ""))
+			var player := state.players.get(actor_id) as PlayerStateData
+			if player == null or StringName(player.zone_ids.get(source_zone_key, &"")) \
+					!= StringName(choice.get("source_zone_id", "")) \
+					or destination_zone_id not in player.zone_ids.values():
+				return "invalid_choice_source"
+			if ZoneService.find_card_zone(state, card_instance_id) \
+					!= StringName(choice.get("source_zone_id", "")):
+				return "choice_card_moved"
+			if StringName(card.get("owner_id", "")) != actor_id:
+				return "choice_card_not_owned"
+			var allowed_tags := _normalized_allowed_tags(choice.get("allowed_tags", []))
+			var definition := _definition_for_card(state, definitions, card_instance_id)
+			if not allowed_tags.is_empty() and (definition == null \
+					or not _definition_has_any_tag(definition, allowed_tags)):
+				return "choice_card_wrong_type"
+		&"choose_target_combat_modifier":
+			if ZoneService.find_card_zone(state, card_instance_id) \
+					!= StringName(choice.get("source_zone_id", "")):
+				return "choice_card_moved"
+			if not StringName(card.get("owner_id", "")).is_empty():
+				return "choice_card_already_owned"
+			var definition := _definition_for_card(state, definitions, card_instance_id)
+			if definition == null or definition.card_type not in _normalized_allowed_tags(
+					choice.get("allowed_card_types", [])
+			):
+				return "choice_card_wrong_type"
+		&"choose_refresh_row":
+			if ZoneService.find_card_zone(state, card_instance_id) \
+					!= StringName(choice.get("source_zone_id", "")):
+				return "choice_card_moved"
+			if not StringName(card.get("owner_id", "")).is_empty():
+				return "choice_card_already_owned"
 		&"choose_remove_card":
 			var source_record := (choice.get("eligible_card_sources", {}) as Dictionary).get(
 				str(card_instance_id), {}
@@ -250,7 +317,7 @@ static func apply(
 	var card_instance_id := StringName(command.get("card_instance_id", ""))
 	var operation := StringName(choice.get("op", ""))
 	if operation == &"draft_gain_card":
-		return _apply_draft_gain(state, actor_id, choice, card_instance_id, events)
+		return _apply_draft_gain(state, actor_id, choice, card_instance_id, events, definitions)
 	var resolved_source_record: Dictionary = {}
 	if not skip:
 		if operation == &"choose_remove_card":
@@ -278,6 +345,12 @@ static func apply(
 				var move_event := (move_result.get("event", {}) as Dictionary).duplicate(true)
 				move_event["reason"] = "card_removed"
 				events.append(move_event)
+			var selected_card_ids := choice.get("selected_card_ids", []) as Array
+			selected_card_ids.append(str(card_instance_id))
+			choice["selected_card_ids"] = selected_card_ids
+			choice["selected_count"] = selected_card_ids.size()
+		elif operation in [&"confirm_effect", &"choose_target_combat_modifier", \
+				&"choose_refresh_row", &"order_deck_top", &"choose_equipment_replacement"]:
 			var selected_card_ids := choice.get("selected_card_ids", []) as Array
 			selected_card_ids.append(str(card_instance_id))
 			choice["selected_card_ids"] = selected_card_ids
@@ -316,6 +389,36 @@ static func apply(
 			"max_selections": int(choice.get("max_selections", 1)),
 		})
 		return ""
+	if operation == &"choose_target_combat_modifier" and not skip:
+		var target_modifiers := (state.players[actor_id] as PlayerStateData).turn_bonuses.get(
+			"target_combat_modifiers", {}
+		) as Dictionary
+		target_modifiers[str(card_instance_id)] = int(
+			target_modifiers.get(str(card_instance_id), 0)
+		) + int(choice.get("modifier_amount", 0))
+		(state.players[actor_id] as PlayerStateData).turn_bonuses["target_combat_modifiers"] = target_modifiers
+		events.append({
+			"type": "target_combat_modified", "actor_id": str(actor_id),
+			"card_instance_id": str(card_instance_id),
+			"amount": int(choice.get("modifier_amount", 0)),
+			"source_card_instance_id": str(choice.get("source_card_instance_id", "")),
+		})
+	if operation == &"choose_refresh_row":
+		var refresh_error := _apply_row_refresh(state, actor_id, choice, events)
+		if not refresh_error.is_empty():
+			return refresh_error
+	if operation == &"choose_equipment_replacement":
+		var player := state.players[actor_id] as PlayerStateData
+		var detach_error := PartyService.detach_equipment(
+			state, player, StringName(choice.get("target_card_id", "")), card_instance_id,
+			StringName(choice.get("destination_zone_id", "")), &"equipment_replaced", events
+		)
+		if not detach_error.is_empty():
+			return detach_error
+	if operation == &"order_deck_top":
+		var order_error := _restore_inspected_order(state, actor_id, choice, events)
+		if not order_error.is_empty():
+			return order_error
 	state.effect_state.clear()
 	events.append({
 		"type": "choice_resolved",
@@ -338,6 +441,12 @@ static func apply(
 		"source_zone_keys": (choice.get("source_zone_keys", []) as Array).duplicate(),
 		"destination_zone_id": str(choice.get("destination_zone_id", "")),
 	})
+	if operation == &"choose_equipment_replacement":
+		return EquipmentService.apply(state, actor_id, {
+			"type": "EQUIP_ITEM",
+			"card_instance_id": str(choice.get("pending_equipment_id", "")),
+			"target_card_id": str(choice.get("target_card_id", "")),
+		}, definitions, events)
 	events.append({
 		"type": "effect_resolved",
 		"actor_id": str(actor_id),
@@ -349,6 +458,36 @@ static func apply(
 			else (0 if skip else 1)
 		),
 	})
+	if operation == &"choose_remove_card" \
+			and StringName(resolved_source_record.get("zone_key", "")) == &"party":
+		var position_error := PartyService.enforce_position_departures(
+			state, state.players[actor_id] as PlayerStateData, definitions, events
+		)
+		if not position_error.is_empty():
+			return position_error
+	if operation == &"inspect_deck_top":
+		var ordering_error := _start_inspection_order(state, actor_id, choice, events)
+		if not ordering_error.is_empty():
+			return ordering_error
+		if not state.effect_state.is_empty():
+			return ""
+	var continuation: Array[Dictionary] = []
+	if operation == &"confirm_effect" and not skip:
+		var accepted := choice.get("accepted_effect", {}) as Dictionary
+		if not accepted.is_empty():
+			continuation.append(accepted)
+	for raw_effect: Variant in choice.get("continuation_effects", []):
+		if raw_effect is Dictionary:
+			continuation.append((raw_effect as Dictionary).duplicate(true))
+	if not continuation.is_empty():
+		var continuation_error := EffectResolver.resolve(
+			state, actor_id, continuation, events, definitions
+		)
+		if not continuation_error.is_empty():
+			return continuation_error
+		if not state.effect_state.is_empty() and choice.has("boss_completion"):
+			state.effect_state["boss_completion"] = choice["boss_completion"]
+			return ""
 	var boss_completion := choice.get("boss_completion", {}) as Dictionary
 	if not boss_completion.is_empty():
 		return BossService.continue_defeat_after_choice(
@@ -357,12 +496,107 @@ static func apply(
 	return ""
 
 
+static func _start_inspection_order(
+	state: GameStateData,
+	actor_id: StringName,
+	choice: Dictionary,
+	events: Array[Dictionary]
+) -> String:
+	var player := state.players.get(actor_id) as PlayerStateData
+	var inspection := state.zones.get(player.zone_ids.get(&"inspection", &"")) as ZoneData if player != null else null
+	var deck := state.zones.get(StringName(choice.get("draw_pile_zone_id", ""))) as ZoneData
+	if inspection == null or deck == null:
+		return "missing_inspection_zone"
+	if inspection.card_instance_ids.size() <= 1:
+		if inspection.card_instance_ids.size() == 1:
+			var card_id := inspection.card_instance_ids[0]
+			var move_result := ZoneService.move_card(
+				state, card_id, inspection.zone_id, deck.zone_id
+			)
+			if not bool(move_result.get("ok", false)):
+				return str(move_result.get("error", "inspection_restore_failed"))
+		return ""
+	var eligible: Array[String] = []
+	for card_id: StringName in inspection.card_instance_ids:
+		eligible.append(str(card_id))
+	state.effect_state = {
+		"type": "pending_choice", "choice_id": "choice-%06d-order" % (state.revision + 1),
+		"actor_id": str(actor_id), "required_actor_id": str(actor_id),
+		"op": "order_deck_top", "prompt": "依序選擇牌庫頂順序（先選最上方）",
+		"source_zone_id": str(inspection.zone_id), "source_zone_key": "inspection",
+		"destination_zone_id": str(deck.zone_id), "eligible_card_ids": eligible,
+		"selected_card_ids": [], "selected_count": 0,
+		"min_selections": eligible.size(), "max_selections": eligible.size(),
+		"source_card_instance_id": str(choice.get("source_card_instance_id", "")),
+		"continuation_effects": (choice.get("continuation_effects", []) as Array).duplicate(true),
+	}
+	events.append({
+		"type": "choice_requested", "choice_id": str(state.effect_state["choice_id"]),
+		"actor_id": str(actor_id), "required_actor_id": str(actor_id),
+		"op": "order_deck_top", "eligible_card_ids": eligible.duplicate(), "optional": false,
+	})
+	return ""
+
+
+static func _restore_inspected_order(
+	state: GameStateData,
+	actor_id: StringName,
+	choice: Dictionary,
+	events: Array[Dictionary]
+) -> String:
+	var selected := choice.get("selected_card_ids", []) as Array
+	for index in range(selected.size() - 1, -1, -1):
+		var card_id := StringName(str(selected[index]))
+		var move_result := ZoneService.move_card(
+			state, card_id, StringName(choice.get("source_zone_id", "")),
+			StringName(choice.get("destination_zone_id", ""))
+		)
+		if not bool(move_result.get("ok", false)):
+			return str(move_result.get("error", "inspection_restore_failed"))
+	events.append({
+		"type": "deck_top_reordered", "actor_id": str(actor_id),
+		"card_instance_ids": selected.duplicate(),
+		"source_card_instance_id": str(choice.get("source_card_instance_id", "")),
+	})
+	return ""
+
+
+static func _apply_row_refresh(
+	state: GameStateData,
+	actor_id: StringName,
+	choice: Dictionary,
+	events: Array[Dictionary]
+) -> String:
+	var source_zone_id := StringName(choice.get("source_zone_id", ""))
+	var destination_zone_id := StringName(choice.get("destination_zone_id", ""))
+	var selected := choice.get("selected_card_ids", []) as Array
+	var original_order := choice.get("original_order", []) as Array
+	for raw_card_id: Variant in original_order:
+		if str(raw_card_id) not in selected:
+			continue
+		var card_id := StringName(str(raw_card_id))
+		var move_result := ZoneService.move_card(
+			state, card_id, source_zone_id, destination_zone_id, 0
+		)
+		if not bool(move_result.get("ok", false)):
+			return str(move_result.get("error", "row_refresh_failed"))
+		var move_event := (move_result.get("event", {}) as Dictionary).duplicate(true)
+		move_event["reason"] = "public_row_refreshed"
+		move_event["actor_id"] = str(actor_id)
+		events.append(move_event)
+	return SupplyService.refill_row(
+		state, SupplyService.MONSTER_CYCLE_ID, source_zone_id,
+		SupplyService.MONSTER_ROW_SIZE, events, false
+	)
+
+
 static func _apply_draft_gain(
 	state: GameStateData,
 	actor_id: StringName,
 	choice: Dictionary,
 	card_instance_id: StringName,
-	events: Array[Dictionary]
+	events: Array[Dictionary],
+	definitions: Dictionary
 ) -> String:
 	var player := state.players.get(actor_id) as PlayerStateData
 	if player == null:
@@ -420,7 +654,12 @@ static func _apply_draft_gain(
 			"op": str(choice.get("op", "")),
 			"selected_count": selected_card_ids.size(),
 		})
-		return ""
+		var continuation: Array[Dictionary] = []
+		for raw_effect: Variant in choice.get("continuation_effects", []):
+			if raw_effect is Dictionary:
+				continuation.append((raw_effect as Dictionary).duplicate(true))
+		return EffectResolver.resolve(state, StringName(choice.get("defeated_by_actor_id", "")), continuation, events, definitions) \
+				if not continuation.is_empty() else ""
 	var selection_order := choice.get("selection_order", []) as Array
 	if selection_index >= selection_order.size():
 		return "draft_selection_order_exhausted"

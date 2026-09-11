@@ -256,6 +256,7 @@ static func _validate_players(state: GameStateData, errors: PackedStringArray) -
 		&"play_area": &"play_area",
 		&"bonds": &"bonds",
 		&"removed": &"removed",
+		&"inspection": &"temporary_choice",
 	}
 	for player_id: Variant in state.players:
 		var player := state.players[player_id] as PlayerStateData
@@ -293,7 +294,7 @@ static func _validate_players(state: GameStateData, errors: PackedStringArray) -
 				errors.append("Player zone %s has the wrong owner" % zone_id)
 			elif zone.kind != expected_zone_kinds[zone_key]:
 				errors.append("Player zone %s has invalid kind %s" % [zone_id, zone.kind])
-			var expected_visibility: StringName = &"owner_only" if zone_key in [&"draw_pile", &"hand", &"bonds"] else &"public"
+			var expected_visibility: StringName = &"owner_only" if zone_key in [&"draw_pile", &"hand", &"bonds", &"inspection"] else &"public"
 			if zone != null and zone.visibility != expected_visibility:
 				errors.append("Player zone %s has invalid visibility %s" % [zone_id, zone.visibility])
 
@@ -319,6 +320,42 @@ static func _validate_effect_state(state: GameStateData, errors: PackedStringArr
 	var operation := StringName(choice.get("op", ""))
 	if player != null:
 		match operation:
+			&"choose_equipment_replacement":
+				if StringName(choice.get("source_zone_id", "")) \
+						!= StringName(player.zone_ids.get(&"equipment", &"")) \
+						or destination_zone_id != StringName(player.zone_ids.get(&"discard_pile", &"")):
+					errors.append("Pending equipment replacement zones are invalid")
+				var target_id := StringName(choice.get("target_card_id", ""))
+				if ZoneService.find_card_zone(state, target_id) != StringName(player.zone_ids.get(&"party", &"")):
+					errors.append("Pending equipment replacement target moved")
+			&"inspect_deck_top", &"order_deck_top":
+				if StringName(choice.get("source_zone_id", "")) \
+						!= StringName(player.zone_ids.get(&"inspection", &"")):
+					errors.append("Pending inspection must use the actor inspection zone")
+				var valid_destination := (
+					operation == &"inspect_deck_top"
+					and destination_zone_id == StringName(player.zone_ids.get(&"removed", &""))
+				) or (
+					operation == &"order_deck_top"
+					and destination_zone_id == StringName(player.zone_ids.get(&"draw_pile", &""))
+				)
+				if not valid_destination:
+					errors.append("Pending inspection destination is invalid")
+			&"confirm_effect":
+				if StringName(choice.get("source_zone_id", "")).is_empty() \
+						or str(choice.get("source_card_instance_id", "")) \
+						not in (choice.get("eligible_card_ids", []) as Array):
+					errors.append("Pending effect confirmation source is invalid")
+			&"choose_move_card":
+				var source_zone_key := StringName(choice.get("source_zone_key", ""))
+				if StringName(choice.get("source_zone_id", "")) \
+						!= StringName(player.zone_ids.get(source_zone_key, &"")) \
+						or destination_zone_id not in player.zone_ids.values():
+					errors.append("Pending move source or destination is invalid")
+			&"choose_target_combat_modifier", &"choose_refresh_row":
+				if StringName(choice.get("source_zone_id", "")).is_empty() \
+						or not state.zones.has(StringName(choice.get("source_zone_id", ""))):
+					errors.append("Pending public-row choice source is invalid")
 			&"choose_remove_card":
 				_validate_removal_choice_sources(choice, player, errors)
 				if destination_zone_id != StringName(player.zone_ids.get(&"removed", &"")):
@@ -430,6 +467,13 @@ static func _validate_effect_state(state: GameStateData, errors: PackedStringArr
 			var expected_owner := actor_id if selected_seen.has(card_instance_id) else &""
 			if card == null or StringName(card.get("owner_id", "")) != expected_owner:
 				errors.append("Pending gain card %s has invalid ownership" % card_instance_id)
+		elif operation in [&"confirm_effect", &"choose_move_card", &"inspect_deck_top", \
+				&"order_deck_top", \
+				&"choose_target_combat_modifier", &"choose_refresh_row", \
+				&"choose_equipment_replacement"]:
+			var expected_zone_id := StringName(choice.get("source_zone_id", ""))
+			if ZoneService.find_card_zone(state, card_instance_id) != expected_zone_id:
+				errors.append("Pending choice card %s moved from its locked source" % card_instance_id)
 		elif operation == &"pay_post_departure_cost":
 			var expected_zone_id := destination_zone_id if selected_seen.has(card_instance_id) else StringName(choice.get("source_zone_id", ""))
 			if ZoneService.find_card_zone(state, card_instance_id) != expected_zone_id:
@@ -450,7 +494,11 @@ static func _validate_effect_state(state: GameStateData, errors: PackedStringArr
 		errors.append("Pending removal candidate origins must match locked candidates")
 	var minimum := int(choice.get("min_selections", -1))
 	var maximum := int(choice.get("max_selections", -1))
-	var maximum_limit := 2 if operation in [&"choose_remove_card", &"choose_gain_card"] else 1
+	var maximum_limit := (
+		eligible_seen.size()
+		if operation in [&"order_deck_top", &"choose_refresh_row"]
+		else (2 if operation in [&"choose_remove_card", &"choose_gain_card"] else 1)
+	)
 	if minimum < 0 or maximum < minimum or maximum > maximum_limit:
 		errors.append("Pending choice selection bounds are invalid")
 	if operation == &"choose_remove_card" \

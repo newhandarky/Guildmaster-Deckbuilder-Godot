@@ -7,8 +7,8 @@ const BossServiceType = preload("res://domain/state/boss_service.gd")
 
 var schema_version: int = 1
 var game_id: StringName = &"game-demo-001"
-var content_version: String = "0.16.0"
-var ruleset_version: String = "0.16.0"
+var content_version: String = "0.17.0"
+var ruleset_version: String = "0.17.0"
 var seed_value: int = 20260909
 var rng_state: int = 0
 var revision: int = 0
@@ -393,10 +393,11 @@ static func _add_player_zones(state: GameStateData, player: PlayerStateData) -> 
 		&"play_area": &"play_area",
 		&"bonds": &"bonds",
 		&"removed": &"removed",
+		&"inspection": &"temporary_choice",
 	}
 	for zone_key: StringName in PlayerStateData.REQUIRED_ZONE_KEYS:
 		var visibility: StringName = (
-			&"owner_only" if zone_key in [&"draw_pile", &"hand", &"bonds"] else &"public"
+			&"owner_only" if zone_key in [&"draw_pile", &"hand", &"bonds", &"inspection"] else &"public"
 		)
 		var zone := ZoneDataType.new(player.zone_ids[zone_key], zone_kinds[zone_key], visibility)
 		zone.metadata = {"owner_id": str(player.player_id)}
@@ -450,12 +451,13 @@ static func _add_vertical_slice_supplies(state: GameStateData) -> void:
 	]:
 		state.zones[zone.zone_id] = zone
 
-	for definition_id: String in [
-		"base:adventurer/adventurer-09",
-		"base:adventurer/adventurer-10",
-		"base:adventurer/adventurer-15",
-	]:
-		_add_supply_copies(state, recruit_deck, definition_id, 2)
+	for adventurer_number in range(1, 31):
+		_add_supply_copies(
+			state,
+			recruit_deck,
+			"base:adventurer/adventurer-%02d" % adventurer_number,
+			2
+		)
 	for supply_spec: Array in [
 		["base:resource/resource-02", 3],
 		["base:resource/resource-03", 3],

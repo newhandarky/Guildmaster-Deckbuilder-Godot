@@ -194,6 +194,15 @@ static func _apply_end_phase(
 		})
 		if state.active_player_id == state.starting_player_id:
 			events.append({"type": "round_started", "round": state.round_number})
+	var trigger_timing := &""
+	if old_phase == &"action1" and state.phase == &"combat":
+		trigger_timing = &"on_combat_start"
+	elif old_phase == &"combat" and state.phase == &"action2":
+		trigger_timing = &"on_combat_end"
+	if not trigger_timing.is_empty():
+		return EffectResolver.resolve_party_trigger(
+			state, old_player_id, trigger_timing, events, definitions
+		)
 	return ""
 
 

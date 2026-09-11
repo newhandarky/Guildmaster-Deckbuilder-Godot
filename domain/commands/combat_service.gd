@@ -25,15 +25,20 @@ static func get_legal_commands(
 		var reward_choices: Array[bool] = [true]
 		if bool(preview.get("optional_reward", false)):
 			reward_choices = [true, false]
+		var departure_choices: Array[bool] = [true]
+		if bool(preview.get("optional_departure", false)):
+			departure_choices.append(false)
 		for claim_reward: bool in reward_choices:
-			commands.append({
+			for use_departure: bool in departure_choices:
+				commands.append({
 				"type": "ATTACK_TARGET",
 				"actor_id": str(actor_id),
 				"expected_revision": state.revision,
 				"target_card_id": str(target_card_id),
 				"claim_optional_reward": claim_reward,
+				"use_optional_departures": use_departure,
 				"preview": preview.duplicate(true),
-			})
+				})
 	return commands
 
 
@@ -54,6 +59,7 @@ static func preview_attack(
 		"contributions": [],
 		"temporary_combat": 0,
 		"optional_reward": false,
+		"optional_departure": false,
 		"reward_summary": "",
 		"returns_to_cycle": false,
 		"deferred_choice": false,
@@ -99,7 +105,9 @@ static func preview_attack(
 	}
 	if target_definition.card_type == &"boss":
 		target_rules = BossRuleEvaluatorType.evaluate(state, actor_id, target_definition, definitions)
-	var requirement := int(target_rules["requirement"])
+	var requirement := maxi(0, int(target_rules["requirement"]) + int(
+		(player.turn_bonuses.get("target_combat_modifiers", {}) as Dictionary).get(str(target_card_id), 0)
+	))
 	var total := int(player.turn_resources.get("combat", 0))
 	var participants: Array[String] = []
 	var contributions: Array[Dictionary] = []
@@ -116,7 +124,8 @@ static func preview_attack(
 			card_instance_id,
 			party_index,
 			party,
-			not bool(target_rules["equipment_suppressed"])
+			not bool(target_rules["equipment_suppressed"]),
+			target_definition.card_type
 		)
 		participants.append(str(card_instance_id))
 		contributions.append({
@@ -187,6 +196,12 @@ static func preview_attack(
 	result["total_combat"] = total
 	result["gap"] = maxi(0, requirement - total)
 	result["participant_ids"] = participants
+	for raw_participant_id: Variant in participants:
+		if not _adventurer_departure_replacement(
+			state, StringName(str(raw_participant_id)), definitions
+		).is_empty():
+			result["optional_departure"] = true
+			break
 	result["contributions"] = contributions
 	result["temporary_combat"] = int(player.turn_resources.get("combat", 0))
 	result["optional_reward"] = optional_reward
@@ -209,6 +224,8 @@ static func validate(
 		return "wrong_phase"
 	if not command.get("claim_optional_reward", true) is bool:
 		return "invalid_reward_choice"
+	if not command.get("use_optional_departures", true) is bool:
+		return "invalid_departure_choice"
 	var target_card_id := StringName(command.get("target_card_id", ""))
 	var preview := preview_attack(state, actor_id, target_card_id, definitions)
 	if not bool(preview.get("ok", false)):
@@ -243,12 +260,18 @@ static func apply(
 		"participant_ids": participant_ids.duplicate(),
 	})
 	var player := state.players[actor_id] as PlayerStateData
+	var departed_this_turn := player.turn_facts.get("combat_participant_ids", []) as Array
+	for raw_participant_id: Variant in participant_ids:
+		if str(raw_participant_id) not in departed_this_turn:
+			departed_this_turn.append(str(raw_participant_id))
+	player.turn_facts["combat_participant_ids"] = departed_this_turn
 	var target_card := state.cards[target_card_id] as Dictionary
 	var target_definition := definitions.get(
 		StringName(target_card.get("definition_id", ""))
 	) as CardDefinition
 	var departure_error := _apply_combat_departures(
-		state, player, participant_ids, target_definition, definitions, events
+		state, player, participant_ids, target_definition, definitions, events,
+		bool(command.get("use_optional_departures", true))
 	)
 	if not departure_error.is_empty():
 		return departure_error
@@ -326,7 +349,8 @@ static func _apply_combat_departures(
 	participant_ids: Array,
 	target_definition: CardDefinition,
 	definitions: Dictionary,
-	events: Array[Dictionary]
+	events: Array[Dictionary],
+	use_optional_departures: bool = true
 ) -> String:
 	var replacement_rule: Dictionary = {}
 	if target_definition.card_type == &"boss":
@@ -336,6 +360,16 @@ static func _apply_combat_departures(
 	var returned_to_supply := false
 	for raw_participant_id: Variant in participant_ids:
 		var participant_id := StringName(str(raw_participant_id))
+		var adventurer_replacement := _adventurer_departure_replacement(
+			state, participant_id, definitions
+		)
+		if use_optional_departures and not adventurer_replacement.is_empty():
+			var replacement_error := _apply_adventurer_departure_replacement(
+				state, player, participant_id, adventurer_replacement, definitions, events
+			)
+			if not replacement_error.is_empty():
+				return replacement_error
+			continue
 		if replacement_rule.is_empty():
 			var error := PartyService.discard_party_member_with_equipment(
 				state, player, participant_id, &"combat_departure", events
@@ -379,6 +413,78 @@ static func _apply_combat_departures(
 			"type": "supply_deck_shuffled", "zone_id": str(deck.zone_id),
 			"reason": "boss_departure_replacement", "card_count": deck.card_instance_ids.size(),
 		})
+	return PartyService.enforce_position_departures(state, player, definitions, events)
+
+
+static func _adventurer_departure_replacement(
+	state: GameStateData,
+	participant_id: StringName,
+	definitions: Dictionary
+) -> Dictionary:
+	var card := state.cards.get(participant_id) as Dictionary
+	var definition := definitions.get(
+		StringName(card.get("definition_id", "")) if card != null else &""
+	) as CardDefinition
+	if definition == null:
+		return {}
+	for effect: Dictionary in definition.effects:
+		if StringName(effect.get("op", "")) != &"combat_departure_replacement":
+			continue
+		var allowed_attachment_types: Array[StringName] = []
+		for raw_type: Variant in effect.get("attachment_card_types", []):
+			allowed_attachment_types.append(StringName(str(raw_type)))
+		if allowed_attachment_types.is_empty():
+			return effect
+		var card_state := card.get("state", {}) as Dictionary
+		for raw_attachment_id: Variant in card_state.get("equipment_ids", []):
+			var attachment := state.cards.get(StringName(str(raw_attachment_id))) as Dictionary
+			var attachment_definition := definitions.get(
+				StringName(attachment.get("definition_id", "")) if attachment != null else &""
+			) as CardDefinition
+			if attachment_definition != null and attachment_definition.card_type in allowed_attachment_types:
+				var result := effect.duplicate(true)
+				result["replacement_attachment_id"] = str(raw_attachment_id)
+				return result
+	return {}
+
+
+static func _apply_adventurer_departure_replacement(
+	state: GameStateData,
+	player: PlayerStateData,
+	participant_id: StringName,
+	effect: Dictionary,
+	definitions: Dictionary,
+	events: Array[Dictionary]
+) -> String:
+	var attachment_id := StringName(effect.get("replacement_attachment_id", ""))
+	if not attachment_id.is_empty():
+		var detach_error := PartyService.detach_equipment(
+			state, player, participant_id, attachment_id,
+			StringName(player.zone_ids.get(
+				StringName(effect.get("attachment_destination_zone_key", "discard_pile")), &""
+			)), &"combat_departure_replaced", events
+		)
+		if not detach_error.is_empty():
+			return detach_error
+	else:
+		var destination_zone_id := StringName(player.zone_ids.get(
+			StringName(effect.get("source_destination_zone_key", "discard_pile")), &""
+		))
+		var equipment_destination_zone_id := StringName(player.zone_ids.get(
+			StringName(effect.get("equipment_destination_zone_key", "discard_pile")), &""
+		))
+		var move_error := PartyService.move_party_member_with_equipment(
+			state, player, participant_id, destination_zone_id,
+			equipment_destination_zone_id, &"combat_departure_replaced", events
+		)
+		if not move_error.is_empty():
+			return move_error
+	events.append({
+		"type": "combat_departure_replaced", "actor_id": str(player.player_id),
+		"card_instance_id": str(participant_id),
+		"attachment_card_instance_id": str(attachment_id),
+		"source_effect": effect.duplicate(true),
+	})
 	return ""
 
 

@@ -6,7 +6,11 @@ signal skip_animation_requested
 signal equip_item_requested(card_instance_id: StringName, target_card_id: StringName)
 signal play_adventurer_requested(card_instance_id: StringName)
 signal use_item_requested(card_instance_id: StringName)
-signal attack_target_requested(target_card_id: StringName, claim_optional_reward: bool)
+signal attack_target_requested(
+	target_card_id: StringName,
+	claim_optional_reward: bool,
+	use_optional_departures: bool
+)
 signal resolve_choice_requested(choice_id: String, card_instance_id: StringName, skip: bool)
 signal buy_card_requested(card_instance_id: StringName, source_row_id: StringName)
 signal refresh_market_requested(
@@ -241,7 +245,7 @@ func _rebuild_hand(state: Dictionary, active_player_id: String) -> void:
 	var action_buttons: Array[Button] = []
 	var effect_state := state.get("effect_state", {}) as Dictionary
 	var removed := zones.get(str(zone_ids.get("removed", "")), {}) as Dictionary
-	var card_ids := hand_card_ids
+	var card_ids := hand_card_ids.duplicate()
 	var choice_source_label := _choice_source_summary(effect_state)
 	if choice_commands.is_empty():
 		hand_title.text = "手牌與合法操作"
@@ -283,6 +287,15 @@ func _rebuild_hand(state: Dictionary, active_player_id: String) -> void:
 				choice_source_label,
 				count_text,
 			]
+	if choice_commands.is_empty():
+		for raw_command: Variant in legal_commands:
+			if not raw_command is Dictionary:
+				continue
+			var command := raw_command as Dictionary
+			var source_id := str(command.get("card_instance_id", ""))
+			if command.get("type") == "EQUIP_ITEM" and not source_id.is_empty() \
+					and source_id not in card_ids:
+				card_ids.append(source_id)
 
 	for raw_card_id: Variant in card_ids:
 		var card_id := str(raw_card_id)
@@ -428,12 +441,25 @@ func _hand_card_text(definition: Dictionary) -> String:
 	var purchase_power: Variant = definition.get("purchase_power", null)
 	var combat: Variant = definition.get("combat", null)
 	var cost: Variant = definition.get("cost", null)
+	var honor: Variant = definition.get("honor", null)
 	if cost != null:
 		text += "｜費用 %d" % int(cost)
 	if purchase_power != null:
 		text += "｜購買力 %d（購買階段自動計算）" % int(purchase_power)
 	if combat != null:
 		text += "｜戰力 %d" % int(combat)
+	if honor != null:
+		text += "｜榮譽 %d" % int(honor)
+	var profession_labels: Array[String] = []
+	for raw_tag: Variant in definition.get("tags", []):
+		var label: String = {"support":"輔助","melee":"近戰","mage":"法師","tank":"坦克","ranged":"遠程"}.get(str(raw_tag), "")
+		if not label.is_empty():
+			profession_labels.append(label)
+	if not profession_labels.is_empty():
+		text += "｜職業 %s" % "、".join(profession_labels)
+	var rules_text := str(definition.get("rules_text", ""))
+	if not rules_text.is_empty():
+		text += "\n效果：%s" % rules_text
 	return text
 
 
@@ -463,6 +489,11 @@ func _localized_choice_source(source_zone_key: StringName) -> String:
 		&"recruit_row": "招募區",
 		&"shop_row": "商店",
 		&"resource_draft_row": "物資輪抽區",
+		&"inspection": "自己的查看區",
+		&"equipment": "自己的裝備區",
+		&"effect_source": "效果來源",
+		&"monster_row": "魔物區",
+		&"public_enemy": "魔物區",
 	}.get(source_zone_key, "選擇來源區")
 
 
@@ -498,7 +529,13 @@ func _remaining_choice_card_ids(effect_state: Dictionary) -> Array:
 func _choice_action_label(operation: StringName) -> String:
 	if operation == &"pay_post_departure_cost":
 		return "棄牌"
-	return "取得" if operation in [&"choose_gain_card", &"draft_gain_card"] else "移除"
+	return {
+		&"choose_gain_card": "取得", &"draft_gain_card": "取得",
+		&"choose_remove_card": "移除",
+		&"choose_move_card": "移動", &"choose_refresh_row": "刷新",
+		&"choose_target_combat_modifier": "指定", &"confirm_effect": "效果",
+		&"inspect_deck_top": "移除",
+	}.get(operation, "選擇")
 
 
 func _choice_button_text(operation: StringName, source_label: String) -> String:
@@ -506,6 +543,18 @@ func _choice_button_text(operation: StringName, source_label: String) -> String:
 		return "棄置此冒險者"
 	if operation in [&"choose_gain_card", &"draft_gain_card"]:
 		return "從%s取得此牌" % source_label
+	if operation == &"confirm_effect":
+		return "執行效果"
+	if operation == &"choose_move_card":
+		return "從%s移動此牌" % source_label
+	if operation == &"choose_target_combat_modifier":
+		return "指定此魔物"
+	if operation == &"choose_refresh_row":
+		return "選擇刷新此牌"
+	if operation == &"order_deck_top":
+		return "選為下一張牌庫頂"
+	if operation == &"choose_equipment_replacement":
+		return "棄置此裝備"
 	return "從%s移除此牌" % source_label
 
 
@@ -549,13 +598,9 @@ func _rebuild_market(state: Dictionary) -> void:
 		for raw_card_id: Variant in card_ids:
 			var card_id := str(raw_card_id)
 			var definition := _definition_for_instance(card_id)
-			var cost: Variant = definition.get("cost", null)
 			var row_box := HBoxContainer.new()
 			var label := Label.new()
-			label.text = "%s｜費用 %s" % [
-				str(definition.get("display_name", card_id)),
-				"—" if cost == null else str(int(cost)),
-			]
+			label.text = _hand_card_text(definition)
 			label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			row_box.add_child(label)
 			var legal := _find_buy_command(legal_commands, card_id, row_id)
@@ -745,6 +790,7 @@ func _append_combat_actions(commands: Array, action_buttons: Array[Button]) -> i
 			preview_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 			market_actions.add_child(preview_label)
 		var claim_reward := bool(command.get("claim_optional_reward", true))
+		var use_departures := bool(command.get("use_optional_departures", true))
 		var reward_summary := str(preview.get("reward_summary", ""))
 		var attack_button := Button.new()
 		if bool(preview.get("optional_reward", false)):
@@ -753,9 +799,13 @@ func _append_combat_actions(commands: Array, action_buttons: Array[Button]) -> i
 			)
 		else:
 			attack_button.text = "討伐｜%s" % reward_summary
+		if bool(preview.get("optional_departure", false)):
+			attack_button.text += "｜%s替代離場" % ("採用" if use_departures else "略過")
 		attack_button.custom_minimum_size = Vector2(0.0, 36.0)
 		attack_button.pressed.connect(
-			attack_target_requested.emit.bind(StringName(target_id), claim_reward)
+			attack_target_requested.emit.bind(
+				StringName(target_id), claim_reward, use_departures
+			)
 		)
 		market_actions.add_child(attack_button)
 		action_buttons.append(attack_button)

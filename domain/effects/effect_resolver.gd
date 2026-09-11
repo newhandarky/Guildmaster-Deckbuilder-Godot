@@ -12,6 +12,23 @@ const SUPPORTED_OPERATIONS: Array[StringName] = [
 	&"roll_resource_reward",
 	&"draft_gain_card",
 	&"gain_from_supply_deck",
+	&"choose_move_card",
+	&"choose_refresh_row",
+	&"choose_target_combat_modifier",
+	&"inspect_deck_top",
+	&"reposition_source",
+	&"reveal_top_if_type",
+	&"draw_then_choose_discard",
+	&"roll_self_combat",
+	&"roll_target_combat_modifier",
+	&"equipment_policy",
+	&"party_combat_aura",
+	&"purchase_cost_modifier",
+	&"position_departure",
+	&"combat_departure_replacement",
+	&"attached_value_combat",
+	&"self_as_equipment",
+	&"hand_purchase_power_modifier",
 ]
 
 
@@ -22,11 +39,9 @@ static func validate_effects(effects: Array[Dictionary], definition_id: StringNa
 		var operation := StringName(effect.get("op", ""))
 		if not operation in SUPPORTED_OPERATIONS:
 			errors.append("Unsupported effect op %s at %s[%d]" % [operation, definition_id, index])
-		if int(effect.get("amount", 0)) < 0:
+		if operation in [&"grant_purchase_power", &"grant_combat", &"draw"] \
+				and int(effect.get("amount", 0)) < 0:
 			errors.append("Effect amount must not be negative at %s[%d]" % [definition_id, index])
-		if operation in [&"choose_remove_card", &"choose_gain_card", &"draft_gain_card"] \
-				and index != effects.size() - 1:
-			errors.append("Pending choice effect must be last at %s[%d]" % [definition_id, index])
 		if operation == &"choose_remove_card":
 			var removal_amount := int(effect.get("amount", 0))
 			if removal_amount < 1 or removal_amount > 2:
@@ -106,6 +121,29 @@ static func resolve(
 		var operation := StringName(effect.get("op", ""))
 		var amount := int(effect.get("amount", 0))
 		var resource_key: StringName
+		if bool(effect.get("optional", false)) and effect.has("prompt") \
+				and not bool(effect.get("_consent_granted", false)) \
+				and operation not in [&"choose_remove_card", &"choose_gain_card", &"choose_move_card", &"choose_refresh_row", &"choose_target_combat_modifier", &"inspect_deck_top"]:
+			var source_card_id := StringName(effect.get("source_card_instance_id", ""))
+			var source_zone_id := ZoneService.find_card_zone(state, source_card_id)
+			if source_zone_id.is_empty():
+				return "optional_effect_source_moved"
+			var accepted_effect := effect.duplicate(true)
+			accepted_effect["_consent_granted"] = true
+			state.effect_state = {
+				"type": "pending_choice", "choice_id": "choice-%06d" % (state.revision + 1),
+				"actor_id": str(actor_id), "required_actor_id": str(actor_id),
+				"op": "confirm_effect", "prompt": str(effect.get("prompt", "可以發動此效果")),
+				"source_zone_id": str(source_zone_id), "source_zone_key": "effect_source",
+				"destination_zone_id": str(source_zone_id),
+				"eligible_card_ids": [str(source_card_id)], "selected_card_ids": [], "selected_count": 0,
+				"min_selections": 0, "max_selections": 1,
+				"source_card_instance_id": str(source_card_id),
+				"accepted_effect": accepted_effect,
+				"continuation_effects": _remaining_effects(effects, index + 1),
+			}
+			events.append({"type":"choice_requested","choice_id":str(state.effect_state["choice_id"]),"actor_id":str(actor_id),"required_actor_id":str(actor_id),"op":"confirm_effect","eligible_card_ids":[str(source_card_id)],"optional":true,"source_card_instance_id":str(source_card_id)})
+			return ""
 		match operation:
 			&"grant_purchase_power":
 				resource_key = &"purchase_power"
@@ -219,6 +257,7 @@ static func resolve(
 					"source_card_instance_id": str(
 						effect.get("source_card_instance_id", "")
 					),
+					"continuation_effects": _remaining_effects(effects, index + 1),
 				}
 				events.append({
 					"type": "choice_requested",
@@ -232,7 +271,7 @@ static func resolve(
 					"min_selections": int(state.effect_state["min_selections"]),
 					"max_selections": amount,
 				})
-				continue
+				return ""
 			&"choose_gain_card":
 				var source_zone_id := StringName(effect.get("source_zone_id", ""))
 				var source_zone_key := _gain_source_zone_key(source_zone_id)
@@ -297,6 +336,7 @@ static func resolve(
 					"max_cost": max_cost,
 					"allowed_card_types": _string_name_array_to_strings(allowed_card_types),
 					"allowed_tags": _string_name_array_to_strings(allowed_tags),
+					"continuation_effects": _remaining_effects(effects, index + 1),
 				}
 				events.append({
 					"type": "choice_requested",
@@ -312,7 +352,7 @@ static func resolve(
 					"allowed_card_types": _string_name_array_to_strings(allowed_card_types),
 					"allowed_tags": _string_name_array_to_strings(allowed_tags),
 				})
-				continue
+				return ""
 			&"gain_from_supply_deck":
 				var source_deck_zone_id := StringName(effect.get("source_deck_zone_id", ""))
 				var source_deck := state.zones.get(source_deck_zone_id) as ZoneData
@@ -340,6 +380,159 @@ static func resolve(
 					"destination_zone_id": str(destination.zone_id),
 				})
 				continue
+			&"choose_move_card":
+				var source_zone_key := StringName(effect.get("source_zone_key", ""))
+				var destination_zone_key := StringName(effect.get("destination_zone_key", ""))
+				var source := state.zones.get(player.zone_ids.get(source_zone_key, &"")) as ZoneData
+				var destination := state.zones.get(player.zone_ids.get(destination_zone_key, &"")) as ZoneData
+				if source == null or destination == null:
+					return "missing_choice_zone"
+				var allowed_tags := _normalized_allowed_tags(effect.get("allowed_tags", []))
+				var eligible_ids: Array[String] = []
+				for card_id: StringName in source.card_instance_ids:
+					var definition := _definition_for_card(state, definitions, card_id)
+					if allowed_tags.is_empty() or _definition_has_any_tag(definition, allowed_tags):
+						eligible_ids.append(str(card_id))
+				if eligible_ids.is_empty():
+					events.append({"type":"effect_resolved","actor_id":str(actor_id),"effect_index":index,"op":str(operation),"selected_count":0,"reason":"no_eligible_candidates"})
+					continue
+				state.effect_state = _card_choice(
+					state, actor_id, operation, effect, source.zone_id, source_zone_key,
+					destination.zone_id, eligible_ids, 0 if bool(effect.get("optional", false)) else 1, 1
+				)
+				state.effect_state["allowed_tags"] = _string_name_array_to_strings(allowed_tags)
+				state.effect_state["continuation_effects"] = _remaining_effects(effects, index + 1)
+				events.append(_choice_requested_event(state.effect_state))
+				return ""
+			&"choose_target_combat_modifier":
+				var source_zone_id := StringName(effect.get("source_zone_id", ""))
+				var source := state.zones.get(source_zone_id) as ZoneData
+				if source == null:
+					return "missing_choice_zone"
+				var allowed_types := _normalized_allowed_tags(effect.get("allowed_card_types", []))
+				var eligible_ids: Array[String] = []
+				for card_id: StringName in source.card_instance_ids:
+					var definition := _definition_for_card(state, definitions, card_id)
+					if definition != null and definition.card_type in allowed_types:
+						eligible_ids.append(str(card_id))
+				if eligible_ids.is_empty():
+					events.append({"type":"effect_resolved","actor_id":str(actor_id),"effect_index":index,"op":str(operation),"selected_count":0,"reason":"no_eligible_candidates"})
+					continue
+				state.effect_state = _card_choice(state, actor_id, operation, effect, source.zone_id, &"public_enemy", source.zone_id, eligible_ids, 0 if bool(effect.get("optional", false)) else 1, 1)
+				state.effect_state["allowed_card_types"] = _string_name_array_to_strings(allowed_types)
+				state.effect_state["modifier_amount"] = int(effect.get("amount", 0))
+				state.effect_state["continuation_effects"] = _remaining_effects(effects, index + 1)
+				events.append(_choice_requested_event(state.effect_state))
+				return ""
+			&"choose_refresh_row":
+				var source_zone_id := StringName(effect.get("source_zone_id", ""))
+				var destination_zone_id := StringName(effect.get("destination_zone_id", ""))
+				var source := state.zones.get(source_zone_id) as ZoneData
+				if source == null or not state.zones.has(destination_zone_id):
+					return "missing_choice_zone"
+				var eligible_ids: Array[String] = []
+				for card_id: StringName in source.card_instance_ids:
+					eligible_ids.append(str(card_id))
+				if eligible_ids.is_empty():
+					continue
+				var maximum := mini(amount, eligible_ids.size())
+				state.effect_state = _card_choice(state, actor_id, operation, effect, source.zone_id, &"monster_row", destination_zone_id, eligible_ids, 0, maximum)
+				state.effect_state["original_order"] = eligible_ids.duplicate()
+				state.effect_state["continuation_effects"] = _remaining_effects(effects, index + 1)
+				events.append(_choice_requested_event(state.effect_state))
+				return ""
+			&"inspect_deck_top":
+				var deck := state.zones.get(player.zone_ids.get(&"draw_pile", &"")) as ZoneData
+				var inspection := state.zones.get(player.zone_ids.get(&"inspection", &"")) as ZoneData
+				if deck == null or inspection == null or not inspection.card_instance_ids.is_empty():
+					return "missing_inspection_zone"
+				var revealed_ids: Array[String] = []
+				for reveal_index in mini(amount, deck.card_instance_ids.size()):
+					var revealed_id := StringName(deck.card_instance_ids.back())
+					var move_result := ZoneService.move_card(
+						state, revealed_id, deck.zone_id, inspection.zone_id
+					)
+					if not bool(move_result.get("ok", false)):
+						return str(move_result.get("error", "inspection_reveal_failed"))
+					revealed_ids.append(str(revealed_id))
+				if revealed_ids.is_empty():
+					continue
+				state.effect_state = _card_choice(
+					state, actor_id, operation, effect, inspection.zone_id, &"inspection",
+					StringName(player.zone_ids.get(&"removed", &"")), revealed_ids,
+					0, mini(int(effect.get("remove_max", 1)), revealed_ids.size())
+				)
+				state.effect_state["draw_pile_zone_id"] = str(deck.zone_id)
+				state.effect_state["original_order"] = revealed_ids.duplicate()
+				state.effect_state["continuation_effects"] = _remaining_effects(effects, index + 1)
+				events.append({
+					"type": "cards_inspected", "actor_id": str(actor_id),
+					"source_card_instance_id": str(effect.get("source_card_instance_id", "")),
+					"card_instance_ids": revealed_ids.duplicate(), "count": revealed_ids.size(),
+				})
+				events.append(_choice_requested_event(state.effect_state))
+				return ""
+			&"reposition_source":
+				var source_card_id := StringName(effect.get("source_card_instance_id", ""))
+				var party := state.zones.get(player.zone_ids.get(&"party", &"")) as ZoneData
+				if party == null or source_card_id not in party.card_instance_ids:
+					return "effect_source_moved"
+				party.card_instance_ids.erase(source_card_id)
+				party.card_instance_ids.insert(clampi(int(effect.get("destination_index", 0)), 0, party.card_instance_ids.size()), source_card_id)
+				events.append({"type":"party_reordered","actor_id":str(actor_id),"card_instance_id":str(source_card_id),"destination_index":int(effect.get("destination_index",0))})
+				continue
+			&"reveal_top_if_type":
+				var deck := state.zones.get(player.zone_ids.get(&"draw_pile", &"")) as ZoneData
+				if deck == null:
+					return "missing_player_card_zone"
+				if deck.card_instance_ids.is_empty():
+					continue
+				var top_id := StringName(deck.card_instance_ids.back())
+				var top_definition := _definition_for_card(state, definitions, top_id)
+				if top_definition != null and top_definition.card_type in _normalized_allowed_tags(effect.get("allowed_card_types", [])):
+					var destination_id := StringName(player.zone_ids.get(StringName(effect.get("destination_zone_key", "hand")), &""))
+					var move_result := ZoneService.move_card(state, top_id, deck.zone_id, destination_id)
+					if not bool(move_result.get("ok", false)):
+						return str(move_result.get("error", "reveal_gain_failed"))
+					var move_event := (move_result.get("event", {}) as Dictionary).duplicate(true)
+					move_event["reason"] = "revealed_top_card_gained"
+					events.append(move_event)
+					events.append({"type":"card_revealed","actor_id":str(actor_id),"card_instance_id":str(top_id)})
+				continue
+			&"draw_then_choose_discard":
+				var draw_result := DeckService.draw_cards(state, actor_id, int(effect.get("draw_amount", 0)), events)
+				if not bool(draw_result.get("ok", false)):
+					return str(draw_result.get("error", "draw_failed"))
+				var discard_effect := {"op":"choose_move_card","source_zone_key":"hand","destination_zone_key":"discard_pile","amount":int(effect.get("discard_amount",1)),"optional":false,"prompt":"從手牌棄置 1 張牌","source_card_instance_id":str(effect.get("source_card_instance_id",""))}
+				var remaining: Array[Dictionary] = [discard_effect]
+				remaining.append_array(_remaining_effects(effects, index + 1))
+				return resolve(state, actor_id, remaining, events, definitions)
+			&"roll_self_combat":
+				var rng := DeterministicRng.new(state.seed_value, state.rng_state)
+				var die_result: int = rng.roll_die(int(effect.get("die_sides", 6)))
+				state.rng_state = rng.get_state()
+				var bonus := int(effect.get("odd_amount", 0)) if die_result % 2 == 1 else 0
+				var modifiers := player.turn_bonuses.get("card_combat_modifiers", {}) as Dictionary
+				var source_card_id := str(effect.get("source_card_instance_id", ""))
+				modifiers[source_card_id] = int(modifiers.get(source_card_id, 0)) + bonus
+				player.turn_bonuses["card_combat_modifiers"] = modifiers
+				events.append({"type":"die_rolled","actor_id":str(actor_id),"source_card_instance_id":source_card_id,"die_sides":int(effect.get("die_sides",6)),"die_result":die_result,"resource":"card_combat","amount":bonus})
+				continue
+			&"roll_target_combat_modifier":
+				var target_effect := effect.duplicate(true)
+				target_effect["op"] = "choose_target_combat_modifier"
+				target_effect["_consent_granted"] = true
+				var source := state.zones.get(StringName(effect.get("source_zone_id", ""))) as ZoneData
+				if source == null or source.card_instance_ids.is_empty():
+					continue
+				var rng := DeterministicRng.new(state.seed_value, state.rng_state)
+				var die_result := rng.roll_die(int(effect.get("die_sides", 6)))
+				state.rng_state = rng.get_state()
+				target_effect["amount"] = -((die_result + int(effect.get("divisor", 2)) - 1) / int(effect.get("divisor", 2)))
+				events.append({"type":"die_rolled","actor_id":str(actor_id),"source_card_instance_id":str(effect.get("source_card_instance_id","")),"die_sides":int(effect.get("die_sides",6)),"die_result":die_result,"resource":"target_combat","amount":int(target_effect["amount"])})
+				var remaining: Array[Dictionary] = [target_effect]
+				remaining.append_array(_remaining_effects(effects, index + 1))
+				return resolve(state, actor_id, remaining, events, definitions)
 			&"roll_resource_reward":
 				var die_sides := int(effect.get("die_sides", 0))
 				var divisor := int(effect.get("divisor", 0))
@@ -449,6 +642,7 @@ static func resolve(
 					"effect_index": index,
 					"source_effect": effect.duplicate(true),
 					"source_card_instance_id": str(effect.get("source_card_instance_id", "")),
+					"continuation_effects": _remaining_effects(effects, index + 1),
 				}
 				events.append({
 					"type": "choice_requested",
@@ -463,7 +657,7 @@ static func resolve(
 					"choice_zone_id": str(choice_zone_id),
 					"optional": false,
 				})
-				continue
+				return ""
 			_:
 				return "effect_not_immediately_resolvable: %s" % operation
 		player.turn_resources[resource_key] = int(player.turn_resources.get(resource_key, 0)) + amount
@@ -477,6 +671,90 @@ static func resolve(
 			"new_value": int(player.turn_resources[resource_key]),
 		})
 	return ""
+
+
+static func resolve_trigger_for_source(
+	state: GameStateData,
+	actor_id: StringName,
+	source_card_id: StringName,
+	timing: StringName,
+	events: Array[Dictionary],
+	definitions: Dictionary
+) -> String:
+	var definition := _definition_for_card(state, definitions, source_card_id)
+	if definition == null:
+		return "missing_definition"
+	var effects: Array[Dictionary] = []
+	for effect: Dictionary in definition.effects:
+		if StringName(effect.get("timing", "")) != timing or not _condition_matches(state, actor_id, effect):
+			continue
+		var runtime_effect := effect.duplicate(true)
+		runtime_effect["source_card_instance_id"] = str(source_card_id)
+		effects.append(runtime_effect)
+	return resolve(state, actor_id, effects, events, definitions)
+
+
+static func resolve_party_trigger(
+	state: GameStateData,
+	actor_id: StringName,
+	timing: StringName,
+	events: Array[Dictionary],
+	definitions: Dictionary
+) -> String:
+	var player := state.players.get(actor_id) as PlayerStateData
+	var party := state.zones.get(player.zone_ids.get(&"party", &"")) as ZoneData if player != null else null
+	if party == null:
+		return "missing_player_card_zone"
+	var effects: Array[Dictionary] = []
+	var source_ids: Array[StringName] = party.card_instance_ids.duplicate()
+	for raw_source_id: Variant in player.turn_facts.get("combat_participant_ids", []):
+		var departed_id := StringName(str(raw_source_id))
+		if departed_id not in source_ids:
+			source_ids.append(departed_id)
+	for source_card_id: StringName in source_ids:
+		var definition := _definition_for_card(state, definitions, source_card_id)
+		if definition == null:
+			continue
+		for effect: Dictionary in definition.effects:
+			if StringName(effect.get("timing", "")) == timing and _condition_matches(state, actor_id, effect):
+				var runtime_effect := effect.duplicate(true)
+				runtime_effect["source_card_instance_id"] = str(source_card_id)
+				effects.append(runtime_effect)
+	return resolve(state, actor_id, effects, events, definitions)
+
+
+static func _condition_matches(state: GameStateData, actor_id: StringName, effect: Dictionary) -> bool:
+	var condition := StringName(effect.get("condition", ""))
+	if condition.is_empty():
+		return true
+	var player := state.players.get(actor_id) as PlayerStateData
+	return player != null and condition == &"defeated_enemy" and bool(player.turn_facts.get("defeated_enemy", false))
+
+
+static func _remaining_effects(effects: Array[Dictionary], start: int) -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	for index in range(start, effects.size()):
+		result.append(effects[index].duplicate(true))
+	return result
+
+
+static func _card_choice(
+	state: GameStateData,
+	actor_id: StringName,
+	operation: StringName,
+	effect: Dictionary,
+	source_zone_id: StringName,
+	source_zone_key: StringName,
+	destination_zone_id: StringName,
+	eligible_ids: Array[String],
+	minimum: int,
+	maximum: int
+) -> Dictionary:
+	return {"type":"pending_choice","choice_id":"choice-%06d" % (state.revision + 1),"actor_id":str(actor_id),"required_actor_id":str(actor_id),"op":str(operation),"prompt":str(effect.get("prompt","選擇卡牌")),"source_zone_id":str(source_zone_id),"source_zone_key":str(source_zone_key),"destination_zone_id":str(destination_zone_id),"eligible_card_ids":eligible_ids.duplicate(),"selected_card_ids":[],"selected_count":0,"min_selections":minimum,"max_selections":maximum,"source_card_instance_id":str(effect.get("source_card_instance_id","")),"source_effect":effect.duplicate(true)}
+
+
+static func _choice_requested_event(choice: Dictionary) -> Dictionary:
+	return {"type":"choice_requested","choice_id":str(choice.get("choice_id","")),"actor_id":str(choice.get("actor_id","")),"required_actor_id":str(choice.get("required_actor_id","")),"op":str(choice.get("op","")),"eligible_card_ids":choice.get("eligible_card_ids",[]),"optional":int(choice.get("min_selections",1))==0,"source_card_instance_id":str(choice.get("source_card_instance_id","")),"min_selections":int(choice.get("min_selections",0)),"max_selections":int(choice.get("max_selections",1))}
 
 
 static func _source_zone_label(source_zone_key: StringName) -> String:

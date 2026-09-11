@@ -35,4 +35,8 @@ godot --headless --path . --script res://tests/headless/run_smoke.gd
 
 0.16.0 已完成 11 張基礎 Boss 的正式規則接線。共用流程涵蓋依玩家數建立本局 Boss 牌庫、公開登場與休息階段輪替、職業／公開區需求修正、參戰人數限制、裝備失效、參戰者替代離場、公開附件、公共牌庫直接取得、強制多張取得，以及巫妖「離場已提交但討伐失敗」例外。多步獎勵由可序列化 `pending_choice` 與 continuation 保持 Boss 在場，完成後才提交擊敗、所有權、統計與進程事件。
 
-HUD 會公開 Boss 數值、規則、附件、獎勵、目前 required actor 與多選進度，強制選擇期間維持鍵盤／手把焦點封閉。協助者輪替與完整 final-round policy 留待後續規則模組；其他特殊 target modifier 與完整官方卡池仍未納入。`docs/` 是本機企劃資料，已由 `.gitignore` 排除，自定義冒險者維持停用。
+0.17.0 已補齊 30 種官方冒險者、每種 2 張，共 60 張正式招募供應；名稱、費用、戰力、榮譽、職業、份數、卡面文案與效果均來自企劃文件，自定義冒險者未混入。共用 operation 涵蓋隊伍進場、戰鬥開始／結束、條件與位置戰力、公開魔物指定／刷新、私有牌庫查看／移除／排序、卡牌移動、供應取得、骰子、裝備政策與冒險者作為裝備；多步流程沿用正式 Zone、`pending_choice`、Legal Commands、Snapshot 與 deterministic hash。招募區空位仍只在休息階段補滿。
+
+正式卡池逐卡對照見 [`content/packs/OFFICIAL_ADVENTURERS.md`](content/packs/OFFICIAL_ADVENTURERS.md)。
+
+HUD 會顯示官方冒險者的費用、戰力、榮譽、職業與完整效果，並在待選擇狀態顯示來源、候選、進度與 required actor；強制選擇期間維持鍵盤／手把焦點封閉。協助者輪替與完整 final-round policy 留待後續規則模組。`docs/` 是本機企劃資料，已由 `.gitignore` 排除，自定義冒險者維持停用。

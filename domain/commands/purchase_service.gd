@@ -27,7 +27,9 @@ static func get_legal_commands(
 			var definition := _definition_for_card(state, definitions, card_instance_id)
 			if definition == null or definition.cost == null:
 				continue
-			var cost := int(definition.cost)
+			var cost := ResourceService.effective_purchase_cost(
+				state, actor_id, card_instance_id, definitions
+			)
 			if cost <= available:
 				commands.append({
 					"type": "BUY_CARD",
@@ -70,7 +72,8 @@ static func validate(
 	var resources := ResourceService.evaluate_player(state, actor_id, definitions)
 	if not bool(resources.get("ok", false)):
 		return str(resources.get("error", "resource_evaluation_failed"))
-	if int(definition.cost) > int(resources.get("purchase_power", 0)):
+	if ResourceService.effective_purchase_cost(state, actor_id, card_instance_id, definitions) \
+			> int(resources.get("purchase_power", 0)):
 		return "insufficient_purchase_power"
 	return ""
 
@@ -89,7 +92,9 @@ static func apply(
 	var card_instance_id := StringName(command.get("card_instance_id", ""))
 	var row_zone_id := StringName(command.get("source_row_id", ""))
 	var definition := _definition_for_card(state, definitions, card_instance_id)
-	var cost := int(definition.cost)
+	var cost := ResourceService.effective_purchase_cost(
+		state, actor_id, card_instance_id, definitions
+	)
 	var move_result := ZoneService.move_card(
 		state,
 		card_instance_id,
