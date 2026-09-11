@@ -56,7 +56,7 @@ static func dispatch(
 	var events: Array[Dictionary] = []
 	match StringName(command.get("type", "")):
 		&"END_PHASE":
-			error = _apply_end_phase(draft, events)
+			error = _apply_end_phase(draft, events, definitions)
 		&"EQUIP_ITEM":
 			error = EquipmentService.apply(draft, actor_id, command, definitions, events)
 		&"PLAY_ADVENTURER":
@@ -153,12 +153,14 @@ static func _validate_command(
 			return "unsupported_command"
 
 
-static func _apply_end_phase(state: GameStateData, events: Array[Dictionary]) -> String:
+static func _apply_end_phase(
+	state: GameStateData, events: Array[Dictionary], definitions: Dictionary
+) -> String:
 	var old_phase := state.phase
 	var old_player_id := state.active_player_id
 	var phase_index := PHASES.find(state.phase)
 	if phase_index == PHASES.size() - 1:
-		var supply_error := SupplyService.refill_vertical_slice_rows(state, events)
+		var supply_error := SupplyService.refill_vertical_slice_rows(state, events, definitions)
 		if not supply_error.is_empty():
 			return supply_error
 		var outgoing_player := state.players[old_player_id] as PlayerStateData

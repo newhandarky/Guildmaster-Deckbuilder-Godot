@@ -6,7 +6,7 @@ signal events_committed(events: Array[Dictionary])
 signal command_rejected(error_code: String)
 
 const CONTENT_PACK_PATH := "res://content/packs/base_vertical_slice.json"
-const RULESET_FINGERPRINT := "ruleset:vertical-slice:0.15.0"
+const RULESET_FINGERPRINT := "ruleset:vertical-slice:0.16.0"
 
 var state: GameStateData
 var content_registry := ContentRegistry.new()
@@ -16,7 +16,7 @@ func start_new_game(seed_value: int = 20260909) -> PackedStringArray:
 	var errors := content_registry.load_pack(CONTENT_PACK_PATH)
 	if not errors.is_empty():
 		return errors
-	state = GameStateData.create_vertical_slice(seed_value)
+	state = GameStateData.create_vertical_slice(seed_value, content_registry.definitions)
 	errors.append_array(InvariantService.validate(state))
 	if errors.is_empty():
 		_emit_state_changed()
@@ -189,7 +189,7 @@ func snapshot() -> Dictionary:
 		return {}
 	return {
 		"snapshot_schema_version": 1,
-		"app_version": "0.15.0",
+		"app_version": "0.16.0",
 		"content_fingerprint": content_registry.pack_fingerprint,
 		"ruleset_fingerprint": RULESET_FINGERPRINT,
 		"state": state.to_dictionary(),

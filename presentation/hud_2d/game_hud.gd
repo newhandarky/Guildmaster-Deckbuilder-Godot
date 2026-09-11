@@ -124,6 +124,12 @@ func show_events(events: Array[Dictionary]) -> void:
 					_player_display_name(str(event.get("required_actor_id", ""))),
 					int(event.get("remaining_count", 0)),
 				]
+			elif StringName(event.get("op", "")) == &"choose_gain_card":
+				event_label.text = "已取得：%s（%d/%d）" % [
+					_card_display_name(str(event.get("card_instance_id", ""))),
+					int(event.get("selected_count", 0)),
+					int(event.get("max_selections", 0)),
+				]
 			else:
 				event_label.text = "已移除：%s（%d/%d）" % [
 					_card_display_name(str(event.get("card_instance_id", ""))),
@@ -255,7 +261,7 @@ func _rebuild_hand(state: Dictionary, active_player_id: String) -> void:
 		var max_selections := int(effect_state.get("max_selections", 1))
 		var progress_text := (
 			"（已選 %d/%d）" % [selected_count, max_selections]
-			if StringName(effect_state.get("op", "")) == &"choose_remove_card"
+			if max_selections > 1
 			else ""
 		)
 		var count_text := (
@@ -490,10 +496,14 @@ func _remaining_choice_card_ids(effect_state: Dictionary) -> Array:
 
 
 func _choice_action_label(operation: StringName) -> String:
+	if operation == &"pay_post_departure_cost":
+		return "棄牌"
 	return "取得" if operation in [&"choose_gain_card", &"draft_gain_card"] else "移除"
 
 
 func _choice_button_text(operation: StringName, source_label: String) -> String:
+	if operation == &"pay_post_departure_cost":
+		return "棄置此冒險者"
 	if operation in [&"choose_gain_card", &"draft_gain_card"]:
 		return "從%s取得此牌" % source_label
 	return "從%s移除此牌" % source_label
@@ -633,6 +643,10 @@ func _append_boss_info(zones: Dictionary) -> void:
 	var card_id := str(card_ids[0])
 	var definition := _definition_for_instance(card_id)
 	var boss_label := Label.new()
+	var attachment_names: Array[String] = []
+	var boss_card := _cards.get(card_id, {}) as Dictionary
+	for raw_attachment_id: Variant in (boss_card.get("state", {}) as Dictionary).get("attachment_ids", []):
+		attachment_names.append(_card_display_name(str(raw_attachment_id)))
 	boss_label.text = "%s｜戰力 %d｜購買力 %d｜榮譽 %d\n規則：%s\n獎勵：%s%s" % [
 		str(definition.get("display_name", card_id)),
 		int(definition.get("combat", 0)),
@@ -640,7 +654,11 @@ func _append_boss_info(zones: Dictionary) -> void:
 		int(definition.get("honor", 0)),
 		str(definition.get("rules_text", "")),
 		str(definition.get("reward_text", "")),
-		"\n此 Boss 的單卡規則尚未啟用" if not bool(definition.get("framework_ready", true)) else "",
+		(
+			"\n附件：%s" % "、".join(attachment_names)
+			if not attachment_names.is_empty()
+			else ("\n此 Boss 的單卡規則尚未啟用" if not bool(definition.get("framework_ready", true)) else "")
+		),
 	]
 	boss_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	market_actions.add_child(boss_label)

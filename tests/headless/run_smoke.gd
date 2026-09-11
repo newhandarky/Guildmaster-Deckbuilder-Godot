@@ -34,6 +34,10 @@ func _run() -> void:
 	_test_monster_supply_setup_and_anchor()
 	_test_boss_content_and_supply()
 	_test_boss_combat_and_rest_reveal()
+	_test_boss_multi_gain_and_atomicity()
+	_test_boss_departure_replacement()
+	_test_boss_attachment_transitions()
+	_test_lich_success_and_failure()
 	_test_combat_preview_and_reward()
 	_test_combat_optional_reward_skip()
 	_test_standard_monster_claim_and_draw_rewards()
@@ -57,6 +61,7 @@ func _run() -> void:
 	await _test_market_refresh_hud_integration()
 	await _test_combat_hud_integration()
 	await _test_boss_hud_integration()
+	await _test_boss_choice_hud_integration()
 	await _test_pending_choice_hud_integration()
 	await _test_discard_choice_hud_integration()
 	await _test_multi_zone_removal_hud_integration()
@@ -564,9 +569,31 @@ func _test_boss_content_and_supply() -> void:
 		_expect(
 			definition != null and definition.copies == 1 and definition.card_type == &"boss"
 					and definition.combat == values[1] and definition.purchase_power == values[2]
-					and definition.honor == values[3],
+					and definition.honor == values[3] and definition.framework_ready,
 			"boss %s should use confirmed formal values" % values[0]
 		)
+	var expected_operations := {
+		"base:boss/boss-01": [["modify_requirement_by_zone_count"], ["grant_purchase_power", "choose_gain_card"]],
+		"base:boss/boss-02": [["replace_combat_departure"], ["gain_from_supply_deck", "grant_purchase_power", "gain_from_supply_deck"]],
+		"base:boss/boss-03": [["post_departure_cost"], ["grant_purchase_power", "choose_remove_card"]],
+		"base:boss/boss-04": [["attach_on_reveal"], ["grant_purchase_power", "draw"]],
+		"base:boss/boss-05": [["suppress_equipment"], ["grant_purchase_power", "choose_gain_card"]],
+		"base:boss/boss-06": [["modify_requirement_by_professions"], ["grant_purchase_power", "gain_from_supply_deck"]],
+		"base:boss/boss-07": [["attach_on_reveal"], ["grant_purchase_power", "gain_from_supply_deck"]],
+		"base:boss/boss-08": [["participant_limit"], ["grant_purchase_power", "choose_gain_card"]],
+		"base:boss/boss-09": [["modify_requirement_by_professions"], ["grant_purchase_power", "gain_from_supply_deck"]],
+		"base:boss/boss-10": [["modify_requirement_by_professions"], ["grant_purchase_power", "draw"]],
+		"base:boss/boss-11": [["participant_limit"], ["grant_purchase_power", "choose_gain_card"]],
+	}
+	for definition_id: String in expected_operations:
+		var definition := definitions[StringName(definition_id)] as CardDefinition
+		var rule_ops: Array[String] = []
+		var effect_ops: Array[String] = []
+		for rule: Dictionary in definition.special_rules:
+			rule_ops.append(str(rule.get("op", "")))
+		for effect: Dictionary in definition.effects:
+			effect_ops.append(str(effect.get("op", "")))
+		_expect([rule_ops, effect_ops] == expected_operations[definition_id], "boss %s should keep its formal data-driven operations" % definition_id)
 	var state := GameStateData.create_vertical_slice(503)
 	var equipment_rule := BossRuleEvaluator.evaluate(
 		state, &"p1", definitions[&"base:boss/boss-05"], definitions
@@ -577,9 +604,17 @@ func _test_boss_content_and_supply() -> void:
 	var left_rule := BossRuleEvaluator.evaluate(
 		state, &"p1", definitions[&"base:boss/boss-09"], definitions
 	)
+	var troll_rule := BossRuleEvaluator.evaluate(
+		state, &"p1", definitions[&"base:boss/boss-06"], definitions
+	)
+	var wolf_rule := BossRuleEvaluator.evaluate(
+		state, &"p1", definitions[&"base:boss/boss-11"], definitions
+	)
 	_expect(bool(equipment_rule.get("equipment_suppressed", false)), "shared boss rules should suppress equipment when declared")
 	_expect(int(limit_rule.get("participant_limit", -1)) == 3, "shared boss rules should apply participant limits")
 	_expect(int(left_rule.get("requirement", 0)) == 13, "shared boss rules should evaluate the left player's five public professions")
+	_expect(int(troll_rule.get("requirement", 0)) == 13, "shared boss rules should evaluate the active player's full-party professions")
+	_expect(int(wolf_rule.get("participant_limit", -1)) == 1, "shared boss rules should support a single front participant")
 	var active := state.zones[BossService.BOSS_ACTIVE_ID] as ZoneData
 	var deck := state.zones[BossService.BOSS_DECK_ID] as ZoneData
 	var reserve := state.zones[BossService.BOSS_RESERVE_ID] as ZoneData
@@ -649,6 +684,220 @@ func _test_boss_combat_and_rest_reveal() -> void:
 		state = phase_result["state"] as GameStateData
 	_expect((state.zones[BossService.BOSS_ACTIVE_ID] as ZoneData).card_instance_ids.size() == 1, "rest should reveal the next boss")
 	_expect(InvariantService.validate(state).is_empty(), "boss defeat and reveal should preserve zone uniqueness")
+
+
+func _test_boss_multi_gain_and_atomicity() -> void:
+	var definitions := _load_definitions()
+	var state := GameStateData.create_vertical_slice(521)
+	_expect(_expose_boss(state, &"card-boss-01").is_empty(), "multi-gain fixture should expose red dragon")
+	var shop := state.zones[SupplyService.SHOP_ROW_ID] as ZoneData
+	var shop_deck := state.zones[SupplyService.SHOP_DECK_ID] as ZoneData
+	for card_id: StringName in shop.card_instance_ids.duplicate():
+		ZoneService.move_card(state, card_id, shop.zone_id, shop_deck.zone_id)
+	for card_id: StringName in [&"card-supply-resource-08-01", &"card-supply-resource-08-02"]:
+		var source_id := ZoneService.find_card_zone(state, card_id)
+		ZoneService.move_card(state, card_id, source_id, shop.zone_id)
+	state.phase = &"combat"
+	(state.players[&"p1"] as PlayerStateData).turn_resources["combat"] = 30
+	var attack := RulesEngine.dispatch(
+		state,
+		_command_envelope(state, {"type": "ATTACK_TARGET", "target_card_id": "card-boss-01", "claim_optional_reward": true}, "cmd-boss-multi"),
+		definitions
+	)
+	_expect(bool(attack.get("ok", false)), "red dragon should establish a multi-card gain")
+	if not bool(attack.get("ok", false)):
+		return
+	state = attack["state"] as GameStateData
+	_expect(state.effect_state.get("op") == "choose_gain_card" and int(state.effect_state.get("max_selections", 0)) == 2, "boss public-row reward should lock two selections")
+	_expect(ZoneService.find_card_zone(state, &"card-boss-01") == BossService.BOSS_ACTIVE_ID, "boss should remain active while its reward choice is pending")
+	var first_card_id := StringName((state.effect_state.get("eligible_card_ids", []) as Array)[0])
+	var first_choice := RulesEngine.dispatch(
+		state,
+		_command_envelope(state, {"type": "RESOLVE_CHOICE", "choice_id": state.effect_state["choice_id"], "card_instance_id": str(first_card_id), "skip": false}, "cmd-boss-multi-1"),
+		definitions
+	)
+	_expect(bool(first_choice.get("ok", false)), "first boss reward selection should commit")
+	if not bool(first_choice.get("ok", false)):
+		return
+	state = first_choice["state"] as GameStateData
+	_expect(int(state.effect_state.get("selected_count", 0)) == 1, "first gain should preserve serializable pending progress")
+	var middle_hash := CanonicalJson.sha256(state.to_dictionary())
+	var restored := GameStateData.from_dictionary(state.to_dictionary())
+	_expect(CanonicalJson.sha256(restored.to_dictionary()) == middle_hash, "multi-gain intermediate state should round-trip")
+	var wrong_actor_envelope := _command_envelope(state, {"type": "RESOLVE_CHOICE", "choice_id": state.effect_state["choice_id"], "card_instance_id": str((state.effect_state.get("eligible_card_ids", []) as Array)[1]), "skip": false}, "cmd-boss-multi-wrong")
+	wrong_actor_envelope["actor_id"] = "p2"
+	var wrong_actor := RulesEngine.dispatch(state, wrong_actor_envelope, definitions)
+	_expect(not bool(wrong_actor.get("ok", false)) and wrong_actor.get("after_hash") == middle_hash, "non-required actor must be rejected without changing multi-gain progress")
+	var second_card_id := StringName((state.effect_state.get("eligible_card_ids", []) as Array)[1])
+	var second_choice := RulesEngine.dispatch(
+		state,
+		_command_envelope(state, {"type": "RESOLVE_CHOICE", "choice_id": state.effect_state["choice_id"], "card_instance_id": str(second_card_id), "skip": false}, "cmd-boss-multi-2"),
+		definitions
+	)
+	_expect(bool(second_choice.get("ok", false)), "second gain should complete the boss reward")
+	if bool(second_choice.get("ok", false)):
+		var resolved := second_choice["state"] as GameStateData
+		_expect(resolved.effect_state.is_empty() and ZoneService.find_card_zone(resolved, &"card-boss-01") == &"p1:discard-pile", "boss should be claimed only after all mandatory gains")
+
+
+func _test_boss_departure_replacement() -> void:
+	var definitions := _load_definitions()
+	var state := GameStateData.create_vertical_slice(523)
+	_expect(_expose_boss(state, &"card-boss-02").is_empty(), "departure fixture should expose baphomet")
+	var player := state.players[&"p1"] as PlayerStateData
+	var party := state.zones[player.zone_ids[&"party"]] as ZoneData
+	var recruit_id := (state.zones[SupplyService.RECRUIT_ROW_ID] as ZoneData).card_instance_ids[0]
+	var fixture_events: Array[Dictionary] = []
+	PartyService.discard_party_member_with_equipment(state, player, party.card_instance_ids[0], &"fixture", fixture_events)
+	ZoneService.move_card(state, recruit_id, SupplyService.RECRUIT_ROW_ID, party.zone_id, 0)
+	(state.cards[recruit_id] as Dictionary)["owner_id"] = "p1"
+	var equip_error := EquipmentService.apply(
+		state, &"p1", {"card_instance_id": "card-p1-spirit-crystal-01", "target_card_id": str(recruit_id)}, definitions, fixture_events
+	)
+	_expect(equip_error.is_empty(), "departure fixture should attach equipment")
+	state.phase = &"combat"
+	player.turn_resources["combat"] = 30
+	var before_rng := state.rng_state
+	var replay_state := GameStateData.from_dictionary(state.to_dictionary())
+	var envelope := _command_envelope(state, {"type": "ATTACK_TARGET", "target_card_id": "card-boss-02", "claim_optional_reward": true}, "cmd-baphomet")
+	var attack := RulesEngine.dispatch(
+		state, envelope, definitions
+	)
+	var replay := RulesEngine.dispatch(replay_state, envelope, definitions)
+	_expect(bool(attack.get("ok", false)), "baphomet departure and deck rewards should resolve")
+	_expect(attack.get("after_hash") == replay.get("after_hash") and attack.get("events") == replay.get("events"), "departure replacement shuffle and events should replay deterministically")
+	if not bool(attack.get("ok", false)):
+		return
+	var resolved := attack["state"] as GameStateData
+	_expect(resolved.rng_state != before_rng, "returning a non-starter should deterministically shuffle the recruit supply")
+	_expect(ZoneService.find_card_zone(resolved, &"card-p1-spirit-crystal-01") == &"p1:discard-pile", "equipment should discard under replacement departure")
+	_expect((resolved.cards[recruit_id] as Dictionary).get("state", {}).get("equipment_ids", []).is_empty(), "departure should clear the participant attachment link")
+	_expect(not (resolved.cards[&"card-p1-spirit-crystal-01"] as Dictionary).get("state", {}).has("equipped_to"), "departure should clear the equipment reverse link")
+	_expect(int((resolved.players[&"p1"] as PlayerStateData).turn_resources.get("purchase_power", 0)) == 5, "baphomet ordered reward should grant purchase power")
+	var starter_state := GameStateData.create_vertical_slice(525)
+	_expect(_expose_boss(starter_state, &"card-boss-02").is_empty(), "starter departure fixture should expose baphomet")
+	starter_state.phase = &"combat"
+	(starter_state.players[&"p1"] as PlayerStateData).turn_resources["combat"] = 30
+	var starter_attack := RulesEngine.dispatch(
+		starter_state,
+		_command_envelope(starter_state, {"type": "ATTACK_TARGET", "target_card_id": "card-boss-02", "claim_optional_reward": true}, "cmd-baphomet-starter"),
+		definitions
+	)
+	_expect(bool(starter_attack.get("ok", false)) and ZoneService.find_card_zone(starter_attack["state"] as GameStateData, &"card-p1-starter-adventurer-01") == &"p1:removed", "starter participant should use the declared removed destination")
+
+
+func _test_boss_attachment_transitions() -> void:
+	var definitions := _load_definitions()
+	for spec: Array in [["card-boss-04", "base:boss/boss-04"], ["card-boss-07", "base:boss/boss-07"]]:
+		var state := GameStateData.create_vertical_slice(527)
+		var boss_id := StringName(spec[0])
+		_expect(_expose_boss(state, boss_id).is_empty(), "attachment fixture should expose %s" % spec[1])
+		var reveal_events: Array[Dictionary] = []
+		var reveal_error := BossService._apply_reveal_rules(state, boss_id, definitions, reveal_events)
+		_expect(reveal_error.is_empty(), "boss attachment reveal should resolve")
+		var attachment_zone := state.zones[BossService.BOSS_ATTACHMENT_ID] as ZoneData
+		_expect(attachment_zone.card_instance_ids.size() == 1, "boss should hold one physical public attachment")
+		if attachment_zone.card_instance_ids.is_empty():
+			continue
+		var attachment_id := attachment_zone.card_instance_ids[0]
+		_expect(StringName((state.cards[attachment_id] as Dictionary).get("state", {}).get("attached_to", "")) == boss_id, "boss attachment must be bidirectional")
+		_expect(InvariantService.validate(state).is_empty(), "attached boss state should satisfy zone uniqueness")
+		var attached_hash := CanonicalJson.sha256(state.to_dictionary())
+		_expect(CanonicalJson.sha256(GameStateData.from_dictionary(state.to_dictionary()).to_dictionary()) == attached_hash, "boss attachment links should survive snapshot-shaped round trip")
+		state.phase = &"combat"
+		(state.players[&"p1"] as PlayerStateData).turn_resources["combat"] = 40
+		var attachment_definition := definitions[StringName((state.cards[attachment_id] as Dictionary).get("definition_id", ""))] as CardDefinition
+		var boss_definition := definitions[StringName((state.cards[boss_id] as Dictionary).get("definition_id", ""))] as CardDefinition
+		var attachment_preview := CombatService.preview_attack(state, &"p1", boss_id, definitions)
+		_expect(int(attachment_preview.get("requirement", -1)) == int(boss_definition.combat) + int(attachment_definition.combat), "attached card combat should contribute through the shared evaluator")
+		var attack := RulesEngine.dispatch(
+			state,
+			_command_envelope(state, {"type": "ATTACK_TARGET", "target_card_id": str(boss_id), "claim_optional_reward": true}, "cmd-attachment-%s" % spec[1]),
+			definitions
+		)
+		_expect(bool(attack.get("ok", false)), "attached boss should resolve through shared combat")
+		if not bool(attack.get("ok", false)):
+			continue
+		var resolved := attack["state"] as GameStateData
+		_expect((resolved.zones[BossService.BOSS_ATTACHMENT_ID] as ZoneData).card_instance_ids.is_empty(), "defeat should clear the attachment zone")
+		_expect(not (resolved.cards[attachment_id] as Dictionary).get("state", {}).has("attached_to"), "defeat should clear the reverse attachment link")
+		var expected_zone := &"p1:discard-pile" if boss_id == &"card-boss-07" else BossService.BOSS_REMOVED_ID
+		if boss_id == &"card-boss-04" and &"cycle_anchor" in attachment_definition.tags:
+			expected_zone = SupplyService.MONSTER_CYCLE_ID
+		_expect(ZoneService.find_card_zone(resolved, attachment_id) == expected_zone, "attachment should use its declared defeat destination")
+
+
+func _test_lich_success_and_failure() -> void:
+	var definitions := _load_definitions()
+	var failed_state := GameStateData.create_vertical_slice(529)
+	_expect(_expose_boss(failed_state, &"card-boss-03").is_empty(), "lich failure fixture should expose lich")
+	failed_state.phase = &"combat"
+	(failed_state.players[&"p1"] as PlayerStateData).turn_resources["combat"] = 30
+	var party_before := (failed_state.zones[&"p1:party"] as ZoneData).card_instance_ids.size()
+	var failed := RulesEngine.dispatch(
+		failed_state,
+		_command_envelope(failed_state, {"type": "ATTACK_TARGET", "target_card_id": "card-boss-03", "claim_optional_reward": true}, "cmd-lich-fail"),
+		definitions
+	)
+	_expect(bool(failed.get("ok", false)), "unpayable lich attack should commit its exceptional failed-combat result")
+	if bool(failed.get("ok", false)):
+		var after_failure := failed["state"] as GameStateData
+		_expect((after_failure.zones[&"p1:party"] as ZoneData).card_instance_ids.size() < party_before, "lich failure must retain participant departures")
+		_expect(ZoneService.find_card_zone(after_failure, &"card-boss-03") == BossService.BOSS_ACTIVE_ID and int((after_failure.players[&"p1"] as PlayerStateData).turn_resources.get("purchase_power", 0)) == 0, "lich failure must leave the boss alive and grant no reward")
+		_expect(_events_contain(failed.get("events", []), "boss_attack_failed"), "lich failure should emit its explicit result event")
+		var departure_event_index := _event_index(failed.get("events", []), "card_moved")
+		var failure_event_index := _event_index(failed.get("events", []), "boss_attack_failed")
+		_expect(departure_event_index >= 0 and failure_event_index > departure_event_index, "lich failure event must follow committed participant departure")
+
+	var state := GameStateData.create_vertical_slice(531)
+	_expect(_expose_boss(state, &"card-boss-03").is_empty(), "lich success fixture should expose lich")
+	var adventurer_id := (state.zones[SupplyService.RECRUIT_ROW_ID] as ZoneData).card_instance_ids[0]
+	ZoneService.move_card(state, adventurer_id, SupplyService.RECRUIT_ROW_ID, &"p1:hand")
+	(state.cards[adventurer_id] as Dictionary)["owner_id"] = "p1"
+	state.phase = &"combat"
+	(state.players[&"p1"] as PlayerStateData).turn_resources["combat"] = 30
+	var attack := RulesEngine.dispatch(
+		state,
+		_command_envelope(state, {"type": "ATTACK_TARGET", "target_card_id": "card-boss-03", "claim_optional_reward": true}, "cmd-lich-success"),
+		definitions
+	)
+	_expect(bool(attack.get("ok", false)) and (attack["state"] as GameStateData).effect_state.get("op") == "pay_post_departure_cost", "payable lich attack should request a mandatory serialized cost")
+	if not bool(attack.get("ok", false)):
+		return
+	state = attack["state"] as GameStateData
+	var pending_hash := CanonicalJson.sha256(state.to_dictionary())
+	var restored := GameStateData.from_dictionary(state.to_dictionary())
+	_expect(CanonicalJson.sha256(restored.to_dictionary()) == pending_hash, "lich pending cost should round-trip")
+	var tampered := state.clone_state()
+	var tampered_completion := tampered.effect_state["boss_completion"] as Dictionary
+	var tampered_effects := tampered_completion["remaining_effects"] as Array
+	(tampered_effects[0] as Dictionary)["amount"] = 999
+	var tampered_hash := CanonicalJson.sha256(tampered.to_dictionary())
+	var tampered_result := RulesEngine.dispatch(
+		tampered,
+		_command_envelope(tampered, {"type": "RESOLVE_CHOICE", "choice_id": tampered.effect_state["choice_id"], "card_instance_id": str(adventurer_id), "skip": false}, "cmd-lich-tampered"),
+		definitions
+	)
+	_expect(not bool(tampered_result.get("ok", false)) and tampered_result.get("after_hash") == tampered_hash, "tampered boss continuation must fail atomically")
+	var pay := RulesEngine.dispatch(
+		state,
+		_command_envelope(state, {"type": "RESOLVE_CHOICE", "choice_id": state.effect_state["choice_id"], "card_instance_id": str(adventurer_id), "skip": false}, "cmd-lich-pay"),
+		definitions
+	)
+	_expect(bool(pay.get("ok", false)), "lich cost selection should resume ordered rewards")
+	if not bool(pay.get("ok", false)):
+		return
+	state = pay["state"] as GameStateData
+	_expect(state.effect_state.get("op") == "choose_remove_card" and ZoneService.find_card_zone(state, &"card-boss-03") == BossService.BOSS_ACTIVE_ID, "lich optional removal should remain pending before boss claim")
+	var finish := RulesEngine.dispatch(
+		state,
+		_command_envelope(state, {"type": "RESOLVE_CHOICE", "choice_id": state.effect_state["choice_id"], "card_instance_id": "", "skip": true}, "cmd-lich-finish"),
+		definitions
+	)
+	_expect(bool(finish.get("ok", false)) and ZoneService.find_card_zone(finish["state"] as GameStateData, &"card-boss-03") == &"p1:discard-pile", "finishing lich reward should commit the boss defeat")
+	var choice_event_index := _event_index(finish.get("events", []), "choice_resolved")
+	var defeat_event_index := _event_index(finish.get("events", []), "boss_defeated")
+	_expect(choice_event_index >= 0 and defeat_event_index > choice_event_index, "lich reward completion must precede the boss defeat event")
 
 
 func _test_combat_preview_and_reward() -> void:
@@ -3603,6 +3852,60 @@ func _test_boss_hud_integration() -> void:
 	app.queue_free()
 
 
+func _test_boss_choice_hud_integration() -> void:
+	var packed := load("res://scenes/boot/main.tscn") as PackedScene
+	var app := packed.instantiate() as GameApp
+	root.add_child(app)
+	await process_frame
+	_expect(_expose_boss(app.session.state, &"card-boss-01").is_empty(), "boss choice HUD should expose red dragon")
+	var shop := app.session.state.zones[SupplyService.SHOP_ROW_ID] as ZoneData
+	var deck := app.session.state.zones[SupplyService.SHOP_DECK_ID] as ZoneData
+	for card_id: StringName in shop.card_instance_ids.duplicate():
+		ZoneService.move_card(app.session.state, card_id, shop.zone_id, deck.zone_id)
+	for card_id: StringName in [&"card-supply-resource-08-01", &"card-supply-resource-08-02"]:
+		ZoneService.move_card(app.session.state, card_id, ZoneService.find_card_zone(app.session.state, card_id), shop.zone_id)
+	app.session.state.phase = &"combat"
+	(app.session.state.players[&"p1"] as PlayerStateData).turn_resources["combat"] = 30
+	var attack := app.session.attack_target(&"card-boss-01", true)
+	_expect(bool(attack.get("ok", false)), "boss HUD should enter mandatory multi-gain")
+	await process_frame
+	var gain_buttons: Array[Button] = []
+	for child: Node in app.hud.hand_actions.get_children():
+		if child is Button and (child as Button).text == "從商店取得此牌":
+			gain_buttons.append(child as Button)
+	_expect(gain_buttons.size() == 2 and app.hud.end_phase_button.disabled, "Boss reward HUD should lock focus to two eligible gains")
+	if not gain_buttons.is_empty():
+		gain_buttons[0].pressed.emit()
+		await process_frame
+		_expect("已選 1/2" in app.hud.hand_summary.text, "Boss reward HUD should show multi-gain progress")
+		var remaining_button: Button
+		for child: Node in app.hud.hand_actions.get_children():
+			if child is Button and (child as Button).text == "從商店取得此牌":
+				remaining_button = child as Button
+		_expect(remaining_button != null and remaining_button.focus_neighbor_top == remaining_button.get_path() and remaining_button.focus_neighbor_bottom == remaining_button.get_path(), "mandatory reward focus should remain closed on the final choice")
+	app.queue_free()
+
+	var lich_app := packed.instantiate() as GameApp
+	root.add_child(lich_app)
+	await process_frame
+	_expect(_expose_boss(lich_app.session.state, &"card-boss-03").is_empty(), "lich HUD should expose lich")
+	var adventurer_id := (lich_app.session.state.zones[SupplyService.RECRUIT_ROW_ID] as ZoneData).card_instance_ids[0]
+	ZoneService.move_card(lich_app.session.state, adventurer_id, SupplyService.RECRUIT_ROW_ID, &"p1:hand")
+	(lich_app.session.state.cards[adventurer_id] as Dictionary)["owner_id"] = "p1"
+	lich_app.session.state.phase = &"combat"
+	(lich_app.session.state.players[&"p1"] as PlayerStateData).turn_resources["combat"] = 30
+	var lich_attack := lich_app.session.attack_target(&"card-boss-03", true)
+	_expect(bool(lich_attack.get("ok", false)), "lich HUD should enter its post-departure cost")
+	await process_frame
+	var cost_button: Button
+	for child: Node in lich_app.hud.hand_actions.get_children():
+		if child is Button and (child as Button).text == "棄置此冒險者":
+			cost_button = child as Button
+	_expect(cost_button != null and "完成巫妖討伐" in lich_app.hud.hand_summary.text, "lich HUD should show full mandatory cost prompt")
+	_expect(lich_app.hud.end_phase_button.disabled, "lich pending cost should block ordinary commands")
+	lich_app.queue_free()
+
+
 func _test_pending_choice_hud_integration() -> void:
 	var packed := load("res://scenes/boot/main.tscn") as PackedScene
 	var app := packed.instantiate() as GameApp
@@ -4556,6 +4859,13 @@ func _events_contain(events: Array[Dictionary], event_type: String) -> bool:
 		if str(event.get("type", "")) == event_type:
 			return true
 	return false
+
+
+func _event_index(events: Array[Dictionary], event_type: String) -> int:
+	for index in events.size():
+		if str(events[index].get("type", "")) == event_type:
+			return index
+	return -1
 
 
 func _commands_contain(commands: Array[Dictionary], command_type: String) -> bool:

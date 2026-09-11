@@ -62,6 +62,11 @@ static func validate(
 	var operation := StringName(choice.get("op", ""))
 	var selected_card_ids := choice.get("selected_card_ids", []) as Array
 	var selected_count := int(choice.get("selected_count", selected_card_ids.size()))
+	var completion_error := _validate_boss_completion_payload(
+		state, actor_id, choice, definitions
+	)
+	if not completion_error.is_empty():
+		return completion_error
 	if skip:
 		if operation == &"draft_gain_card":
 			return "choice_required"
@@ -99,6 +104,13 @@ static func validate(
 			if StringName(card.get("owner_id", "")) != actor_id:
 				return "choice_card_not_owned"
 		&"choose_gain_card":
+			var source_effect := choice.get("source_effect", {}) as Dictionary
+			if StringName(source_effect.get("op", "")) != &"choose_gain_card" \
+					or StringName(source_effect.get("source_zone_id", "")) != StringName(choice.get("source_zone_id", "")) \
+					or int(source_effect.get("max_cost", -1)) != int(choice.get("max_cost", -1)) \
+					or source_effect.get("allowed_card_types", []) != choice.get("allowed_card_types", []) \
+					or source_effect.get("allowed_tags", []) != choice.get("allowed_tags", []):
+				return "invalid_choice_source"
 			if ZoneService.find_card_zone(state, card_instance_id) \
 					!= StringName(choice.get("source_zone_id", "")):
 				return "choice_card_moved"
@@ -117,6 +129,27 @@ static func validate(
 				return "choice_card_wrong_type"
 			if int(definition.cost) > int(choice.get("max_cost", -1)):
 				return "choice_card_cost_exceeded"
+		&"pay_post_departure_cost":
+			var source_zone_id := StringName(choice.get("source_zone_id", ""))
+			var destination_zone_id := StringName(choice.get("destination_zone_id", ""))
+			var source_zone_key := StringName(choice.get("source_zone_key", ""))
+			var source_rule := choice.get("source_rule", {}) as Dictionary
+			var player := state.players.get(actor_id) as PlayerStateData
+			if player == null or source_zone_id != StringName(player.zone_ids.get(source_zone_key, &"")) \
+					or destination_zone_id != StringName(player.zone_ids.get(
+						StringName(source_rule.get("destination_zone_key", "")), &""
+					)) or StringName(source_rule.get("op", "")) != &"post_departure_cost" \
+					or StringName(source_rule.get("source_zone_key", "")) != source_zone_key \
+					or StringName(source_rule.get("card_type", "")) \
+					!= StringName(choice.get("required_card_type", "")):
+				return "invalid_choice_source"
+			if ZoneService.find_card_zone(state, card_instance_id) != source_zone_id:
+				return "choice_card_moved"
+			if StringName(card.get("owner_id", "")) != actor_id:
+				return "choice_card_not_owned"
+			var definition := _definition_for_card(state, definitions, card_instance_id)
+			if definition == null or definition.card_type != StringName(choice.get("required_card_type", "")):
+				return "choice_card_wrong_type"
 		&"draft_gain_card":
 			if not str(card_instance_id) in (choice.get("remaining_card_ids", []) as Array):
 				return "ineligible_choice_card"
@@ -159,6 +192,46 @@ static func validate(
 				return "wrong_choice_actor"
 		_:
 			return "unsupported_choice_operation"
+	return ""
+
+
+static func _validate_boss_completion_payload(
+	state: GameStateData,
+	actor_id: StringName,
+	choice: Dictionary,
+	definitions: Dictionary
+) -> String:
+	if not choice.has("boss_completion"):
+		return ""
+	if not choice.get("boss_completion", {}) is Dictionary:
+		return "invalid_boss_completion"
+	var completion := choice.get("boss_completion", {}) as Dictionary
+	if StringName(completion.get("actor_id", "")) != actor_id:
+		return "invalid_boss_completion_actor"
+	var target_card_id := StringName(completion.get("target_card_id", ""))
+	if ZoneService.find_card_zone(state, target_card_id) != BossService.BOSS_ACTIVE_ID:
+		return "boss_completion_target_moved"
+	var target_card := state.cards.get(target_card_id) as Dictionary
+	var target_definition := definitions.get(
+		StringName(target_card.get("definition_id", "")) if target_card != null else &""
+	) as CardDefinition
+	if target_definition == null or target_definition.card_type != &"boss":
+		return "invalid_boss_completion_target"
+	var expected_remaining: Array[Dictionary] = []
+	if StringName(choice.get("op", "")) == &"pay_post_departure_cost":
+		for effect: Dictionary in target_definition.effects:
+			if StringName(effect.get("timing", "")) != &"on_defeat" \
+					or (bool(effect.get("optional", false)) \
+					and not bool(completion.get("claim_optional_reward", true))):
+				continue
+			var expected_effect := effect.duplicate(true)
+			expected_effect["source_card_instance_id"] = str(target_card_id)
+			expected_effect["participant_count"] = (
+				completion.get("participant_ids", []) as Array
+			).size()
+			expected_remaining.append(expected_effect)
+	if completion.get("remaining_effects", []) != expected_remaining:
+		return "invalid_boss_completion_effects"
 	return ""
 
 
@@ -222,10 +295,14 @@ static func apply(
 			move_event["reason"] = "reward_card_gained"
 			events.append(move_event)
 			var card := state.cards[card_instance_id] as Dictionary
-			card["owner_id"] = str(actor_id)
+			if operation == &"choose_gain_card":
+				card["owner_id"] = str(actor_id)
+			var selected_card_ids := choice.get("selected_card_ids", []) as Array
+			selected_card_ids.append(str(card_instance_id))
+			choice["selected_card_ids"] = selected_card_ids
+			choice["selected_count"] = selected_card_ids.size()
 	var selected_count := int(choice.get("selected_count", 0))
-	var choice_complete := skip or operation == &"choose_gain_card" \
-			or selected_count >= int(choice.get("max_selections", 1))
+	var choice_complete := skip or selected_count >= int(choice.get("max_selections", 1))
 	if not choice_complete:
 		state.effect_state = choice
 		events.append({
@@ -266,8 +343,17 @@ static func apply(
 		"actor_id": str(actor_id),
 		"effect_index": int(choice.get("effect_index", 0)),
 		"op": str(choice.get("op", "")),
-		"selected_count": selected_count if StringName(choice.get("op", "")) == &"choose_remove_card" else (0 if skip else 1),
+		"selected_count": (
+			selected_count
+			if StringName(choice.get("op", "")) in [&"choose_remove_card", &"choose_gain_card"]
+			else (0 if skip else 1)
+		),
 	})
+	var boss_completion := choice.get("boss_completion", {}) as Dictionary
+	if not boss_completion.is_empty():
+		return BossService.continue_defeat_after_choice(
+			state, actor_id, boss_completion, events, definitions
+		)
 	return ""
 
 

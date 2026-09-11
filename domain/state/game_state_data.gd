@@ -7,8 +7,8 @@ const BossServiceType = preload("res://domain/state/boss_service.gd")
 
 var schema_version: int = 1
 var game_id: StringName = &"game-demo-001"
-var content_version: String = "0.15.0"
-var ruleset_version: String = "0.15.0"
+var content_version: String = "0.16.0"
+var ruleset_version: String = "0.16.0"
 var seed_value: int = 20260909
 var rng_state: int = 0
 var revision: int = 0
@@ -26,7 +26,7 @@ var event_cursor: int = 0
 var processed_command_ids: Array[String] = []
 
 
-static func create_vertical_slice(seed: int = 20260909) -> GameStateData:
+static func create_vertical_slice(seed: int = 20260909, definitions: Dictionary = {}) -> GameStateData:
 	var state := GameStateData.new()
 	state.seed_value = seed
 	state.rng_state = DeterministicRng.new(seed).get_state()
@@ -285,7 +285,7 @@ static func create_vertical_slice(seed: int = 20260909) -> GameStateData:
 	monsters.metadata = {"cycle_anchor": "card-monster-skeleton-01"}
 	state.zones[monsters.zone_id] = monsters
 	_add_vertical_slice_supplies(state)
-	BossServiceType.setup(state)
+	BossServiceType.setup(state, definitions)
 	return state
 
 

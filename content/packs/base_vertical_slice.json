@@ -1,7 +1,7 @@
 {
   "manifest": {
     "pack_id": "base:vertical-slice",
-    "version": "0.15.0",
+    "version": "0.16.0",
     "includes_custom_adventurers": false
   },
   "definitions": [
@@ -446,64 +446,64 @@
       "definition_id": "base:boss/boss-01", "display_name": "紅龍", "card_type": "boss", "copies": 1,
       "combat": 9, "purchase_power": 3, "honor": 10, "tags": ["enemy", "boss"],
       "special_rules": [{"op": "modify_requirement_by_zone_count", "zone_id": "shared:shop-row", "card_type": "equipment", "amount_each": 1}],
-      "rules_text": "戰力增加商店內裝備的數量。", "reward_text": "獲得購買力 5；取得商店 2 張費用不超過 4 的道具或裝備。", "framework_ready": false,
-      "effects": [], "presentation_id": "base:presentation/boss-red-dragon"
+      "rules_text": "戰力增加商店內裝備的數量。", "reward_text": "獲得購買力 5；取得商店 2 張費用不超過 4 的道具或裝備。", "framework_ready": true,
+      "effects": [{"op": "grant_purchase_power", "amount": 5, "timing": "on_defeat"}, {"op": "choose_gain_card", "amount": 2, "source_zone_id": "shared:shop-row", "allowed_card_types": ["item", "equipment"], "allowed_tags": ["item", "equipment"], "max_cost": 4, "timing": "on_defeat"}], "presentation_id": "base:presentation/boss-red-dragon"
     },
     {
       "definition_id": "base:boss/boss-02", "display_name": "巴風特", "card_type": "boss", "copies": 1,
       "combat": 9, "purchase_power": 3, "honor": 10, "tags": ["enemy", "boss"],
-      "special_rules": [{"op": "replace_combat_departure", "destination": "recruit_supply", "starter_destination": "removed"}],
-      "rules_text": "參戰冒險者洗回冒險者牌庫；起始冒險者改為移出遊戲。", "reward_text": "依參戰數從冒險者牌庫取得替代牌；獲得購買力 5，再取得 2 張冒險者。", "framework_ready": false,
-      "effects": [], "presentation_id": "base:presentation/boss-baphomet"
+      "special_rules": [{"op": "replace_combat_departure", "destination_zone_id": "shared:adventurer-supply", "starter_destination_zone_key": "removed", "equipment_destination_zone_key": "discard_pile", "shuffle_destination": true}],
+      "rules_text": "參戰冒險者洗回冒險者牌庫；起始冒險者改為移出遊戲。", "reward_text": "依參戰數從冒險者牌庫取得替代牌；獲得購買力 5，再取得 2 張冒險者。", "framework_ready": true,
+      "effects": [{"op": "gain_from_supply_deck", "amount_source": "participant_count", "source_deck_zone_id": "shared:adventurer-supply", "destination_zone_key": "discard_pile", "timing": "on_defeat"}, {"op": "grant_purchase_power", "amount": 5, "timing": "on_defeat"}, {"op": "gain_from_supply_deck", "amount": 2, "source_deck_zone_id": "shared:adventurer-supply", "destination_zone_key": "discard_pile", "timing": "on_defeat"}], "presentation_id": "base:presentation/boss-baphomet"
     },
     {
       "definition_id": "base:boss/boss-03", "display_name": "巫妖", "card_type": "boss", "copies": 1,
       "combat": 10, "purchase_power": 3, "honor": 10, "tags": ["enemy", "boss"],
-      "special_rules": [{"op": "post_departure_cost", "card_type": "adventurer", "source_zone_key": "hand", "on_failure": "combat_fails_without_rollback"}],
-      "rules_text": "參戰者離場後須從手牌棄 1 張冒險者，否則討伐失敗且不回滾離場。", "reward_text": "獲得購買力 5；可從棄牌堆移除最多 2 張牌。", "framework_ready": false,
-      "effects": [], "presentation_id": "base:presentation/boss-lich"
+      "special_rules": [{"op": "post_departure_cost", "card_type": "adventurer", "source_zone_key": "hand", "destination_zone_key": "discard_pile", "on_failure": "combat_fails_without_rollback", "prompt": "從自己的手牌棄置 1 張冒險者，完成巫妖討伐"}],
+      "rules_text": "參戰者離場後須從手牌棄 1 張冒險者，否則討伐失敗且不回滾離場。", "reward_text": "獲得購買力 5；可從棄牌堆移除最多 2 張牌。", "framework_ready": true,
+      "effects": [{"op": "grant_purchase_power", "amount": 5, "timing": "on_defeat"}, {"op": "choose_remove_card", "amount": 2, "source_zone_keys": ["discard_pile"], "optional": true, "timing": "on_defeat"}], "presentation_id": "base:presentation/boss-lich"
     },
     {
       "definition_id": "base:boss/boss-04", "display_name": "奇美拉", "card_type": "boss", "copies": 1,
       "combat": 5, "purchase_power": 3, "honor": 10, "tags": ["enemy", "boss"],
       "special_rules": [{"op": "attach_on_reveal", "source_zone_id": "shared:monster-cycle", "add_attached_combat": true, "defeat_destination": "removed"}],
-      "rules_text": "進場附著魔物並增加其戰力；骷髏附件依 cycle 特例返回。", "reward_text": "獲得購買力 5；抽 4 張牌。", "framework_ready": false,
-      "effects": [], "presentation_id": "base:presentation/boss-chimera"
+      "rules_text": "進場附著魔物並增加其戰力；骷髏附件依 cycle 特例返回。", "reward_text": "獲得購買力 5；抽 4 張牌。", "framework_ready": true,
+      "effects": [{"op": "grant_purchase_power", "amount": 5, "timing": "on_defeat"}, {"op": "draw", "amount": 4, "timing": "on_defeat"}], "presentation_id": "base:presentation/boss-chimera"
     },
     {
       "definition_id": "base:boss/boss-05", "display_name": "究極機械獸EX", "card_type": "boss", "copies": 1,
       "combat": 9, "purchase_power": 3, "honor": 10, "tags": ["enemy", "boss"],
       "special_rules": [{"op": "suppress_equipment"}],
-      "rules_text": "本次討伐期間所有裝備失效。", "reward_text": "獲得購買力 5；取得商店 2 張費用不超過 3 的道具或裝備。", "framework_ready": false,
-      "effects": [], "presentation_id": "base:presentation/boss-ultimate-machine-beast"
+      "rules_text": "本次討伐期間所有裝備失效。", "reward_text": "獲得購買力 5；取得商店 2 張費用不超過 3 的道具或裝備。", "framework_ready": true,
+      "effects": [{"op": "grant_purchase_power", "amount": 5, "timing": "on_defeat"}, {"op": "choose_gain_card", "amount": 2, "source_zone_id": "shared:shop-row", "allowed_card_types": ["item", "equipment"], "allowed_tags": ["item", "equipment"], "max_cost": 3, "timing": "on_defeat"}], "presentation_id": "base:presentation/boss-ultimate-machine-beast"
     },
     {
       "definition_id": "base:boss/boss-06", "display_name": "巨魔", "card_type": "boss", "copies": 1,
       "combat": 8, "purchase_power": 3, "honor": 10, "tags": ["enemy", "boss"],
       "special_rules": [{"op": "modify_requirement_by_professions", "subject": "self", "amount_each": 1}],
-      "rules_text": "自己完整隊伍每有 1 種職業，戰力增加 1。", "reward_text": "獲得購買力 5；從冒險者牌庫取得 2 張牌。", "framework_ready": false,
-      "effects": [], "presentation_id": "base:presentation/boss-troll"
+      "rules_text": "自己完整隊伍每有 1 種職業，戰力增加 1。", "reward_text": "獲得購買力 5；從冒險者牌庫取得 2 張牌。", "framework_ready": true,
+      "effects": [{"op": "grant_purchase_power", "amount": 5, "timing": "on_defeat"}, {"op": "gain_from_supply_deck", "amount": 2, "source_deck_zone_id": "shared:adventurer-supply", "destination_zone_key": "discard_pile", "timing": "on_defeat"}], "presentation_id": "base:presentation/boss-troll"
     },
     {
       "definition_id": "base:boss/boss-07", "display_name": "魅魔", "card_type": "boss", "copies": 1,
       "combat": 9, "purchase_power": 3, "honor": 8, "tags": ["enemy", "boss"],
       "special_rules": [{"op": "attach_on_reveal", "source_zone_id": "shared:adventurer-supply", "add_attached_combat": true, "defeat_destination": "owner_discard"}],
-      "rules_text": "進場附著冒險者並增加其戰力。", "reward_text": "獲得購買力 5；從冒險者牌庫取得 1 張牌，Boss 與附件進自己的棄牌堆。", "framework_ready": false,
-      "effects": [], "presentation_id": "base:presentation/boss-succubus"
+      "rules_text": "進場附著冒險者並增加其戰力。", "reward_text": "獲得購買力 5；從冒險者牌庫取得 1 張牌，Boss 與附件進自己的棄牌堆。", "framework_ready": true,
+      "effects": [{"op": "grant_purchase_power", "amount": 5, "timing": "on_defeat"}, {"op": "gain_from_supply_deck", "amount": 1, "source_deck_zone_id": "shared:adventurer-supply", "destination_zone_key": "discard_pile", "timing": "on_defeat"}], "presentation_id": "base:presentation/boss-succubus"
     },
     {
       "definition_id": "base:boss/boss-08", "display_name": "暗黑精靈", "card_type": "boss", "copies": 1,
       "combat": 9, "purchase_power": 3, "honor": 8, "tags": ["enemy", "boss"],
       "special_rules": [{"op": "participant_limit", "max": 3}],
-      "rules_text": "最多使用隊伍最前方連續 3 名冒險者。", "reward_text": "獲得購買力 5；取得招募區 2 張費用不超過 3 的冒險者。", "framework_ready": false,
-      "effects": [], "presentation_id": "base:presentation/boss-dark-elf"
+      "rules_text": "最多使用隊伍最前方連續 3 名冒險者。", "reward_text": "獲得購買力 5；取得招募區 2 張費用不超過 3 的冒險者。", "framework_ready": true,
+      "effects": [{"op": "grant_purchase_power", "amount": 5, "timing": "on_defeat"}, {"op": "choose_gain_card", "amount": 2, "source_zone_id": "shared:recruit-row", "allowed_card_types": ["adventurer"], "allowed_tags": ["adventurer"], "max_cost": 3, "timing": "on_defeat"}], "presentation_id": "base:presentation/boss-dark-elf"
     },
     {
       "definition_id": "base:boss/boss-09", "display_name": "哈比", "card_type": "boss", "copies": 1,
       "combat": 8, "purchase_power": 3, "honor": 8, "tags": ["enemy", "boss"],
       "special_rules": [{"op": "modify_requirement_by_professions", "subject": "left_player", "amount_each": 1}],
-      "rules_text": "左手邊玩家完整隊伍每有 1 種職業，戰力增加 1。", "reward_text": "獲得購買力 5；從物資牌庫取得 1 張牌。", "framework_ready": false,
-      "effects": [], "presentation_id": "base:presentation/boss-harpy"
+      "rules_text": "左手邊玩家完整隊伍每有 1 種職業，戰力增加 1。", "reward_text": "獲得購買力 5；從物資牌庫取得 1 張牌。", "framework_ready": true,
+      "effects": [{"op": "grant_purchase_power", "amount": 5, "timing": "on_defeat"}, {"op": "gain_from_supply_deck", "amount": 1, "source_deck_zone_id": "shared:resource-supply", "destination_zone_key": "discard_pile", "timing": "on_defeat"}], "presentation_id": "base:presentation/boss-harpy"
     },
     {
       "definition_id": "base:boss/boss-10", "display_name": "史萊姆娘", "card_type": "boss", "copies": 1,
@@ -517,8 +517,8 @@
       "definition_id": "base:boss/boss-11", "display_name": "狼女", "card_type": "boss", "copies": 1,
       "combat": 6, "purchase_power": 3, "honor": 8, "tags": ["enemy", "boss"],
       "special_rules": [{"op": "participant_limit", "max": 1}],
-      "rules_text": "只能使用隊伍最前方 1 名冒險者。", "reward_text": "獲得購買力 5；取得商店 2 張費用不超過 3 的道具。", "framework_ready": false,
-      "effects": [], "presentation_id": "base:presentation/boss-wolf-girl"
+      "rules_text": "只能使用隊伍最前方 1 名冒險者。", "reward_text": "獲得購買力 5；取得商店 2 張費用不超過 3 的道具。", "framework_ready": true,
+      "effects": [{"op": "grant_purchase_power", "amount": 5, "timing": "on_defeat"}, {"op": "choose_gain_card", "amount": 2, "source_zone_id": "shared:shop-row", "allowed_card_types": ["item"], "allowed_tags": ["item"], "max_cost": 3, "timing": "on_defeat"}], "presentation_id": "base:presentation/boss-wolf-girl"
     }
   ]
 }

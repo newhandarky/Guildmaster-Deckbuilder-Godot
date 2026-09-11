@@ -134,19 +134,42 @@ static func remove_party_member_with_equipment(
 	)
 
 
+static func move_party_member_with_equipment(
+	state: GameStateData,
+	player: PlayerStateData,
+	target_card_id: StringName,
+	target_destination_zone_id: StringName,
+	equipment_destination_zone_id: StringName,
+	reason: StringName,
+	events: Array[Dictionary]
+) -> String:
+	return _move_party_member_with_equipment(
+		state,
+		player,
+		target_card_id,
+		target_destination_zone_id,
+		reason,
+		events,
+		equipment_destination_zone_id
+	)
+
+
 static func _move_party_member_with_equipment(
 	state: GameStateData,
 	player: PlayerStateData,
 	target_card_id: StringName,
 	target_destination_zone_id: StringName,
 	reason: StringName,
-	events: Array[Dictionary]
+	events: Array[Dictionary],
+	equipment_destination_zone_id: StringName = &""
 ) -> String:
 	if ZoneService.find_card_zone(state, target_card_id) != StringName(player.zone_ids[&"party"]):
 		return "party_member_not_in_party"
 	var target_card := state.cards[target_card_id] as Dictionary
 	var target_state := target_card.get("state", {}) as Dictionary
 	var equipment_ids := target_state.get("equipment_ids", []) as Array
+	if equipment_destination_zone_id.is_empty():
+		equipment_destination_zone_id = StringName(player.zone_ids[&"discard_pile"])
 	for raw_equipment_id: Variant in equipment_ids.duplicate():
 		var equipment_id := StringName(str(raw_equipment_id))
 		var equipment_card := state.cards[equipment_id] as Dictionary
@@ -157,7 +180,7 @@ static func _move_party_member_with_equipment(
 			state,
 			equipment_id,
 			StringName(player.zone_ids[&"equipment"]),
-			StringName(player.zone_ids[&"discard_pile"])
+			equipment_destination_zone_id
 		)
 		if not bool(move_result.get("ok", false)):
 			return str(move_result.get("error", "equipment_departure_failed"))

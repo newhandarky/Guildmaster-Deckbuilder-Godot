@@ -1,6 +1,8 @@
 class_name BossRuleEvaluator
 extends RefCounted
 
+const BossServiceType = preload("res://domain/state/boss_service.gd")
+
 const PROFESSION_TAGS: Array[StringName] = [&"melee", &"ranged", &"mage", &"tank", &"support"]
 const SUPPORTED_RULES: Array[StringName] = [
 	&"participant_limit",
@@ -22,9 +24,23 @@ static func validate_rules(definition: CardDefinition) -> PackedStringArray:
 	if definition.rules_text.is_empty() or definition.reward_text.is_empty():
 		errors.append("Boss requires public rules and reward text: %s" % definition.definition_id)
 	for index in definition.special_rules.size():
-		var operation := StringName(definition.special_rules[index].get("op", ""))
+		var rule := definition.special_rules[index] as Dictionary
+		var operation := StringName(rule.get("op", ""))
 		if operation not in SUPPORTED_RULES:
 			errors.append("Unsupported boss rule %s at %s[%d]" % [operation, definition.definition_id, index])
+			continue
+		match operation:
+			&"replace_combat_departure":
+				if StringName(rule.get("destination_zone_id", "")).is_empty() \
+						or StringName(rule.get("starter_destination_zone_key", "")).is_empty() \
+						or StringName(rule.get("equipment_destination_zone_key", "")).is_empty():
+					errors.append("Boss departure replacement requires explicit destinations: %s" % definition.definition_id)
+			&"post_departure_cost":
+				if StringName(rule.get("card_type", "")).is_empty() \
+						or StringName(rule.get("source_zone_key", "")).is_empty() \
+						or StringName(rule.get("destination_zone_key", "")).is_empty() \
+						or str(rule.get("prompt", "")).is_empty():
+					errors.append("Boss post-departure cost requires type, zones, and prompt: %s" % definition.definition_id)
 	return errors
 
 
@@ -78,7 +94,39 @@ static func evaluate(
 					"count": count,
 					"delta": delta,
 				})
+			&"attach_on_reveal":
+				if not bool(rule.get("add_attached_combat", false)):
+					continue
+				var attached_total := 0
+				var boss_card_id := _active_boss_instance_id(state, definition.definition_id)
+				var boss_card := state.cards.get(boss_card_id) as Dictionary
+				if boss_card != null:
+					for raw_attachment_id: Variant in (boss_card.get("state", {}) as Dictionary).get("attachment_ids", []):
+						var attachment_card := state.cards.get(StringName(str(raw_attachment_id))) as Dictionary
+						var attachment_definition := definitions.get(
+							StringName(attachment_card.get("definition_id", "")) if attachment_card != null else &""
+						) as CardDefinition
+						if attachment_definition != null and attachment_definition.combat != null:
+							attached_total += int(attachment_definition.combat)
+				result["requirement"] = int(result["requirement"]) + attached_total
+				(result["modifiers"] as Array).append({
+					"op": "attached_combat", "attached_combat": attached_total,
+					"delta": attached_total,
+				})
 	return result
+
+
+static func _active_boss_instance_id(
+	state: GameStateData, definition_id: StringName
+) -> StringName:
+	var active := state.zones.get(BossServiceType.BOSS_ACTIVE_ID) as ZoneData
+	if active == null:
+		return &""
+	for card_id: StringName in active.card_instance_ids:
+		var card := state.cards.get(card_id) as Dictionary
+		if card != null and StringName(card.get("definition_id", "")) == definition_id:
+			return card_id
+	return &""
 
 
 static func _subject_player_id(

@@ -11,6 +11,7 @@ const SUPPORTED_OPERATIONS: Array[StringName] = [
 	&"choose_gain_card",
 	&"roll_resource_reward",
 	&"draft_gain_card",
+	&"gain_from_supply_deck",
 ]
 
 
@@ -36,8 +37,9 @@ static func validate_effects(effects: Array[Dictionary], definition_id: StringNa
 			for source_zone_key: StringName in removal_sources:
 				if source_zone_key not in [&"hand", &"party", &"discard_pile"]:
 					errors.append("Unsupported removal source at %s[%d]" % [definition_id, index])
-		if operation == &"choose_gain_card" and int(effect.get("amount", 0)) != 1:
-			errors.append("Card gain choice amount must be 1 at %s[%d]" % [definition_id, index])
+		if operation == &"choose_gain_card" \
+				and (int(effect.get("amount", 0)) < 1 or int(effect.get("amount", 0)) > 2):
+			errors.append("Card gain choice amount must be 1 or 2 at %s[%d]" % [definition_id, index])
 		if operation == &"choose_gain_card" \
 				and StringName(effect.get("source_zone_id", "")) \
 				not in [SupplyService.RECRUIT_ROW_ID, SupplyService.SHOP_ROW_ID]:
@@ -70,6 +72,17 @@ static func validate_effects(effects: Array[Dictionary], definition_id: StringNa
 			if int(effect.get("cards_per_player", 0)) != 1 \
 					or StringName(effect.get("destination_zone_key", "")) != &"hand":
 				errors.append("Draft gain rule is invalid at %s[%d]" % [definition_id, index])
+		if operation == &"gain_from_supply_deck":
+			if StringName(effect.get("source_deck_zone_id", "")) \
+					not in [SupplyService.RECRUIT_DECK_ID, SupplyService.SHOP_DECK_ID]:
+				errors.append("Supply gain requires a supported source deck at %s[%d]" % [definition_id, index])
+			var amount_source := StringName(effect.get("amount_source", ""))
+			if amount_source not in [&"", &"participant_count"] \
+					or (amount_source.is_empty() and int(effect.get("amount", 0)) < 1):
+				errors.append("Supply gain requires a positive amount or participant_count at %s[%d]" % [definition_id, index])
+			if StringName(effect.get("destination_zone_key", "discard_pile")) \
+					not in [&"discard_pile", &"hand"]:
+				errors.append("Supply gain destination is unsupported at %s[%d]" % [definition_id, index])
 	return errors
 
 
@@ -258,13 +271,15 @@ static func resolve(
 					continue
 				if not state.effect_state.is_empty():
 					return "effect_state_occupied"
+				var required_count := mini(amount, eligible_card_ids.size())
 				state.effect_state = {
 					"type": "pending_choice",
 					"choice_id": "choice-%06d" % (state.revision + 1),
 					"actor_id": str(actor_id),
 					"op": str(operation),
-					"prompt": "從%s取得 1 張費用不超過 %d 的%s" % [
+					"prompt": "從%s取得 %d 張費用不超過 %d 的%s" % [
 						_gain_source_label(source_zone_key),
+						required_count,
 						max_cost,
 						_gain_filter_label(allowed_card_types),
 					],
@@ -272,10 +287,13 @@ static func resolve(
 					"source_zone_key": str(source_zone_key),
 					"destination_zone_id": str(destination.zone_id),
 					"eligible_card_ids": eligible_card_ids,
-					"min_selections": 0 if bool(effect.get("optional", false)) else 1,
-					"max_selections": amount,
+					"min_selections": 0 if bool(effect.get("optional", false)) else required_count,
+					"max_selections": required_count,
+					"selected_card_ids": [],
+					"selected_count": 0,
 					"effect_index": index,
 					"source_card_instance_id": str(effect.get("source_card_instance_id", "")),
+					"source_effect": effect.duplicate(true),
 					"max_cost": max_cost,
 					"allowed_card_types": _string_name_array_to_strings(allowed_card_types),
 					"allowed_tags": _string_name_array_to_strings(allowed_tags),
@@ -293,6 +311,33 @@ static func resolve(
 					"max_cost": max_cost,
 					"allowed_card_types": _string_name_array_to_strings(allowed_card_types),
 					"allowed_tags": _string_name_array_to_strings(allowed_tags),
+				})
+				continue
+			&"gain_from_supply_deck":
+				var source_deck_zone_id := StringName(effect.get("source_deck_zone_id", ""))
+				var source_deck := state.zones.get(source_deck_zone_id) as ZoneData
+				var destination_zone_key := StringName(effect.get("destination_zone_key", "discard_pile"))
+				var destination := state.zones.get(player.zone_ids.get(destination_zone_key, &"")) as ZoneData
+				if source_deck == null or destination == null:
+					return "missing_supply_gain_zone"
+				var requested_amount := (
+					int(effect.get("participant_count", 0))
+					if StringName(effect.get("amount_source", "")) == &"participant_count"
+					else amount
+				)
+				var gain_result := SupplyService.take_supply_cards(
+					state, source_deck_zone_id, destination.zone_id, actor_id,
+					requested_amount, &"supply_deck_reward_gained", events
+				)
+				if not bool(gain_result.get("ok", false)):
+					return str(gain_result.get("error", "supply_gain_failed"))
+				var gained_ids := gain_result.get("gained_card_ids", []) as Array
+				events.append({
+					"type": "effect_resolved", "actor_id": str(actor_id),
+					"effect_index": index, "op": str(operation),
+					"requested_count": requested_amount, "selected_count": gained_ids.size(),
+					"gained_card_ids": gained_ids, "source_zone_id": str(source_deck_zone_id),
+					"destination_zone_id": str(destination.zone_id),
 				})
 				continue
 			&"roll_resource_reward":

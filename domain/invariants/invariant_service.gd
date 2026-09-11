@@ -113,14 +113,22 @@ static func _validate_supply_zones(state: GameStateData, errors: PackedStringArr
 		if anchor_id.is_empty():
 			errors.append("Monster cycle requires an anchor")
 		elif anchor_id not in monster_row.card_instance_ids \
-				and anchor_id not in monster_cycle.card_instance_ids:
+				and anchor_id not in monster_cycle.card_instance_ids \
+				and not _boss_attachment_contains(state, anchor_id):
 			errors.append("Monster cycle anchor is not continuous")
+
+
+static func _boss_attachment_contains(state: GameStateData, card_id: StringName) -> bool:
+	var zone := state.zones.get(BossServiceType.BOSS_ATTACHMENT_ID) as ZoneData
+	return zone != null and card_id in zone.card_instance_ids
 
 
 static func _validate_boss_zones(state: GameStateData, errors: PackedStringArray) -> void:
 	var deck := state.zones.get(BossServiceType.BOSS_DECK_ID) as ZoneData
 	var active := state.zones.get(BossServiceType.BOSS_ACTIVE_ID) as ZoneData
 	var reserve := state.zones.get(BossServiceType.BOSS_RESERVE_ID) as ZoneData
+	var attachments := state.zones.get(BossServiceType.BOSS_ATTACHMENT_ID) as ZoneData
+	var removed := state.zones.get(BossServiceType.BOSS_REMOVED_ID) as ZoneData
 	if deck == null or deck.kind != &"ordered_deck" or deck.visibility != &"hidden":
 		errors.append("Boss deck must be a hidden ordered deck")
 	if reserve == null or reserve.kind != &"ordered_deck" or reserve.visibility != &"hidden":
@@ -133,6 +141,25 @@ static func _validate_boss_zones(state: GameStateData, errors: PackedStringArray
 			and not bool(active.metadata.get("pending_reveal", false)) \
 			and not bool(active.metadata.get("all_bosses_defeated", false)):
 		errors.append("Empty boss active zone requires a progression marker")
+	if attachments == null or attachments.kind != &"attachment" or attachments.visibility != &"public":
+		errors.append("Boss attachment zone must be public")
+	if removed == null or removed.kind != &"removed" or removed.visibility != &"public":
+		errors.append("Boss removed zone must be public")
+	if active != null and attachments != null:
+		var active_id := active.card_instance_ids[0] if not active.card_instance_ids.is_empty() else &""
+		var active_card := state.cards.get(active_id, {}) as Dictionary
+		var linked_ids := (
+			(active_card.get("state", {}) as Dictionary).get("attachment_ids", []) as Array
+			if not active_card.is_empty() else []
+		)
+		if linked_ids.size() != attachments.card_instance_ids.size():
+			errors.append("Boss attachment links must match the attachment zone")
+		for attachment_id: StringName in attachments.card_instance_ids:
+			var card := state.cards.get(attachment_id, {}) as Dictionary
+			if str(attachment_id) not in linked_ids \
+					or card.is_empty() \
+					or StringName((card.get("state", {}) as Dictionary).get("attached_to", "")) != active_id:
+				errors.append("Boss attachment relationship must be bidirectional")
 
 
 static func _validate_equipment_attachments(
@@ -327,10 +354,38 @@ static func _validate_effect_state(state: GameStateData, errors: PackedStringArr
 				)
 				if int(choice.get("max_cost", -1)) < 0 or not valid_tags:
 					errors.append("Pending gain filter is invalid")
+				var source_effect := choice.get("source_effect", {}) as Dictionary
+				if StringName(source_effect.get("op", "")) != &"choose_gain_card" \
+						or StringName(source_effect.get("source_zone_id", "")) != source_zone_id \
+						or int(source_effect.get("max_cost", -1)) != int(choice.get("max_cost", -1)) \
+						or source_effect.get("allowed_card_types", []) != choice.get("allowed_card_types", []) \
+						or source_effect.get("allowed_tags", []) != choice.get("allowed_tags", []):
+					errors.append("Pending gain source effect does not match locked rules")
 			&"draft_gain_card":
 				_validate_draft_choice(state, choice, actor_id, required_actor_id, errors)
+			&"pay_post_departure_cost":
+				if not choice.get("source_rule", {}) is Dictionary:
+					errors.append("Pending post-departure cost is invalid")
+				else:
+					var source_rule := choice.get("source_rule", {}) as Dictionary
+					var source_zone_key := StringName(choice.get("source_zone_key", ""))
+					if StringName(choice.get("source_zone_id", "")) != StringName(player.zone_ids.get(source_zone_key, &"")) \
+							or destination_zone_id != StringName(player.zone_ids.get(
+								StringName(source_rule.get("destination_zone_key", "")), &""
+							)) or StringName(source_rule.get("op", "")) != &"post_departure_cost" \
+							or StringName(source_rule.get("source_zone_key", "")) != source_zone_key \
+							or StringName(source_rule.get("card_type", "")) \
+							!= StringName(choice.get("required_card_type", "")):
+						errors.append("Pending post-departure cost is invalid")
 			_:
 				errors.append("Unsupported pending choice operation")
+	if choice.has("boss_completion"):
+		if not choice.get("boss_completion", {}) is Dictionary:
+			errors.append("Pending boss completion must be a Dictionary")
+		else:
+			_validate_boss_completion(
+				state, choice.get("boss_completion", {}) as Dictionary, actor_id, errors
+			)
 	if not choice.get("eligible_card_ids", []) is Array:
 		errors.append("Pending choice eligible cards must be an Array")
 		return
@@ -368,11 +423,20 @@ static func _validate_effect_state(state: GameStateData, errors: PackedStringArr
 				)
 		elif operation == &"choose_gain_card":
 			var source_zone_id := StringName(choice.get("source_zone_id", ""))
-			if ZoneService.find_card_zone(state, card_instance_id) != source_zone_id:
-				errors.append("Pending choice card %s is not in its source zone" % card_instance_id)
+			var expected_zone_id := destination_zone_id if selected_seen.has(card_instance_id) else source_zone_id
+			if ZoneService.find_card_zone(state, card_instance_id) != expected_zone_id:
+				errors.append("Pending choice card %s is not in its expected zone" % card_instance_id)
 			var card := state.cards.get(card_instance_id) as Dictionary
-			if card == null or not StringName(card.get("owner_id", "")).is_empty():
-				errors.append("Pending gain card %s must be unowned" % card_instance_id)
+			var expected_owner := actor_id if selected_seen.has(card_instance_id) else &""
+			if card == null or StringName(card.get("owner_id", "")) != expected_owner:
+				errors.append("Pending gain card %s has invalid ownership" % card_instance_id)
+		elif operation == &"pay_post_departure_cost":
+			var expected_zone_id := destination_zone_id if selected_seen.has(card_instance_id) else StringName(choice.get("source_zone_id", ""))
+			if ZoneService.find_card_zone(state, card_instance_id) != expected_zone_id:
+				errors.append("Pending cost card %s is not in its expected zone" % card_instance_id)
+			var card := state.cards.get(card_instance_id) as Dictionary
+			if card == null or StringName(card.get("owner_id", "")) != actor_id:
+				errors.append("Pending cost card %s must belong to the actor" % card_instance_id)
 		elif operation == &"draft_gain_card":
 			_validate_draft_candidate(
 				state, choice, card_instance_id, selected_seen.has(card_instance_id), errors
@@ -386,16 +450,37 @@ static func _validate_effect_state(state: GameStateData, errors: PackedStringArr
 		errors.append("Pending removal candidate origins must match locked candidates")
 	var minimum := int(choice.get("min_selections", -1))
 	var maximum := int(choice.get("max_selections", -1))
-	var maximum_limit := 2 if operation == &"choose_remove_card" else 1
+	var maximum_limit := 2 if operation in [&"choose_remove_card", &"choose_gain_card"] else 1
 	if minimum < 0 or maximum < minimum or maximum > maximum_limit:
 		errors.append("Pending choice selection bounds are invalid")
 	if operation == &"choose_remove_card" \
 			and (int(choice.get("selected_count", -1)) != selected_card_ids.size() \
 			or selected_card_ids.size() >= maximum):
 		errors.append("Pending choice selection progress is invalid")
+	if operation in [&"choose_gain_card", &"pay_post_departure_cost"] \
+			and (int(choice.get("selected_count", -1)) != selected_card_ids.size() \
+			or selected_card_ids.size() >= maximum):
+		errors.append("Pending choice selection progress is invalid")
 	if operation == &"draft_gain_card" \
 			and int(choice.get("selected_count", -1)) != selected_card_ids.size():
 		errors.append("Pending draft selection progress is invalid")
+
+
+static func _validate_boss_completion(
+	state: GameStateData,
+	completion: Dictionary,
+	expected_actor_id: StringName,
+	errors: PackedStringArray
+) -> void:
+	var target_card_id := StringName(completion.get("target_card_id", ""))
+	var active := state.zones.get(BossServiceType.BOSS_ACTIVE_ID) as ZoneData
+	if active == null or target_card_id not in active.card_instance_ids:
+		errors.append("Pending boss completion target must remain active")
+	if StringName(completion.get("actor_id", "")) != expected_actor_id:
+		errors.append("Pending boss completion actor must match its choice")
+	if not completion.get("participant_ids", []) is Array \
+			or not completion.get("remaining_effects", []) is Array:
+		errors.append("Pending boss completion payload is invalid")
 
 
 static func _validate_draft_choice(

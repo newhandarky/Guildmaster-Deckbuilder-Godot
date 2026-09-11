@@ -33,6 +33,6 @@ godot --headless --path . --script res://tests/headless/run_smoke.gd
 
 目前的 vertical slice 已完成 14 種基礎魔物：官方起始配置 → 兩位玩家五階段輪替 → `ATTACK_TARGET` 依最短隊伍前綴討伐 → 參戰者與裝備離場 → 骷髏循環、抽牌／重抽、多區域移除、公開列取得等資料驅動效果；寶箱怪使用可重播的 deterministic D6 資源獎勵；蛇妖從隱藏物資牌庫公開牌至正式輪抽區，並由擊敗者起依座位順序強制取得至各自手牌；所有延遲效果沿用可序列化 `pending_choice`、原子性命令、Legal Commands、事件與 Snapshot/hash。招募區與商店仍只在休息階段統一補列，自定義冒險者維持停用。
 
-0.15.0 已建立 Boss 共用框架：11 張正式 Boss 資料與單一實例、依玩家數選出本局牌庫、保留區、公開登場區、休息階段揭示、共用討伐／獎勵／取得／統計事件，以及可序列化且可重播的 zone 與規則 modifier。HUD 會公開 Boss 數值、規則、獎勵、討伐預覽與剩餘數量；「史萊姆娘」作為第一張完整閉環的正式 Boss，可驗證職業修正、擊敗獎勵及下一 Boss 轉換。
+0.16.0 已完成 11 張基礎 Boss 的正式規則接線。共用流程涵蓋依玩家數建立本局 Boss 牌庫、公開登場與休息階段輪替、職業／公開區需求修正、參戰人數限制、裝備失效、參戰者替代離場、公開附件、公共牌庫直接取得、強制多張取得，以及巫妖「離場已提交但討伐失敗」例外。多步獎勵由可序列化 `pending_choice` 與 continuation 保持 Boss 在場，完成後才提交擊敗、所有權、統計與進程事件。
 
-其餘 10 張 Boss 的正式資料已納入，但需要單卡規則的 departure、attachment、多人／多張取得與失敗後不回滾等通用 operation 尚未啟用；在完成對應共用 operation 前不會產生可攻擊命令。協助者輪替與 final-round policy 也留待後續 Boss 規則批次。其他特殊 target modifier 與完整官方卡池仍未納入；`docs/` 是本機企劃資料，已由 `.gitignore` 排除。
+HUD 會公開 Boss 數值、規則、附件、獎勵、目前 required actor 與多選進度，強制選擇期間維持鍵盤／手把焦點封閉。協助者輪替與完整 final-round policy 留待後續規則模組；其他特殊 target modifier 與完整官方卡池仍未納入。`docs/` 是本機企劃資料，已由 `.gitignore` 排除，自定義冒險者維持停用。

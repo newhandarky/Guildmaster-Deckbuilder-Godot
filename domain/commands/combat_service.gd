@@ -163,8 +163,9 @@ static func preview_attack(
 					)
 					var card_types := effect.get("allowed_card_types", []) as Array
 					var filter_label := "冒險者" if card_types == ["adventurer"] else "道具或裝備"
-					reward_parts.append("取得%s 1 張費用不超過 %d 的%s" % [
+					reward_parts.append("取得%s %d 張費用不超過 %d 的%s" % [
 						source_label,
+						int(effect.get("amount", 1)),
 						int(effect.get("max_cost", 0)),
 						filter_label,
 					])
@@ -242,21 +243,15 @@ static func apply(
 		"participant_ids": participant_ids.duplicate(),
 	})
 	var player := state.players[actor_id] as PlayerStateData
-	for raw_participant_id: Variant in participant_ids:
-		var departure_error := PartyService.discard_party_member_with_equipment(
-			state,
-			player,
-			StringName(str(raw_participant_id)),
-			&"combat_departure",
-			events
-		)
-		if not departure_error.is_empty():
-			return departure_error
-
 	var target_card := state.cards[target_card_id] as Dictionary
 	var target_definition := definitions.get(
 		StringName(target_card.get("definition_id", ""))
 	) as CardDefinition
+	var departure_error := _apply_combat_departures(
+		state, player, participant_ids, target_definition, definitions, events
+	)
+	if not departure_error.is_empty():
+		return departure_error
 	var claim_optional_reward := bool(command.get("claim_optional_reward", true))
 	var reward_effects: Array[Dictionary] = []
 	for effect: Dictionary in target_definition.effects:
@@ -264,18 +259,41 @@ static func apply(
 				and (not bool(effect.get("optional", false)) or claim_optional_reward):
 			var reward_effect := effect.duplicate(true)
 			reward_effect["source_card_instance_id"] = str(target_card_id)
+			reward_effect["participant_count"] = participant_ids.size()
 			reward_effects.append(reward_effect)
+	var completion := {
+		"actor_id": str(actor_id),
+		"target_card_id": str(target_card_id),
+		"participant_ids": participant_ids.duplicate(),
+		"claim_optional_reward": claim_optional_reward,
+		"remaining_effects": [],
+	}
+	if target_definition.card_type == &"boss" and _has_boss_rule(
+		target_definition, &"post_departure_cost"
+	):
+		return _request_post_departure_cost(
+			state, actor_id, target_card_id, target_definition, reward_effects,
+			completion, events, definitions
+		)
 	var effect_error := EffectResolver.resolve(
 		state, actor_id, reward_effects, events, definitions
 	)
 	if not effect_error.is_empty():
 		return effect_error
-	var supply_error: String
 	if target_definition.card_type == &"boss":
-		supply_error = BossServiceType.claim_defeated_boss(
-			state, target_card_id, player, events
+		if not state.effect_state.is_empty():
+			state.effect_state["boss_completion"] = completion.duplicate(true)
+			events.append({
+				"type": "boss_reward_pending", "actor_id": str(actor_id),
+				"target_card_id": str(target_card_id),
+				"choice_id": str(state.effect_state.get("choice_id", "")),
+			})
+			return ""
+		return BossServiceType.complete_defeat(
+			state, actor_id, completion, events, definitions
 		)
-	elif &"cycle_anchor" in target_definition.tags:
+	var supply_error: String
+	if &"cycle_anchor" in target_definition.tags:
 		supply_error = SupplyService.cycle_defeated_monster(state, target_card_id, events)
 	else:
 		supply_error = SupplyService.claim_defeated_monster(
@@ -284,27 +302,8 @@ static func apply(
 	if not supply_error.is_empty():
 		return supply_error
 	player.turn_facts[&"defeated_enemy"] = true
-	var counter_key := (
-		&"defeated_boss_count" if target_definition.card_type == &"boss" \
-		else &"defeated_monster_count"
-	)
+	var counter_key := &"defeated_monster_count"
 	player.turn_facts[counter_key] = int(player.turn_facts.get(counter_key, 0)) + 1
-	if target_definition.card_type == &"boss":
-		player.counters[&"defeated_boss_count"] = int(
-			player.counters.get(&"defeated_boss_count", 0)
-		) + 1
-		events.append({
-			"type": "boss_defeated",
-			"actor_id": str(actor_id),
-			"target_card_id": str(target_card_id),
-			"participant_ids": participant_ids.duplicate(),
-			"defeated_boss_count": int(player.counters[&"defeated_boss_count"]),
-		})
-		var boss_active := state.zones[BossServiceType.BOSS_ACTIVE_ID] as ZoneData
-		if bool(boss_active.metadata.get("all_bosses_defeated", false)):
-			events.append({"type": "all_bosses_defeated", "actor_id": str(actor_id)})
-		else:
-			events.append({"type": "boss_reveal_deferred", "phase": "rest"})
 	events.append({
 		"type": "enemy_defeated",
 		"actor_id": str(actor_id),
@@ -319,6 +318,149 @@ static func apply(
 		"defeated_monster_count": int(player.turn_facts.get(&"defeated_monster_count", 0)),
 	})
 	return ""
+
+
+static func _apply_combat_departures(
+	state: GameStateData,
+	player: PlayerStateData,
+	participant_ids: Array,
+	target_definition: CardDefinition,
+	definitions: Dictionary,
+	events: Array[Dictionary]
+) -> String:
+	var replacement_rule: Dictionary = {}
+	if target_definition.card_type == &"boss":
+		for rule: Dictionary in target_definition.special_rules:
+			if StringName(rule.get("op", "")) == &"replace_combat_departure":
+				replacement_rule = rule
+	var returned_to_supply := false
+	for raw_participant_id: Variant in participant_ids:
+		var participant_id := StringName(str(raw_participant_id))
+		if replacement_rule.is_empty():
+			var error := PartyService.discard_party_member_with_equipment(
+				state, player, participant_id, &"combat_departure", events
+			)
+			if not error.is_empty():
+				return error
+			continue
+		var card := state.cards[participant_id] as Dictionary
+		var definition := definitions.get(StringName(card.get("definition_id", ""))) as CardDefinition
+		var is_starter := definition != null and &"starter" in definition.tags
+		var destination_zone_id := _departure_destination_zone_id(
+			replacement_rule, player, is_starter
+		)
+		var equipment_destination_zone_id := StringName(player.zone_ids.get(
+			StringName(replacement_rule.get("equipment_destination_zone_key", "discard_pile")), &""
+		))
+		if destination_zone_id.is_empty() or not state.zones.has(destination_zone_id) \
+				or equipment_destination_zone_id.is_empty() \
+				or not state.zones.has(equipment_destination_zone_id):
+			return "Boss departure replacement references an invalid destination"
+		var error := PartyService.move_party_member_with_equipment(
+			state, player, participant_id, destination_zone_id,
+			equipment_destination_zone_id,
+			&"boss_combat_departure_replaced", events
+		)
+		if not error.is_empty():
+			return error
+		if destination_zone_id not in player.zone_ids.values():
+			card["owner_id"] = ""
+			returned_to_supply = true
+	if returned_to_supply and bool(replacement_rule.get("shuffle_destination", false)):
+		var deck_id := StringName(replacement_rule.get("destination_zone_id", ""))
+		var deck := state.zones.get(deck_id) as ZoneData
+		if deck == null or deck.kind != &"ordered_deck":
+			return "Boss departure shuffle destination must be an ordered deck"
+		deck.metadata.erase("depletion_announced")
+		var rng := DeterministicRng.new(state.seed_value, state.rng_state)
+		rng.shuffle(deck.card_instance_ids)
+		state.rng_state = rng.get_state()
+		events.append({
+			"type": "supply_deck_shuffled", "zone_id": str(deck.zone_id),
+			"reason": "boss_departure_replacement", "card_count": deck.card_instance_ids.size(),
+		})
+	return ""
+
+
+static func _departure_destination_zone_id(
+	rule: Dictionary, player: PlayerStateData, is_starter: bool
+) -> StringName:
+	if is_starter:
+		return StringName(player.zone_ids.get(
+			StringName(rule.get("starter_destination_zone_key", "")), &""
+		))
+	if rule.has("destination_zone_id"):
+		return StringName(rule.get("destination_zone_id", ""))
+	return StringName(player.zone_ids.get(
+		StringName(rule.get("destination_zone_key", "")), &""
+	))
+
+
+static func _request_post_departure_cost(
+	state: GameStateData,
+	actor_id: StringName,
+	target_card_id: StringName,
+	target_definition: CardDefinition,
+	reward_effects: Array[Dictionary],
+	completion: Dictionary,
+	events: Array[Dictionary],
+	definitions: Dictionary
+) -> String:
+	var player := state.players[actor_id] as PlayerStateData
+	var cost_rule: Dictionary = {}
+	for rule: Dictionary in target_definition.special_rules:
+		if StringName(rule.get("op", "")) == &"post_departure_cost":
+			cost_rule = rule
+			break
+	var source_zone_key := StringName(cost_rule.get("source_zone_key", "hand"))
+	var destination_zone_key := StringName(cost_rule.get("destination_zone_key", "discard_pile"))
+	var required_card_type := StringName(cost_rule.get("card_type", ""))
+	var hand := state.zones.get(StringName(player.zone_ids.get(source_zone_key, &""))) as ZoneData
+	if hand == null or required_card_type.is_empty() \
+			or not player.zone_ids.has(destination_zone_key):
+		return "Post-departure cost rule is invalid"
+	var eligible_ids: Array[String] = []
+	for card_id: StringName in hand.card_instance_ids:
+		var card := state.cards[card_id] as Dictionary
+		var definition := definitions.get(StringName(card.get("definition_id", ""))) as CardDefinition
+		if definition != null and definition.card_type == required_card_type:
+			eligible_ids.append(str(card_id))
+	if eligible_ids.is_empty():
+		events.append({
+			"type": "boss_attack_failed", "actor_id": str(actor_id),
+			"target_card_id": str(target_card_id),
+			"reason": "post_departure_cost_unpayable",
+			"participant_ids": (completion.get("participant_ids", []) as Array).duplicate(),
+		})
+		return ""
+	completion["remaining_effects"] = reward_effects.duplicate(true)
+	state.effect_state = {
+		"type": "pending_choice", "choice_id": "choice-%06d" % (state.revision + 1),
+		"actor_id": str(actor_id), "required_actor_id": str(actor_id),
+		"op": "pay_post_departure_cost",
+		"prompt": str(cost_rule.get("prompt", "支付討伐所需代價")),
+		"source_zone_id": str(hand.zone_id), "source_zone_key": str(source_zone_key),
+		"destination_zone_id": str(player.zone_ids[destination_zone_key]),
+		"eligible_card_ids": eligible_ids, "selected_card_ids": [], "selected_count": 0,
+		"min_selections": 1, "max_selections": 1, "required_card_type": str(required_card_type),
+		"source_card_instance_id": str(target_card_id),
+		"source_rule": cost_rule.duplicate(true),
+		"boss_completion": completion.duplicate(true),
+	}
+	events.append({
+		"type": "choice_requested", "choice_id": str(state.effect_state["choice_id"]),
+		"actor_id": str(actor_id), "required_actor_id": str(actor_id),
+		"op": "pay_post_departure_cost", "eligible_card_ids": eligible_ids,
+		"optional": false, "source_card_instance_id": str(target_card_id),
+	})
+	return ""
+
+
+static func _has_boss_rule(definition: CardDefinition, operation: StringName) -> bool:
+	for rule: Dictionary in definition.special_rules:
+		if StringName(rule.get("op", "")) == operation:
+			return true
+	return false
 
 
 static func _printed_label(value: Variant) -> String:
