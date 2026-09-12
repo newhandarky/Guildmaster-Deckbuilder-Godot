@@ -1,7 +1,7 @@
 {
   "manifest": {
     "pack_id": "base:vertical-slice",
-    "version": "0.17.0",
+    "version": "0.18.0",
     "includes_custom_adventurers": false
   },
   "definitions": [
@@ -389,47 +389,34 @@
     {"definition_id":"base:adventurer/adventurer-28","display_name":"塔菲娜","card_type":"adventurer","copies":2,"cost":3,"combat":1,"honor":1,"tags":["adventurer","support"],"rules_text":"進入隊伍時可以抽 1 張牌；每次成功配戴裝備時可以抽 1 張牌。","effects":[{"op":"draw","timing":"on_enter_party","amount":1,"optional":true,"prompt":"可以抽 1 張牌"},{"op":"draw","timing":"on_equipment_attached","amount":1,"optional":true,"prompt":"塔菲娜配戴裝備後，可以抽 1 張牌"}],"presentation_id":"base:presentation/adventurer-support"},
     {"definition_id":"base:adventurer/adventurer-29","display_name":"莉迪亞","card_type":"adventurer","copies":2,"cost":4,"combat":1,"honor":1,"tags":["adventurer","mage"],"rules_text":"此冒險者最多可以配戴 3 張裝備；第四件時由玩家選擇替換。","effects":[{"op":"equipment_policy","timing":"continuous","capacity":3,"replacement":"choose"}],"presentation_id":"base:presentation/adventurer-mage"},
     {"definition_id":"base:adventurer/adventurer-30","display_name":"尤伊爾","card_type":"adventurer","copies":2,"cost":5,"combat":0,"honor":3,"tags":["adventurer","support"],"rules_text":"討伐階段結束時，若本回合有擊敗魔物或魔王，可以從自己的手牌、隊伍或棄牌堆移除 1 張牌。","effects":[{"op":"choose_remove_card","timing":"on_combat_end","condition":"defeated_enemy","source_zone_keys":["hand","party","discard_pile"],"amount":1,"optional":true,"prompt":"可以從自己的手牌、隊伍或棄牌堆移除 1 張牌"}],"presentation_id":"base:presentation/adventurer-support"},
-    {
-      "definition_id": "base:resource/resource-02",
-      "display_name": "火焰拳套",
-      "card_type": "equipment",
-      "copies": 3,
-      "cost": 5,
-      "combat": 1,
-      "honor": 2,
-      "tags": ["equipment"],
-      "effects": [
-        {"op": "conditional_combat", "amount": 1, "timing": "continuous", "condition": "equipped_target_tag", "tag": "melee"}
-      ],
-      "presentation_id": "base:presentation/fire-gloves"
-    },
-    {
-      "definition_id": "base:resource/resource-03",
-      "display_name": "邪魅法典",
-      "card_type": "equipment",
-      "copies": 3,
-      "cost": 5,
-      "combat": 1,
-      "honor": 2,
-      "tags": ["equipment"],
-      "effects": [
-        {"op": "conditional_combat", "amount": 1, "timing": "continuous", "condition": "equipped_target_tag", "tag": "support"}
-      ],
-      "presentation_id": "base:presentation/charming-grimoire"
-    },
-    {
-      "definition_id": "base:resource/resource-08",
-      "display_name": "櫻花果子",
-      "card_type": "item",
-      "copies": 2,
-      "cost": 4,
-      "honor": 1,
-      "tags": ["item"],
-      "effects": [
-        {"op": "draw", "amount": 2, "timing": "on_use"}
-      ],
-      "presentation_id": "base:presentation/sakura-fruit"
-    },
+    {"definition_id":"base:resource/resource-01","display_name":"特大治癒藥水","card_type":"item","copies":3,"cost":3,"honor":1,"tags":["item"],"rules_text":"從棄牌堆取回 1 張冒險者至手牌。","effects":[{"op":"choose_move_card","timing":"on_use","source_zone_key":"discard_pile","destination_zone_key":"hand","allowed_tags":["adventurer"],"amount":1,"optional":true,"prompt":"可以從自己的棄牌堆取回 1 張冒險者至手牌"}],"presentation_id":"base:presentation/resource-01"},
+    {"definition_id":"base:resource/resource-02","display_name":"火焰拳套","card_type":"equipment","copies":3,"cost":5,"combat":1,"honor":2,"tags":["equipment"],"rules_text":"若由近戰冒險者配戴，額外增加戰力 1。","effects":[{"op":"conditional_combat","amount":1,"timing":"continuous","condition":"equipped_target_tag","tag":"melee"}],"presentation_id":"base:presentation/fire-gloves"},
+    {"definition_id":"base:resource/resource-03","display_name":"邪魅法典","card_type":"equipment","copies":3,"cost":5,"combat":1,"honor":2,"tags":["equipment"],"rules_text":"若由輔助冒險者配戴，額外增加戰力 1。","effects":[{"op":"conditional_combat","amount":1,"timing":"continuous","condition":"equipped_target_tag","tag":"support"}],"presentation_id":"base:presentation/charming-grimoire"},
+    {"definition_id":"base:resource/resource-04","display_name":"驅邪聖水","card_type":"item","copies":2,"cost":2,"honor":1,"tags":["item"],"rules_text":"從手牌棄置 1 張魔物後，抽 3 張牌。","effects":[{"op":"discard_card_cost","timing":"on_use","source_zone_key":"hand","allowed_card_types":["monster"],"amount":1,"prompt":"從自己的手牌棄置 1 張魔物，才能抽 3 張牌","then_effects":[{"op":"draw","amount":3}]}],"presentation_id":"base:presentation/resource-04"},
+    {"definition_id":"base:resource/resource-05","display_name":"維修道具包","card_type":"item","copies":2,"cost":3,"honor":1,"tags":["item"],"rules_text":"從棄牌堆取回 1 張裝備至手牌。","effects":[{"op":"choose_move_card","timing":"on_use","source_zone_key":"discard_pile","destination_zone_key":"hand","allowed_tags":["equipment"],"amount":1,"optional":true,"prompt":"可以從自己的棄牌堆取回 1 張裝備至手牌"}],"presentation_id":"base:presentation/resource-05"},
+    {"definition_id":"base:resource/resource-06","display_name":"貓咪娃娃","card_type":"item","copies":2,"cost":1,"honor":-1,"tags":["item"],"rules_text":"沒有主動使用效果。購買或棄置時，改放入目前持有者右側玩家的棄牌堆。","effects":[{"op":"discard_destination_replacement","timing":"transition","destination":"right_player_discard"}],"presentation_id":"base:presentation/resource-06"},
+    {"definition_id":"base:resource/resource-07","display_name":"透視眼鏡","card_type":"equipment","copies":2,"cost":5,"combat":1,"honor":2,"tags":["equipment"],"rules_text":"若由遠程冒險者配戴，額外增加戰力 1。","effects":[{"op":"conditional_combat","amount":1,"timing":"continuous","condition":"equipped_target_tag","tag":"ranged"}],"presentation_id":"base:presentation/resource-07"},
+    {"definition_id":"base:resource/resource-08","display_name":"櫻花果子","card_type":"item","copies":2,"cost":4,"honor":1,"tags":["item"],"rules_text":"抽 2 張牌。","effects":[{"op":"draw","amount":2,"timing":"on_use"}],"presentation_id":"base:presentation/sakura-fruit"},
+    {"definition_id":"base:resource/resource-09","display_name":"詛咒之槍","card_type":"equipment","copies":2,"cost":6,"combat":3,"honor":3,"tags":["equipment"],"rules_text":"若討伐的是魔王，戰力 +2。","effects":[{"op":"conditional_combat","timing":"continuous","condition":"target_card_type","target_card_type":"boss","amount":2}],"presentation_id":"base:presentation/resource-09"},
+    {"definition_id":"base:resource/resource-10","display_name":"大號梳毛梳","card_type":"item","copies":2,"cost":3,"honor":1,"tags":["item"],"rules_text":"棄置 1 張手牌後，抽 2 張牌。","effects":[{"op":"discard_card_cost","timing":"on_use","source_zone_key":"hand","amount":1,"prompt":"從自己的手牌棄置 1 張牌，才能抽 2 張牌","then_effects":[{"op":"draw","amount":2}]}],"presentation_id":"base:presentation/resource-10"},
+    {"definition_id":"base:resource/resource-11","display_name":"寫滿的行程表","card_type":"equipment","copies":2,"cost":6,"combat":2,"honor":2,"tags":["equipment"],"rules_text":"其他隊友戰力 +1。","effects":[{"op":"equipment_party_combat_aura","timing":"continuous","selector":"all","exclude_wearer":true,"amount":1}],"presentation_id":"base:presentation/resource-11"},
+    {"definition_id":"base:resource/resource-12","display_name":"真龍斧連枷","card_type":"equipment","copies":2,"cost":5,"combat":3,"honor":2,"tags":["equipment"],"rules_text":"配戴者因討伐棄置時，此裝備移出遊戲。","effects":[{"op":"equipment_departure_destination","timing":"on_combat_departure","destination_zone_key":"removed"}],"presentation_id":"base:presentation/resource-12"},
+    {"definition_id":"base:resource/resource-13","display_name":"賢者之石","card_type":"item","copies":2,"cost":3,"honor":1,"tags":["item"],"rules_text":"從棄牌堆取回 1 張賢者之石以外的道具至手牌。","effects":[{"op":"choose_move_card","timing":"on_use","source_zone_key":"discard_pile","destination_zone_key":"hand","allowed_card_types":["item"],"exclude_source_definition":true,"amount":1,"optional":true,"prompt":"可以從自己的棄牌堆取回 1 張其他道具至手牌"}],"presentation_id":"base:presentation/resource-13"},
+    {"definition_id":"base:resource/resource-14","display_name":"絲綢緞帶","card_type":"equipment","copies":2,"cost":3,"honor":2,"tags":["equipment"],"rules_text":"僅能由輔助或法師冒險者配戴；使配戴者前後相鄰冒險者各增加戰力 2。配戴者因討伐棄置時，此裝備移出遊戲。","effects":[{"op":"equipment_policy","timing":"continuous","allowed_target_tags":["support","mage"]},{"op":"equipment_party_combat_aura","timing":"continuous","selector":"adjacent_to_wearer","amount":2},{"op":"equipment_departure_destination","timing":"on_combat_departure","destination_zone_key":"removed"}],"presentation_id":"base:presentation/resource-14"},
+    {"definition_id":"base:resource/resource-15","display_name":"魔法除塵撢","card_type":"item","copies":2,"cost":4,"honor":1,"tags":["item"],"rules_text":"可以從自己的手牌、隊伍或棄牌堆移除 1 張牌。","effects":[{"op":"choose_remove_card","timing":"on_use","source_zone_keys":["hand","party","discard_pile"],"amount":1,"optional":true,"prompt":"可以從自己的手牌、隊伍或棄牌堆移除 1 張牌"}],"presentation_id":"base:presentation/resource-15"},
+    {"definition_id":"base:resource/resource-16","display_name":"鬼哭太刀","card_type":"equipment","copies":2,"cost":6,"combat":2,"honor":2,"tags":["equipment"],"rules_text":"僅能由坦克或近戰冒險者配戴。討伐時可以棄置 1 張手牌中的魔物或魔王，使配戴者本次戰力增加該卡印刷購買力。","effects":[{"op":"equipment_policy","timing":"continuous","allowed_target_tags":["tank","melee"]},{"op":"discard_for_equipment_combat","timing":"on_attack","allowed_card_types":["monster","boss"],"value_field":"purchase_power","optional":true,"once_per_attack":true}],"presentation_id":"base:presentation/resource-16"},
+    {"definition_id":"base:resource/resource-17","display_name":"金色水晶球","card_type":"item","copies":2,"cost":4,"honor":2,"tags":["item"],"rules_text":"抽 3 張牌後，從手牌棄置 1 張牌。","effects":[{"op":"draw_then_choose_discard","timing":"on_use","draw_amount":3,"discard_amount":1}],"presentation_id":"base:presentation/resource-17"},
+    {"definition_id":"base:resource/resource-18","display_name":"名貴的首飾","card_type":"equipment","copies":2,"cost":4,"combat":2,"honor":1,"tags":["equipment"],"rules_text":"擊敗魔物或魔王後，若配戴者仍在隊伍中，抽 1 張牌。","effects":[{"op":"draw","timing":"on_enemy_defeated_if_attached","amount":1}],"presentation_id":"base:presentation/resource-18"},
+    {"definition_id":"base:resource/resource-19","display_name":"靈能法杖","card_type":"equipment","copies":2,"cost":4,"combat":1,"honor":1,"tags":["equipment"],"rules_text":"僅能由法師或輔助冒險者配戴。討伐階段結束時，若本回合有擊敗魔物或魔王，抽 2 張牌。","effects":[{"op":"equipment_policy","timing":"continuous","allowed_target_tags":["mage","support"]},{"op":"draw","timing":"on_combat_end","condition":"defeated_enemy","amount":2}],"presentation_id":"base:presentation/resource-19"},
+    {"definition_id":"base:resource/resource-20","display_name":"充能魔劍","card_type":"equipment","copies":2,"cost":5,"combat":2,"honor":2,"tags":["equipment"],"rules_text":"討伐階段開始時，可以棄置任意數量手牌；每棄 1 張，每把充能魔劍的配戴者本階段戰力 +1。","effects":[{"op":"discard_hand_for_equipment_combat","timing":"on_combat_start","amount_each":1,"optional":true}],"presentation_id":"base:presentation/resource-20"},
+    {"definition_id":"base:resource/resource-21","display_name":"精緻的耳環","card_type":"equipment","copies":2,"cost":4,"combat":1,"honor":1,"tags":["equipment"],"rules_text":"購買階段時，若本回合有擊敗魔物或魔王，獲得購買力 2。","effects":[{"op":"grant_purchase_power","timing":"on_purchase_start","condition":"defeated_enemy","amount":2}],"presentation_id":"base:presentation/resource-21"},
+    {"definition_id":"base:resource/resource-22","display_name":"調教手銬","card_type":"item","copies":2,"cost":3,"honor":1,"tags":["item"],"rules_text":"指定場上 1 張魔物；回合結束前，目標戰力 -1。","effects":[{"op":"choose_target_combat_modifier","timing":"on_use","source_zone_id":"shared:monster-row","allowed_card_types":["monster"],"amount":-1,"expiry":"turn_end","optional":true,"prompt":"可以指定 1 隻公開魔物，本回合戰力 -1"}],"presentation_id":"base:presentation/resource-22"},
+    {"definition_id":"base:resource/resource-23","display_name":"元素卷軸","card_type":"item","copies":2,"cost":4,"honor":2,"tags":["item"],"rules_text":"將隊伍及手牌全部棄置後抽 5 張；每回合只能發動 1 次。","effects":[{"op":"discard_zones_then_draw","timing":"on_use","source_zone_keys":["party","hand"],"draw_amount":5,"once_per_turn":true}],"presentation_id":"base:presentation/resource-23"},
+    {"definition_id":"base:resource/resource-24","display_name":"聖龍護符","card_type":"equipment","copies":2,"cost":4,"combat":1,"honor":1,"tags":["equipment"],"rules_text":"配戴者因討伐棄置時，完成離場後抽 2 張牌。","effects":[{"op":"draw","timing":"on_combat_departure","amount":2}],"presentation_id":"base:presentation/resource-24"},
+    {"definition_id":"base:resource/resource-25","display_name":"騎士之盾","card_type":"equipment","copies":2,"cost":5,"combat":1,"honor":2,"tags":["equipment"],"rules_text":"若由坦克冒險者配戴，額外增加戰力 1。","effects":[{"op":"conditional_combat","amount":1,"timing":"continuous","condition":"equipped_target_tag","tag":"tank"}],"presentation_id":"base:presentation/resource-25"},
+    {"definition_id":"base:resource/resource-26","display_name":"專用茶杯","card_type":"item","copies":2,"cost":4,"honor":1,"tags":["item"],"rules_text":"抽 3 張牌；本回合跳過討伐階段。若本回合已擊敗敵人則無法使用。","effects":[{"op":"draw_and_skip_combat","timing":"on_use","amount":3,"condition":"not_defeated_enemy"}],"presentation_id":"base:presentation/resource-26"},
+    {"definition_id":"base:resource/resource-27","display_name":"牛皮紙樂譜","card_type":"item","copies":2,"cost":5,"honor":2,"tags":["item"],"rules_text":"抽取等同目前隊伍職業種類數量的牌。","effects":[{"op":"draw_by_party_professions","timing":"on_use"}],"presentation_id":"base:presentation/resource-27"},
+    {"definition_id":"base:resource/resource-28","display_name":"特製高級紅酒","card_type":"item","copies":2,"cost":3,"honor":1,"tags":["item"],"rules_text":"從手牌棄置 1 張冒險者後，依該卡印刷戰力抽牌。","effects":[{"op":"discard_card_cost","timing":"on_use","source_zone_key":"hand","allowed_tags":["adventurer"],"amount":1,"prompt":"從自己的手牌棄置 1 張冒險者，依其印刷戰力抽牌","then_effects":[{"op":"draw","amount_from_selected_field":"combat"}]}],"presentation_id":"base:presentation/resource-28"},
     {
       "definition_id": "base:boss/boss-01", "display_name": "紅龍", "card_type": "boss", "copies": 1,
       "combat": 9, "purchase_power": 3, "honor": 10, "tags": ["enemy", "boss"],

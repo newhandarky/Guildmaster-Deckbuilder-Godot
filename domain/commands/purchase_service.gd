@@ -104,7 +104,14 @@ static func apply(
 	if not bool(move_result.get("ok", false)):
 		return str(move_result.get("error", "purchase_move_failed"))
 	var card := state.cards[card_instance_id] as Dictionary
-	card["owner_id"] = str(actor_id)
+	var actual_destination_id := StringName((move_result.get("event", {}) as Dictionary).get(
+		"to_zone_id", player.zone_ids[&"discard_pile"]
+	))
+	var actual_destination := state.zones.get(actual_destination_id) as ZoneData
+	card["owner_id"] = str(
+		actual_destination.metadata.get("owner_id", actor_id)
+		if actual_destination != null else actor_id
+	)
 	player.spent_purchase_power += cost
 	var move_event: Dictionary = (move_result.get("event", {}) as Dictionary).duplicate(true)
 	move_event["reason"] = "card_purchased"
@@ -114,6 +121,7 @@ static func apply(
 		"actor_id": str(actor_id),
 		"card_instance_id": str(card_instance_id),
 		"source_row_id": str(row_zone_id),
+		"owner_id": str(card.get("owner_id", "")),
 		"cost": cost,
 		"remaining_purchase_power": int(
 			ResourceService.evaluate_player(state, actor_id, definitions).get("purchase_power", 0)

@@ -217,6 +217,23 @@ static func _party_aura_bonus(
 			if selector == &"adjacent" and absi(target_index - source_index) != 1:
 				continue
 			bonus += int(effect.get("amount", 0))
+		var source_card := state.cards.get(source_id) as Dictionary
+		var source_state := source_card.get("state", {}) as Dictionary if source_card != null else {}
+		for raw_equipment_id: Variant in source_state.get("equipment_ids", []):
+			var equipment_definition := _definition_for_card(
+				state, definitions, StringName(str(raw_equipment_id))
+			)
+			if equipment_definition == null:
+				continue
+			for effect: Dictionary in equipment_definition.effects:
+				if StringName(effect.get("op", "")) != &"equipment_party_combat_aura":
+					continue
+				var selector := StringName(effect.get("selector", "all"))
+				if bool(effect.get("exclude_wearer", false)) and source_id == target_card_id:
+					continue
+				if selector == &"adjacent_to_wearer" and absi(target_index - source_index) != 1:
+					continue
+				bonus += int(effect.get("amount", 0))
 	return bonus
 
 

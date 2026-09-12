@@ -7,8 +7,8 @@ const BossServiceType = preload("res://domain/state/boss_service.gd")
 
 var schema_version: int = 1
 var game_id: StringName = &"game-demo-001"
-var content_version: String = "0.17.0"
-var ruleset_version: String = "0.17.0"
+var content_version: String = "0.18.0"
+var ruleset_version: String = "0.18.0"
 var seed_value: int = 20260909
 var rng_state: int = 0
 var revision: int = 0
@@ -284,7 +284,7 @@ static func create_vertical_slice(seed: int = 20260909, definitions: Dictionary 
 	])
 	monsters.metadata = {"cycle_anchor": "card-monster-skeleton-01"}
 	state.zones[monsters.zone_id] = monsters
-	_add_vertical_slice_supplies(state)
+	_add_vertical_slice_supplies(state, definitions)
 	BossServiceType.setup(state, definitions)
 	return state
 
@@ -437,7 +437,7 @@ static func _add_official_starting_cards(state: GameStateData, player: PlayerSta
 	hand.card_instance_ids.append(crystal_id)
 
 
-static func _add_vertical_slice_supplies(state: GameStateData) -> void:
+static func _add_vertical_slice_supplies(state: GameStateData, definitions: Dictionary) -> void:
 	var recruit_deck := ZoneDataType.new(SupplyService.RECRUIT_DECK_ID, &"ordered_deck", &"hidden")
 	var recruit_row := ZoneDataType.new(SupplyService.RECRUIT_ROW_ID, &"face_up_row", &"public")
 	var shop_deck := ZoneDataType.new(SupplyService.SHOP_DECK_ID, &"ordered_deck", &"hidden")
@@ -458,12 +458,12 @@ static func _add_vertical_slice_supplies(state: GameStateData) -> void:
 			"base:adventurer/adventurer-%02d" % adventurer_number,
 			2
 		)
-	for supply_spec: Array in [
-		["base:resource/resource-02", 3],
-		["base:resource/resource-03", 3],
-		["base:resource/resource-08", 2],
-	]:
-		_add_supply_copies(state, shop_deck, str(supply_spec[0]), int(supply_spec[1]))
+	for resource_number in range(1, 29):
+		var definition_id := "base:resource/resource-%02d" % resource_number
+		var copy_count := 3 if resource_number <= 3 else 2
+		_add_supply_copies(
+			state, shop_deck, definition_id, copy_count, definitions
+		)
 
 	var rng := DeterministicRng.new(state.seed_value, state.rng_state)
 	rng.shuffle(recruit_deck.card_instance_ids)
@@ -478,16 +478,25 @@ static func _add_supply_copies(
 	state: GameStateData,
 	deck: ZoneData,
 	definition_id: String,
-	count: int
+	count: int,
+	definitions: Dictionary = {}
 ) -> void:
 	var slug := definition_id.get_slice("/", 1)
 	for copy_number in range(1, count + 1):
 		var instance_id := StringName("card-supply-%s-%02d" % [slug, copy_number])
+		var runtime_state := {}
+		var definition := definitions.get(StringName(definition_id)) as CardDefinition
+		if definition != null:
+			for effect: Dictionary in definition.effects:
+				if StringName(effect.get("op", "")) == &"discard_destination_replacement":
+					runtime_state["discard_destination_replacement"] = str(
+						effect.get("destination", "")
+					)
 		state.cards[instance_id] = {
 			"instance_id": str(instance_id),
 			"definition_id": definition_id,
 			"owner_id": "",
-			"state": {},
+			"state": runtime_state,
 		}
 		deck.card_instance_ids.append(instance_id)
 

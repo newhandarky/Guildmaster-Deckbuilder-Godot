@@ -10,7 +10,7 @@ static func get_legal_commands(
 	definitions: Dictionary
 ) -> Array[Dictionary]:
 	var commands: Array[Dictionary] = []
-	if not state.phase in ACTION_PHASES:
+	if state.phase not in ACTION_PHASES and state.phase != &"combat":
 		return commands
 	var player := state.players.get(actor_id) as PlayerStateData
 	if player == null:
@@ -19,6 +19,8 @@ static func get_legal_commands(
 	var party := state.zones.get(player.zone_ids.get(&"party", &"")) as ZoneData
 	if hand == null or party == null:
 		return commands
+	if state.phase == &"combat":
+		return _get_combat_effect_commands(state, actor_id, definitions, hand)
 	for card_instance_id: StringName in hand.card_instance_ids:
 		var definition := _definition_for_card(state, definitions, card_instance_id)
 		if definition == null:
@@ -51,12 +53,44 @@ static func get_legal_commands(
 	return commands
 
 
+static func _get_combat_effect_commands(
+	state: GameStateData,
+	actor_id: StringName,
+	definitions: Dictionary,
+	hand: ZoneData
+) -> Array[Dictionary]:
+	var commands: Array[Dictionary] = []
+	var player := state.players.get(actor_id) as PlayerStateData
+	var equipment := state.zones.get(player.zone_ids.get(&"equipment", &"")) as ZoneData
+	if equipment == null:
+		return commands
+	for equipment_id: StringName in equipment.card_instance_ids:
+		var definition := _definition_for_card(state, definitions, equipment_id)
+		if definition == null or bool(player.turn_facts.get("equipment_attack_used:%s" % equipment_id, false)):
+			continue
+		for effect_index in definition.effects.size():
+			var effect := definition.effects[effect_index]
+			if StringName(effect.get("op", "")) != &"discard_for_equipment_combat" \
+					or StringName(effect.get("timing", "")) != &"on_attack":
+				continue
+			var has_candidate := false
+			for hand_id: StringName in hand.card_instance_ids:
+				var hand_definition := _definition_for_card(state, definitions, hand_id)
+				has_candidate = has_candidate or (hand_definition != null \
+						and hand_definition.card_type in _string_names(effect.get("allowed_card_types", [])))
+			if has_candidate:
+				commands.append({"type":"ACTIVATE_EQUIPMENT_EFFECT","actor_id":str(actor_id),"expected_revision":state.revision,"card_instance_id":str(equipment_id),"effect_index":effect_index})
+	return commands
+
+
 static func validate(
 	state: GameStateData,
 	actor_id: StringName,
 	command: Dictionary,
 	definitions: Dictionary
 ) -> String:
+	if StringName(command.get("type", "")) == &"ACTIVATE_EQUIPMENT_EFFECT":
+		return _validate_combat_effect(state, actor_id, command, definitions)
 	if not state.phase in ACTION_PHASES:
 		return "wrong_phase"
 	var player := state.players.get(actor_id) as PlayerStateData
@@ -96,7 +130,40 @@ static func validate(
 	if not is_self_equipment \
 			and definition.card_type not in (policy.get("allowed_card_types", [&"equipment"]) as Array):
 		return "unsupported_card_type"
+	if not is_self_equipment:
+		for effect: Dictionary in definition.effects:
+			if StringName(effect.get("op", "")) != &"equipment_policy":
+				continue
+			var allowed_target_tags: Array[StringName] = []
+			for raw_tag: Variant in effect.get("allowed_target_tags", []):
+				allowed_target_tags.append(StringName(str(raw_tag)))
+			if not allowed_target_tags.is_empty():
+				var matches := false
+				for tag: StringName in allowed_target_tags:
+					matches = matches or tag in target_definition.tags
+				if not matches:
+					return "equipment_target_tag_restricted"
 	return ""
+
+
+static func _validate_combat_effect(
+	state: GameStateData, actor_id: StringName, command: Dictionary, definitions: Dictionary
+) -> String:
+	if state.phase != &"combat": return "wrong_phase"
+	var player := state.players.get(actor_id) as PlayerStateData
+	var equipment_id := StringName(command.get("card_instance_id", ""))
+	if player == null or ZoneService.find_card_zone(state, equipment_id) != StringName(player.zone_ids.get(&"equipment", &"")): return "equipment_not_attached"
+	if bool(player.turn_facts.get("equipment_attack_used:%s" % equipment_id, false)): return "equipment_effect_already_used"
+	var definition := _definition_for_card(state, definitions, equipment_id)
+	var effect_index := int(command.get("effect_index", -1))
+	if definition == null or effect_index < 0 or effect_index >= definition.effects.size(): return "missing_equipment_effect"
+	var effect := definition.effects[effect_index]
+	if StringName(effect.get("op", "")) != &"discard_for_equipment_combat": return "unsupported_equipment_effect"
+	var hand := state.zones.get(player.zone_ids.get(&"hand", &"")) as ZoneData
+	for card_id: StringName in hand.card_instance_ids if hand != null else []:
+		var card_definition := _definition_for_card(state, definitions, card_id)
+		if card_definition != null and card_definition.card_type in _string_names(effect.get("allowed_card_types", [])): return ""
+	return "equipment_cost_unpayable"
 
 
 static func apply(
@@ -109,6 +176,8 @@ static func apply(
 	var validation_error := validate(state, actor_id, command, definitions)
 	if not validation_error.is_empty():
 		return validation_error
+	if StringName(command.get("type", "")) == &"ACTIVATE_EQUIPMENT_EFFECT":
+		return _apply_combat_effect(state, actor_id, command, definitions, events)
 	var player := state.players[actor_id] as PlayerStateData
 	var card_instance_id := StringName(command.get("card_instance_id", ""))
 	var target_card_id := StringName(command.get("target_card_id", ""))
@@ -209,6 +278,27 @@ static func apply(
 	)
 
 
+static func _apply_combat_effect(
+	state: GameStateData, actor_id: StringName, command: Dictionary,
+	definitions: Dictionary, events: Array[Dictionary]
+) -> String:
+	var player := state.players[actor_id] as PlayerStateData
+	var equipment_id := StringName(command.get("card_instance_id", ""))
+	var equipment_card := state.cards[equipment_id] as Dictionary
+	var wearer_id := str((equipment_card.get("state", {}) as Dictionary).get("equipped_to", ""))
+	var definition := _definition_for_card(state, definitions, equipment_id)
+	var effect := definition.effects[int(command.get("effect_index", -1))]
+	var cost_effect := {
+		"op":"discard_card_cost", "source_zone_key":"hand", "amount":1,
+		"allowed_card_types":(effect.get("allowed_card_types", []) as Array).duplicate(),
+		"source_card_instance_id":str(equipment_id),
+		"prompt":"棄置 1 張手牌中的魔物或魔王，依其印刷購買力增加配戴者戰力",
+		"then_effects":[{"op":"grant_card_combat_from_selected_field","field":str(effect.get("value_field", "purchase_power")),"target_card_id":wearer_id,"source_equipment_id":str(equipment_id)}],
+	}
+	player.turn_facts["equipment_attack_used:%s" % equipment_id] = true
+	return EffectResolver.resolve(state, actor_id, [cost_effect], events, definitions)
+
+
 static func _equipment_policy(definition: CardDefinition) -> Dictionary:
 	var policy := {"capacity": 1, "allowed_card_types": [&"equipment"], "replacement": "automatic"}
 	if definition == null:
@@ -242,3 +332,10 @@ static func _definition_for_card(
 	if card == null:
 		return null
 	return definitions.get(StringName(card.get("definition_id", ""))) as CardDefinition
+
+
+static func _string_names(values: Variant) -> Array[StringName]:
+	var result: Array[StringName] = []
+	for value: Variant in values if values is Array else []:
+		result.append(StringName(str(value)))
+	return result

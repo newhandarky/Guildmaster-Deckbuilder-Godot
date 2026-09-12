@@ -37,6 +37,8 @@ godot --headless --path . --script res://tests/headless/run_smoke.gd
 
 0.17.0 已補齊 30 種官方冒險者、每種 2 張，共 60 張正式招募供應；名稱、費用、戰力、榮譽、職業、份數、卡面文案與效果均來自企劃文件，自定義冒險者未混入。共用 operation 涵蓋隊伍進場、戰鬥開始／結束、條件與位置戰力、公開魔物指定／刷新、私有牌庫查看／移除／排序、卡牌移動、供應取得、骰子、裝備政策與冒險者作為裝備；多步流程沿用正式 Zone、`pending_choice`、Legal Commands、Snapshot 與 deterministic hash。招募區空位仍只在休息階段補滿。
 
-正式卡池逐卡對照見 [`content/packs/OFFICIAL_ADVENTURERS.md`](content/packs/OFFICIAL_ADVENTURERS.md)。
+0.18.0 已補齊 28 種官方物資（物資 01～03 各 3 張、其餘各 2 張，共 59 張）。共用效果支援棄牌成本與後續效果、棄牌堆回收、多區域移除、抽牌、全隊／全手牌棄置、依職業或印刷數值抽牌、跨玩家棄牌目的地替代、每回合一次、跳過討伐、公開魔物減益，以及裝備職業限制、target-aware 戰力、隊伍相鄰／其他隊員加成、戰鬥離場移除／抽牌與討伐時成本。道具維持在 `playArea` 到休息階段，商店空位也只在休息階段補滿；自定義物資未混入。
+
+正式卡池逐卡對照見 [`content/packs/OFFICIAL_ADVENTURERS.md`](content/packs/OFFICIAL_ADVENTURERS.md) 與 [`content/packs/OFFICIAL_RESOURCES.md`](content/packs/OFFICIAL_RESOURCES.md)。
 
 HUD 會顯示官方冒險者的費用、戰力、榮譽、職業與完整效果，並在待選擇狀態顯示來源、候選、進度與 required actor；強制選擇期間維持鍵盤／手把焦點封閉。協助者輪替與完整 final-round policy 留待後續規則模組。`docs/` 是本機企劃資料，已由 `.gitignore` 排除，自定義冒險者維持停用。

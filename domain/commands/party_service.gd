@@ -149,7 +149,8 @@ static func discard_party_member_with_equipment(
 	player: PlayerStateData,
 	target_card_id: StringName,
 	reason: StringName,
-	events: Array[Dictionary]
+	events: Array[Dictionary],
+	definitions: Dictionary = {}
 ) -> String:
 	return _move_party_member_with_equipment(
 		state,
@@ -157,7 +158,9 @@ static func discard_party_member_with_equipment(
 		target_card_id,
 		StringName(player.zone_ids[&"discard_pile"]),
 		reason,
-		events
+		events,
+		&"",
+		definitions
 	)
 
 
@@ -166,7 +169,8 @@ static func remove_party_member_with_equipment(
 	player: PlayerStateData,
 	target_card_id: StringName,
 	reason: StringName,
-	events: Array[Dictionary]
+	events: Array[Dictionary],
+	definitions: Dictionary = {}
 ) -> String:
 	return _move_party_member_with_equipment(
 		state,
@@ -174,7 +178,9 @@ static func remove_party_member_with_equipment(
 		target_card_id,
 		StringName(player.zone_ids[&"removed"]),
 		reason,
-		events
+		events,
+		&"",
+		definitions
 	)
 
 
@@ -185,7 +191,8 @@ static func move_party_member_with_equipment(
 	target_destination_zone_id: StringName,
 	equipment_destination_zone_id: StringName,
 	reason: StringName,
-	events: Array[Dictionary]
+	events: Array[Dictionary],
+	definitions: Dictionary = {}
 ) -> String:
 	return _move_party_member_with_equipment(
 		state,
@@ -194,7 +201,8 @@ static func move_party_member_with_equipment(
 		target_destination_zone_id,
 		reason,
 		events,
-		equipment_destination_zone_id
+		equipment_destination_zone_id,
+		definitions
 	)
 
 
@@ -244,7 +252,8 @@ static func _move_party_member_with_equipment(
 	target_destination_zone_id: StringName,
 	reason: StringName,
 	events: Array[Dictionary],
-	equipment_destination_zone_id: StringName = &""
+	equipment_destination_zone_id: StringName = &"",
+	definitions: Dictionary = {}
 ) -> String:
 	if ZoneService.find_card_zone(state, target_card_id) != StringName(player.zone_ids[&"party"]):
 		return "party_member_not_in_party"
@@ -253,8 +262,22 @@ static func _move_party_member_with_equipment(
 	var equipment_ids := target_state.get("equipment_ids", []) as Array
 	if equipment_destination_zone_id.is_empty():
 		equipment_destination_zone_id = StringName(player.zone_ids[&"discard_pile"])
+	var departed_equipment_trigger_ids: Array[StringName] = []
 	for raw_equipment_id: Variant in equipment_ids.duplicate():
 		var equipment_id := StringName(str(raw_equipment_id))
+		var resolved_equipment_destination := equipment_destination_zone_id
+		var equipment_definition := _definition_for_card(state, definitions, equipment_id)
+		var wearer_enters_discard := target_destination_zone_id == StringName(
+			player.zone_ids.get(&"discard_pile", &"")
+		)
+		if wearer_enters_discard and reason in [&"combat_departure", &"boss_combat_departure_replaced"] \
+				and equipment_definition != null:
+			for effect: Dictionary in equipment_definition.effects:
+				if StringName(effect.get("op", "")) == &"equipment_departure_destination" \
+						and StringName(effect.get("timing", "")) == &"on_combat_departure":
+					resolved_equipment_destination = StringName(player.zone_ids.get(
+						StringName(effect.get("destination_zone_key", "removed")), &""
+					))
 		var equipment_card := state.cards[equipment_id] as Dictionary
 		var equipment_state := equipment_card.get("state", {}) as Dictionary
 		equipment_state.erase("equipped_to")
@@ -263,13 +286,16 @@ static func _move_party_member_with_equipment(
 			state,
 			equipment_id,
 			StringName(player.zone_ids[&"equipment"]),
-			equipment_destination_zone_id
+			resolved_equipment_destination
 		)
 		if not bool(move_result.get("ok", false)):
 			return str(move_result.get("error", "equipment_departure_failed"))
 		var event: Dictionary = (move_result.get("event", {}) as Dictionary).duplicate(true)
 		event["reason"] = "%s_equipment" % reason
 		events.append(event)
+		if wearer_enters_discard and reason in [&"combat_departure", &"boss_combat_departure_replaced"] \
+				and equipment_definition != null:
+			departed_equipment_trigger_ids.append(equipment_id)
 	target_state["equipment_ids"] = []
 	target_card["state"] = target_state
 	var outgoing_result := ZoneService.move_card(
@@ -283,6 +309,12 @@ static func _move_party_member_with_equipment(
 	var outgoing_event: Dictionary = (outgoing_result.get("event", {}) as Dictionary).duplicate(true)
 	outgoing_event["reason"] = str(reason)
 	events.append(outgoing_event)
+	for equipment_id: StringName in departed_equipment_trigger_ids:
+		var trigger_error := EffectResolver.resolve_trigger_for_source(
+			state, player.player_id, equipment_id, &"on_combat_departure", events, definitions
+		)
+		if not trigger_error.is_empty():
+			return trigger_error
 	return ""
 
 

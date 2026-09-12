@@ -134,10 +134,21 @@ static func validate(
 			if StringName(card.get("owner_id", "")) != actor_id:
 				return "choice_card_not_owned"
 			var allowed_tags := _normalized_allowed_tags(choice.get("allowed_tags", []))
+			var allowed_types := _normalized_allowed_tags(choice.get("allowed_card_types", []))
 			var definition := _definition_for_card(state, definitions, card_instance_id)
 			if not allowed_tags.is_empty() and (definition == null \
 					or not _definition_has_any_tag(definition, allowed_tags)):
 				return "choice_card_wrong_type"
+			if not allowed_types.is_empty() and (definition == null \
+					or definition.card_type not in allowed_types):
+				return "choice_card_wrong_type"
+			if bool(choice.get("exclude_source_definition", false)):
+				var source_definition := _definition_for_card(
+					state, definitions, StringName(choice.get("source_card_instance_id", ""))
+				)
+				if definition != null and source_definition != null \
+						and definition.definition_id == source_definition.definition_id:
+					return "choice_card_wrong_type"
 		&"choose_target_combat_modifier":
 			if ZoneService.find_card_zone(state, card_instance_id) \
 					!= StringName(choice.get("source_zone_id", "")):
@@ -365,7 +376,12 @@ static func apply(
 			if not bool(move_result.get("ok", false)):
 				return str(move_result.get("error", "choice_move_failed"))
 			var move_event := (move_result.get("event", {}) as Dictionary).duplicate(true)
-			move_event["reason"] = "reward_card_gained"
+			move_event["reason"] = (
+				"card_discarded_as_cost"
+				if operation == &"choose_move_card" \
+						and bool((choice.get("source_effect", {}) as Dictionary).get("is_cost", false))
+				else ("card_moved_by_effect" if operation == &"choose_move_card" else "reward_card_gained")
+			)
 			events.append(move_event)
 			var card := state.cards[card_instance_id] as Dictionary
 			if operation == &"choose_gain_card":
@@ -478,7 +494,13 @@ static func apply(
 			continuation.append(accepted)
 	for raw_effect: Variant in choice.get("continuation_effects", []):
 		if raw_effect is Dictionary:
-			continuation.append((raw_effect as Dictionary).duplicate(true))
+			var continued_effect := (raw_effect as Dictionary).duplicate(true)
+			continued_effect["_selection_count"] = selected_count
+			if not (choice.get("selected_card_ids", []) as Array).is_empty():
+				continued_effect["_selected_card_instance_id"] = str(
+					(choice.get("selected_card_ids", []) as Array).back()
+				)
+			continuation.append(continued_effect)
 	if not continuation.is_empty():
 		var continuation_error := EffectResolver.resolve(
 			state, actor_id, continuation, events, definitions

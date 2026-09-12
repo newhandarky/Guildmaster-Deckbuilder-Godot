@@ -4,6 +4,7 @@ extends Control
 signal end_phase_requested
 signal skip_animation_requested
 signal equip_item_requested(card_instance_id: StringName, target_card_id: StringName)
+signal activate_equipment_effect_requested(card_instance_id: StringName, effect_index: int)
 signal play_adventurer_requested(card_instance_id: StringName)
 signal use_item_requested(card_instance_id: StringName)
 signal attack_target_requested(
@@ -281,11 +282,15 @@ func _rebuild_hand(state: Dictionary, active_player_id: String) -> void:
 				card_ids.size(),
 			]
 		else:
-			hand_summary.text = "待選擇：%s%s｜來源：%s（%s）" % [
+			var cost_text := "｜必要成本" if bool(
+				(effect_state.get("source_effect", {}) as Dictionary).get("is_cost", false)
+			) else ""
+			hand_summary.text = "待選擇：%s%s｜來源：%s（%s）%s" % [
 				str(effect_state.get("prompt", "請完成選擇")),
 				progress_text,
 				choice_source_label,
 				count_text,
+				cost_text,
 			]
 	if choice_commands.is_empty():
 		for raw_command: Variant in legal_commands:
@@ -321,6 +326,9 @@ func _rebuild_hand(state: Dictionary, active_player_id: String) -> void:
 				StringName(effect_state.get("op", "")),
 				card_source_label if not card_source_label.is_empty() else choice_source_label
 			)
+			if StringName(effect_state.get("op", "")) == &"choose_move_card" \
+					and str(effect_state.get("destination_zone_id", "")).ends_with(":discard-pile"):
+				choice_button.text = "棄置此牌"
 			choice_button.custom_minimum_size = Vector2(0.0, 36.0)
 			choice_button.focus_mode = Control.FOCUS_ALL
 			choice_button.pressed.connect(
@@ -394,7 +402,11 @@ func _rebuild_hand(state: Dictionary, active_player_id: String) -> void:
 			"完成移除（已選 %d/%d）" % [selected_count, max_selections]
 			if StringName(effect_state.get("op", "")) == &"choose_remove_card" \
 					and selected_count > 0
-			else "略過%s" % _choice_action_label(StringName(effect_state.get("op", "")))
+			else ("完成棄置（已選 %d/%d）" % [selected_count, max_selections]
+				if StringName(effect_state.get("op", "")) == &"choose_move_card" \
+						and max_selections > 1 and selected_count > 0
+				else ("不棄置" if StringName(effect_state.get("op", "")) == &"choose_move_card" \
+						and max_selections > 1 else "略過%s" % _choice_action_label(StringName(effect_state.get("op", "")))))
 		)
 		skip_choice_button.custom_minimum_size = Vector2(0.0, 36.0)
 		skip_choice_button.focus_mode = Control.FOCUS_ALL
@@ -438,6 +450,10 @@ func _rebuild_hand(state: Dictionary, active_player_id: String) -> void:
 
 func _hand_card_text(definition: Dictionary) -> String:
 	var text := str(definition.get("display_name", "未知卡片"))
+	var type_label: String = {
+		"item":"道具", "equipment":"裝備", "adventurer":"冒險者",
+		"monster":"魔物", "boss":"魔王", "starter":"起始卡",
+	}.get(str(definition.get("card_type", "")), "")
 	var purchase_power: Variant = definition.get("purchase_power", null)
 	var combat: Variant = definition.get("combat", null)
 	var cost: Variant = definition.get("cost", null)
@@ -450,6 +466,8 @@ func _hand_card_text(definition: Dictionary) -> String:
 		text += "｜戰力 %d" % int(combat)
 	if honor != null:
 		text += "｜榮譽 %d" % int(honor)
+	if not type_label.is_empty():
+		text += "｜類型 %s" % type_label
 	var profession_labels: Array[String] = []
 	for raw_tag: Variant in definition.get("tags", []):
 		var label: String = {"support":"輔助","melee":"近戰","mage":"法師","tank":"坦克","ranged":"遠程"}.get(str(raw_tag), "")
@@ -580,6 +598,7 @@ func _rebuild_market(state: Dictionary) -> void:
 	var refresh_rows := refresh_command.get("rows", {}) as Dictionary
 	var market_buttons: Array[Button] = []
 	_append_boss_info(zones)
+	_append_equipment_effect_actions(legal_commands, market_buttons)
 	var attack_target_count := _append_combat_actions(legal_commands, market_buttons)
 	var row_specs := [
 		["shared:recruit-row", "招募區"],
@@ -606,7 +625,12 @@ func _rebuild_market(state: Dictionary) -> void:
 			var legal := _find_buy_command(legal_commands, card_id, row_id)
 			if not legal.is_empty():
 				var buy_button := Button.new()
-				buy_button.text = "購買"
+				var effective_cost := int(legal.get("effective_cost", definition.get("cost", 0)))
+				buy_button.text = "購買（實付 %d）" % effective_cost
+				if effective_cost != int(definition.get("cost", effective_cost)):
+					buy_button.tooltip_text = "隊伍效果修正：印刷費用 %d → 實付 %d" % [
+						int(definition.get("cost", 0)), effective_cost,
+					]
 				buy_button.custom_minimum_size = Vector2(78.0, 32.0)
 				buy_button.pressed.connect(
 					buy_card_requested.emit.bind(StringName(card_id), StringName(row_id))
@@ -810,6 +834,27 @@ func _append_combat_actions(commands: Array, action_buttons: Array[Button]) -> i
 		market_actions.add_child(attack_button)
 		action_buttons.append(attack_button)
 	return rendered_targets.size()
+
+
+func _append_equipment_effect_actions(
+	commands: Array, action_buttons: Array[Button]
+) -> void:
+	for raw_command: Variant in commands:
+		if not raw_command is Dictionary:
+			continue
+		var command := raw_command as Dictionary
+		if str(command.get("type", "")) != "ACTIVATE_EQUIPMENT_EFFECT":
+			continue
+		var equipment_id := str(command.get("card_instance_id", ""))
+		var button := Button.new()
+		button.text = "發動 %s｜棄置敵卡增加配戴者戰力" % _card_display_name(equipment_id)
+		button.custom_minimum_size = Vector2(0.0, 36.0)
+		button.focus_mode = Control.FOCUS_ALL
+		button.pressed.connect(activate_equipment_effect_requested.emit.bind(
+			StringName(equipment_id), int(command.get("effect_index", -1))
+		))
+		market_actions.add_child(button)
+		action_buttons.append(button)
 
 
 func _on_refresh_cost_selected(card_instance_id: StringName) -> void:

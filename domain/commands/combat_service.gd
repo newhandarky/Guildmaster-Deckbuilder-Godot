@@ -275,6 +275,7 @@ static func apply(
 	)
 	if not departure_error.is_empty():
 		return departure_error
+	_clear_per_attack_equipment_effects(player, events)
 	var claim_optional_reward := bool(command.get("claim_optional_reward", true))
 	var reward_effects: Array[Dictionary] = []
 	for effect: Dictionary in target_definition.effects:
@@ -327,6 +328,11 @@ static func apply(
 	player.turn_facts[&"defeated_enemy"] = true
 	var counter_key := &"defeated_monster_count"
 	player.turn_facts[counter_key] = int(player.turn_facts.get(counter_key, 0)) + 1
+	var defeat_trigger_error := EffectResolver.resolve_party_trigger(
+		state, actor_id, &"on_enemy_defeated_if_attached", events, definitions
+	)
+	if not defeat_trigger_error.is_empty():
+		return defeat_trigger_error
 	events.append({
 		"type": "enemy_defeated",
 		"actor_id": str(actor_id),
@@ -341,6 +347,23 @@ static func apply(
 		"defeated_monster_count": int(player.turn_facts.get(&"defeated_monster_count", 0)),
 	})
 	return ""
+
+
+static func _clear_per_attack_equipment_effects(
+	player: PlayerStateData, events: Array[Dictionary]
+) -> void:
+	var attack_modifiers := player.turn_bonuses.get("equipment_attack_modifiers", {}) as Dictionary
+	var card_modifiers := player.turn_bonuses.get("card_combat_modifiers", {}) as Dictionary
+	for equipment_id: Variant in attack_modifiers:
+		var record := attack_modifiers[equipment_id] as Dictionary
+		var target_card_id := str(record.get("target_card_id", ""))
+		card_modifiers[target_card_id] = int(card_modifiers.get(target_card_id, 0)) - int(record.get("amount", 0))
+		if int(card_modifiers[target_card_id]) == 0:
+			card_modifiers.erase(target_card_id)
+		player.turn_facts.erase("equipment_attack_used:%s" % equipment_id)
+		events.append({"type":"equipment_attack_modifier_expired","actor_id":str(player.player_id),"equipment_id":str(equipment_id),"target_card_id":target_card_id})
+	player.turn_bonuses["card_combat_modifiers"] = card_modifiers
+	player.turn_bonuses.erase("equipment_attack_modifiers")
 
 
 static func _apply_combat_departures(
@@ -372,7 +395,7 @@ static func _apply_combat_departures(
 			continue
 		if replacement_rule.is_empty():
 			var error := PartyService.discard_party_member_with_equipment(
-				state, player, participant_id, &"combat_departure", events
+				state, player, participant_id, &"combat_departure", events, definitions
 			)
 			if not error.is_empty():
 				return error
@@ -393,7 +416,7 @@ static func _apply_combat_departures(
 		var error := PartyService.move_party_member_with_equipment(
 			state, player, participant_id, destination_zone_id,
 			equipment_destination_zone_id,
-			&"boss_combat_departure_replaced", events
+			&"boss_combat_departure_replaced", events, definitions
 		)
 		if not error.is_empty():
 			return error
@@ -475,7 +498,7 @@ static func _apply_adventurer_departure_replacement(
 		))
 		var move_error := PartyService.move_party_member_with_equipment(
 			state, player, participant_id, destination_zone_id,
-			equipment_destination_zone_id, &"combat_departure_replaced", events
+			equipment_destination_zone_id, &"combat_departure_replaced", events, definitions
 		)
 		if not move_error.is_empty():
 			return move_error

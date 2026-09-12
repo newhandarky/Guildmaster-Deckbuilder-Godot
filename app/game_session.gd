@@ -6,7 +6,7 @@ signal events_committed(events: Array[Dictionary])
 signal command_rejected(error_code: String)
 
 const CONTENT_PACK_PATH := "res://content/packs/base_vertical_slice.json"
-const RULESET_FINGERPRINT := "ruleset:vertical-slice:0.17.0"
+const RULESET_FINGERPRINT := "ruleset:vertical-slice:0.18.0"
 
 var state: GameStateData
 var content_registry := ContentRegistry.new()
@@ -60,6 +60,23 @@ func equip_item(card_instance_id: StringName, target_card_id: StringName) -> Dic
 		},
 	}
 	return submit_command(envelope)
+
+
+func activate_equipment_effect(card_instance_id: StringName, effect_index: int) -> Dictionary:
+	if state == null:
+		return {"ok": false, "error": "session_not_started", "events": []}
+	return submit_command({
+		"protocol_version": 1,
+		"game_id": str(state.game_id),
+		"command_id": "cmd-%06d" % (state.revision + 1),
+		"actor_id": str(state.active_player_id),
+		"expected_revision": state.revision,
+		"command": {
+			"type": "ACTIVATE_EQUIPMENT_EFFECT",
+			"card_instance_id": str(card_instance_id),
+			"effect_index": effect_index,
+		},
+	})
 
 
 func play_adventurer(card_instance_id: StringName) -> Dictionary:
@@ -194,7 +211,7 @@ func snapshot() -> Dictionary:
 		return {}
 	return {
 		"snapshot_schema_version": 1,
-		"app_version": "0.17.0",
+		"app_version": "0.18.0",
 		"content_fingerprint": content_registry.pack_fingerprint,
 		"ruleset_fingerprint": RULESET_FINGERPRINT,
 		"state": state.to_dictionary(),

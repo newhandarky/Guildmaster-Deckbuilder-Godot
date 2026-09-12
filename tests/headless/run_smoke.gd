@@ -19,6 +19,9 @@ func _init() -> void:
 
 func _run() -> void:
 	_test_content_pack()
+	_test_official_resource_content_and_supply()
+	_test_official_resource_core_effects()
+	_test_official_resource_lifecycle_and_pending()
 	_test_official_adventurer_content_and_supply()
 	_test_official_adventurer_shared_operations()
 	_test_content_pack_reload()
@@ -62,6 +65,7 @@ func _run() -> void:
 	_test_market_refresh_selection_order_is_deterministic()
 	await _test_market_refresh_hud_integration()
 	await _test_official_adventurer_hud_integration()
+	await _test_official_resource_hud_integration()
 	await _test_combat_hud_integration()
 	await _test_boss_hud_integration()
 	await _test_boss_choice_hud_integration()
@@ -95,7 +99,7 @@ func _test_content_pack() -> void:
 	var registry := ContentRegistry.new()
 	var errors := registry.load_pack("res://content/packs/base_vertical_slice.json")
 	_expect(errors.is_empty(), "base content pack should validate: %s" % "; ".join(errors))
-	_expect(registry.definitions.size() == 65, "base pack should load sixty-five formal definitions")
+	_expect(registry.definitions.size() == 90, "base pack should load ninety formal definitions")
 	var mimic := registry.definitions.get(&"base:monster/monster-02") as CardDefinition
 	_expect(
 		mimic != null and mimic.copies == 3 and mimic.combat == 5 \
@@ -184,8 +188,210 @@ func _test_content_pack_reload() -> void:
 	var first_fingerprint := registry.pack_fingerprint
 	var second_errors := registry.load_pack("res://content/packs/base_vertical_slice.json")
 	_expect(first_errors.is_empty() and second_errors.is_empty(), "content pack should be safely reloadable")
-	_expect(registry.definitions.size() == 65, "content reload must not retain duplicate definitions")
+	_expect(registry.definitions.size() == 90, "content reload must not retain duplicate definitions")
 	_expect(registry.pack_fingerprint == first_fingerprint, "same content should keep the same fingerprint")
+
+
+func _test_official_resource_content_and_supply() -> void:
+	var definitions := _load_definitions()
+	var expected := [
+		["特大治癒藥水","item",3,null,1,3], ["火焰拳套","equipment",5,1,2,3],
+		["邪魅法典","equipment",5,1,2,3], ["驅邪聖水","item",2,null,1,2],
+		["維修道具包","item",3,null,1,2], ["貓咪娃娃","item",1,null,-1,2],
+		["透視眼鏡","equipment",5,1,2,2], ["櫻花果子","item",4,null,1,2],
+		["詛咒之槍","equipment",6,3,3,2], ["大號梳毛梳","item",3,null,1,2],
+		["寫滿的行程表","equipment",6,2,2,2], ["真龍斧連枷","equipment",5,3,2,2],
+		["賢者之石","item",3,null,1,2], ["絲綢緞帶","equipment",3,null,2,2],
+		["魔法除塵撢","item",4,null,1,2], ["鬼哭太刀","equipment",6,2,2,2],
+		["金色水晶球","item",4,null,2,2], ["名貴的首飾","equipment",4,2,1,2],
+		["靈能法杖","equipment",4,1,1,2], ["充能魔劍","equipment",5,2,2,2],
+		["精緻的耳環","equipment",4,1,1,2], ["調教手銬","item",3,null,1,2],
+		["元素卷軸","item",4,null,2,2], ["聖龍護符","equipment",4,1,1,2],
+		["騎士之盾","equipment",5,1,2,2], ["專用茶杯","item",4,null,1,2],
+		["牛皮紙樂譜","item",5,null,2,2], ["特製高級紅酒","item",3,null,1,2],
+	]
+	var copy_total := 0
+	for index in expected.size():
+		var definition_id := StringName("base:resource/resource-%02d" % (index + 1))
+		var definition := definitions.get(definition_id) as CardDefinition
+		var spec: Array = expected[index]
+		_expect(definition != null, "official resource %02d should exist" % (index + 1))
+		if definition == null: continue
+		_expect(definition.display_name == spec[0] and str(definition.card_type) == spec[1] \
+				and definition.cost == spec[2] and definition.combat == spec[3] \
+				and definition.honor == spec[4] and definition.copies == spec[5] \
+				and not definition.rules_text.is_empty(),
+			"official resource %02d should match confirmed data" % (index + 1))
+		copy_total += definition.copies
+	_expect(copy_total == 59, "twenty-eight official resources should total fifty-nine copies")
+	for definition_id: StringName in definitions:
+		_expect(not str(definition_id).begins_with("custom:resource/"), "official pack must exclude custom resources")
+	var first := GameStateData.create_vertical_slice(1801, definitions)
+	var second := GameStateData.create_vertical_slice(1801, definitions)
+	var resource_instance_count := 0
+	var resource_zone_ids: Dictionary = {}
+	for card_id: StringName in first.cards:
+		var definition_id := str((first.cards[card_id] as Dictionary).get("definition_id", ""))
+		if definition_id.begins_with("base:resource/resource-"):
+			resource_instance_count += 1
+			resource_zone_ids[str(card_id)] = str(ZoneService.find_card_zone(first, card_id))
+	_expect(resource_instance_count == 59, "official resource supply should contain fifty-nine instances")
+	_expect((first.zones[SupplyService.SHOP_ROW_ID] as ZoneData).card_instance_ids.size() == 3 \
+			and (first.zones[SupplyService.SHOP_DECK_ID] as ZoneData).card_instance_ids.size() == 56,
+		"shop should expose three cards and retain fifty-six hidden cards")
+	_expect(CanonicalJson.sha256(first.to_dictionary()) == CanonicalJson.sha256(second.to_dictionary()),
+		"same seed should produce deterministic official resource supply order")
+	_expect(resource_zone_ids.size() == 59, "every resource instance should occupy exactly one formal zone")
+
+
+func _test_official_resource_core_effects() -> void:
+	var definitions := _load_definitions()
+	var state := GameStateData.create_vertical_slice(1802, definitions)
+	var player := state.players[&"p1"] as PlayerStateData
+	var hand := state.zones[player.zone_ids[&"hand"]] as ZoneData
+	var party := state.zones[player.zone_ids[&"party"]] as ZoneData
+	var spear_id := _move_definition_to_player_hand(state, &"base:resource/resource-09", &"p1")
+	var wearer_id := party.card_instance_ids[0]
+	var equip_events: Array[Dictionary] = []
+	_expect(EquipmentService.apply(state, &"p1", {"type":"EQUIP_ITEM","card_instance_id":str(spear_id),"target_card_id":str(wearer_id)}, definitions, equip_events).is_empty(), "cursed spear should equip")
+	var normal_combat := ResourceService.evaluate_party_member_combat(state, definitions, wearer_id, 0, party, true, &"monster")
+	var boss_combat := ResourceService.evaluate_party_member_combat(state, definitions, wearer_id, 0, party, true, &"boss")
+	_expect(normal_combat == 4 and boss_combat == 6, "cursed spear should add two combat only against a Boss")
+
+	var ribbon_id := _move_definition_to_player_hand(state, &"base:resource/resource-14", &"p1")
+	var invalid_ribbon := EquipmentService.validate(state, &"p1", {"type":"EQUIP_ITEM","card_instance_id":str(ribbon_id),"target_card_id":str(party.card_instance_ids[1])}, definitions)
+	_expect(invalid_ribbon == "equipment_target_tag_restricted", "silk ribbon should reject non-mage and non-support wearers")
+	var mage_id := party.card_instance_ids[2]
+	var before_left := ResourceService.evaluate_party_member_combat(state, definitions, party.card_instance_ids[1], 1, party)
+	var before_right := ResourceService.evaluate_party_member_combat(state, definitions, party.card_instance_ids[3], 3, party)
+	_expect(EquipmentService.apply(state, &"p1", {"type":"EQUIP_ITEM","card_instance_id":str(ribbon_id),"target_card_id":str(mage_id)}, definitions, equip_events).is_empty(), "silk ribbon should equip to a mage")
+	_expect(ResourceService.evaluate_party_member_combat(state, definitions, party.card_instance_ids[1], 1, party) == before_left + 2 \
+			and ResourceService.evaluate_party_member_combat(state, definitions, party.card_instance_ids[3], 3, party) == before_right + 2,
+		"silk ribbon should add two combat to both adjacent adventurers only")
+	var departure_events: Array[Dictionary] = []
+	_expect(PartyService.discard_party_member_with_equipment(state, player, mage_id, &"combat_departure", departure_events, definitions).is_empty(), "silk ribbon combat departure should resolve")
+	_expect(ZoneService.find_card_zone(state, ribbon_id) == StringName(player.zone_ids[&"removed"]), "silk ribbon should enter removed zone on combat departure")
+
+	var cost_state := GameStateData.create_vertical_slice(1803, definitions)
+	var cost_player := cost_state.players[&"p1"] as PlayerStateData
+	var holy_water_id := _move_definition_to_player_hand(cost_state, &"base:resource/resource-04", &"p1")
+	_expect(not _commands_contain(ItemService.get_legal_commands(cost_state, &"p1", definitions), "USE_ITEM"), "holy water should not be usable without a hand monster cost")
+	var monster_id := &"card-monster-rabbit-demon-01"
+	ZoneService.move_card(cost_state, monster_id, ZoneService.find_card_zone(cost_state, monster_id), StringName(cost_player.zone_ids[&"hand"]))
+	(cost_state.cards[monster_id] as Dictionary)["owner_id"] = "p1"
+	for resource_number in [1, 2, 3]:
+		var draw_id := _find_instance_by_definition(cost_state, StringName("base:resource/resource-%02d" % resource_number))
+		if draw_id in [holy_water_id]: continue
+		ZoneService.move_card(cost_state, draw_id, ZoneService.find_card_zone(cost_state, draw_id), StringName(cost_player.zone_ids[&"draw_pile"]))
+		(cost_state.cards[draw_id] as Dictionary)["owner_id"] = "p1"
+	var use_result := RulesEngine.dispatch(cost_state, _command_envelope(cost_state, {"type":"USE_ITEM","card_instance_id":str(holy_water_id)}, "cmd-resource-cost"), definitions)
+	_expect(bool(use_result.get("ok", false)), "holy water should establish a mandatory discard cost")
+	if bool(use_result.get("ok", false)):
+		cost_state = use_result["state"] as GameStateData
+		var pending_hash := CanonicalJson.sha256(cost_state.to_dictionary())
+		var invalid_result := RulesEngine.dispatch(cost_state, _command_envelope(cost_state, {"type":"RESOLVE_CHOICE","choice_id":str(cost_state.effect_state.get("choice_id", "")),"card_instance_id":"card-p1-summoning-stone-01","skip":false}, "cmd-resource-cost-invalid"), definitions)
+		_expect(not bool(invalid_result.get("ok", false)) and invalid_result.get("after_hash") == pending_hash, "invalid resource cost must remain atomic")
+		var pay_result := RulesEngine.dispatch(cost_state, _command_envelope(cost_state, {"type":"RESOLVE_CHOICE","choice_id":str(cost_state.effect_state.get("choice_id", "")),"card_instance_id":str(monster_id),"skip":false}, "cmd-resource-cost-pay"), definitions)
+		_expect(bool(pay_result.get("ok", false)) and (pay_result["state"] as GameStateData).effect_state.is_empty(), "paying holy water cost should draw three and finish")
+
+	var cat_state := GameStateData.create_vertical_slice(1804, definitions)
+	var cat_player := cat_state.players[&"p1"] as PlayerStateData
+	cat_state.phase = &"purchase"
+	cat_player.turn_resources["purchase_power"] = 10
+	var cat_id := _find_instance_by_definition(cat_state, &"base:resource/resource-06")
+	var shop := cat_state.zones[SupplyService.SHOP_ROW_ID] as ZoneData
+	ZoneService.move_card(cat_state, shop.card_instance_ids[0], shop.zone_id, SupplyService.SHOP_DECK_ID)
+	ZoneService.move_card(cat_state, cat_id, ZoneService.find_card_zone(cat_state, cat_id), shop.zone_id)
+	var buy_cat := RulesEngine.dispatch(cat_state, _command_envelope(cat_state, {"type":"BUY_CARD","card_instance_id":str(cat_id),"source_row_id":str(shop.zone_id)}, "cmd-buy-cat"), definitions)
+	_expect(bool(buy_cat.get("ok", false)), "cat doll purchase should resolve")
+	if bool(buy_cat.get("ok", false)):
+		cat_state = buy_cat["state"] as GameStateData
+		_expect(ZoneService.find_card_zone(cat_state, cat_id) == &"p2:discard-pile" and str((cat_state.cards[cat_id] as Dictionary).get("owner_id", "")) == "p2", "cat doll purchase should transfer to the right player")
+		ZoneService.move_card(cat_state, cat_id, &"p2:discard-pile", &"p2:hand")
+		var cleanup_events: Array[Dictionary] = []
+		DeckService.discard_hand_and_play_area(cat_state, &"p2", cleanup_events)
+		_expect(ZoneService.find_card_zone(cat_state, cat_id) == &"p1:discard-pile" and str((cat_state.cards[cat_id] as Dictionary).get("owner_id", "")) == "p1", "cat doll discard should continue around the two-player seating cycle")
+
+	var tea_state := GameStateData.create_vertical_slice(1805, definitions)
+	var tea_id := _move_definition_to_player_hand(tea_state, &"base:resource/resource-26", &"p1")
+	var tea_result := RulesEngine.dispatch(tea_state, _command_envelope(tea_state, {"type":"USE_ITEM","card_instance_id":str(tea_id)}, "cmd-use-tea"), definitions)
+	_expect(bool(tea_result.get("ok", false)), "special tea cup should be usable before defeating an enemy")
+	if bool(tea_result.get("ok", false)):
+		tea_state = tea_result["state"] as GameStateData
+		var phase_result := RulesEngine.dispatch(tea_state, _end_phase_envelope(tea_state, "cmd-tea-end-action"), definitions)
+		_expect(bool(phase_result.get("ok", false)) and (phase_result["state"] as GameStateData).phase == &"action2", "tea cup should skip combat without ending action1 early")
+
+
+func _test_official_resource_lifecycle_and_pending() -> void:
+	var definitions := _load_definitions()
+	var scroll_state := GameStateData.create_vertical_slice(1806, definitions)
+	var scroll_player := scroll_state.players[&"p1"] as PlayerStateData
+	var scroll_id := _move_definition_to_player_hand(scroll_state, &"base:resource/resource-23", &"p1")
+	var scroll_result := RulesEngine.dispatch(scroll_state, _command_envelope(scroll_state, {"type":"USE_ITEM","card_instance_id":str(scroll_id)}, "cmd-use-scroll"), definitions)
+	_expect(bool(scroll_result.get("ok", false)), "element scroll should discard the complete party and hand before drawing")
+	if bool(scroll_result.get("ok", false)):
+		scroll_state = scroll_result["state"] as GameStateData
+		_expect((scroll_state.zones[scroll_player.zone_ids[&"party"]] as ZoneData).card_instance_ids.is_empty(), "element scroll should discard the whole party")
+		_expect(ZoneService.find_card_zone(scroll_state, scroll_id) == StringName(scroll_player.zone_ids[&"play_area"]), "used element scroll should remain in playArea")
+		_expect(bool((scroll_state.players[&"p1"] as PlayerStateData).turn_facts.get("item_used:base:resource/resource-23", false)), "element scroll should record its once-per-turn use")
+		var second_scroll := &"card-supply-resource-23-02"
+		ZoneService.move_card(scroll_state, second_scroll, ZoneService.find_card_zone(scroll_state, second_scroll), StringName(scroll_player.zone_ids[&"hand"]))
+		(scroll_state.cards[second_scroll] as Dictionary)["owner_id"] = "p1"
+		var legal_items := ItemService.get_legal_commands(scroll_state, &"p1", definitions)
+		var second_usable := false
+		for command: Dictionary in legal_items:
+			second_usable = second_usable or str(command.get("card_instance_id", "")) == str(second_scroll)
+		_expect(not second_usable, "element scroll should not be usable twice in one turn")
+
+	var wine_state := GameStateData.create_vertical_slice(1807, definitions)
+	var wine_player := wine_state.players[&"p1"] as PlayerStateData
+	var wine_id := _move_definition_to_player_hand(wine_state, &"base:resource/resource-28", &"p1")
+	var adventurer_id := _move_definition_to_player_hand(wine_state, &"base:adventurer/adventurer-02", &"p1")
+	for instance_id: StringName in [&"card-supply-resource-01-01", &"card-supply-resource-02-01", &"card-supply-resource-03-01"]:
+		if instance_id == wine_id: continue
+		ZoneService.move_card(wine_state, instance_id, ZoneService.find_card_zone(wine_state, instance_id), StringName(wine_player.zone_ids[&"draw_pile"]))
+		(wine_state.cards[instance_id] as Dictionary)["owner_id"] = "p1"
+	var wine_use := RulesEngine.dispatch(wine_state, _command_envelope(wine_state, {"type":"USE_ITEM","card_instance_id":str(wine_id)}, "cmd-use-wine"), definitions)
+	_expect(bool(wine_use.get("ok", false)), "wine should request an adventurer discard cost")
+	if bool(wine_use.get("ok", false)):
+		wine_state = wine_use["state"] as GameStateData
+		var wine_snapshot := SnapshotCodec.encode(wine_state, "content-test", "rules-test")
+		var wine_restore := SnapshotCodec.decode(wine_snapshot, "content-test", "rules-test")
+		_expect(bool(wine_restore.get("ok", false)) and CanonicalJson.sha256((wine_restore.get("state") as GameStateData).to_dictionary()) == CanonicalJson.sha256(wine_state.to_dictionary()), "resource cost pending choice should snapshot round-trip")
+		var hand_before := (wine_state.zones[wine_player.zone_ids[&"hand"]] as ZoneData).card_instance_ids.size()
+		var wine_pay := RulesEngine.dispatch(wine_state, _command_envelope(wine_state, {"type":"RESOLVE_CHOICE","choice_id":str(wine_state.effect_state.get("choice_id", "")),"card_instance_id":str(adventurer_id),"skip":false}, "cmd-pay-wine"), definitions)
+		_expect(bool(wine_pay.get("ok", false)), "wine adventurer cost should resolve")
+		if bool(wine_pay.get("ok", false)):
+			var resolved_wine := wine_pay["state"] as GameStateData
+			var hand_after := (resolved_wine.zones[(resolved_wine.players[&"p1"] as PlayerStateData).zone_ids[&"hand"]] as ZoneData).card_instance_ids.size()
+			_expect(hand_after == hand_before - 1 + 3, "wine should draw the discarded adventurer's printed combat")
+
+	var sword_state := GameStateData.create_vertical_slice(1808, definitions)
+	var sword_player := sword_state.players[&"p1"] as PlayerStateData
+	var sword_party := sword_state.zones[sword_player.zone_ids[&"party"]] as ZoneData
+	var sword_id := _move_definition_to_player_hand(sword_state, &"base:resource/resource-16", &"p1")
+	var sword_wearer := sword_party.card_instance_ids[3]
+	var sword_events: Array[Dictionary] = []
+	_expect(EquipmentService.apply(sword_state, &"p1", {"type":"EQUIP_ITEM","card_instance_id":str(sword_id),"target_card_id":str(sword_wearer)}, definitions, sword_events).is_empty(), "demon blade should equip to a tank")
+	var enemy_cost_id := &"card-monster-rabbit-demon-01"
+	ZoneService.move_card(sword_state, enemy_cost_id, ZoneService.find_card_zone(sword_state, enemy_cost_id), StringName(sword_player.zone_ids[&"hand"]))
+	(sword_state.cards[enemy_cost_id] as Dictionary)["owner_id"] = "p1"
+	sword_state.phase = &"combat"
+	var sword_commands := RulesEngine.get_legal_commands(sword_state, &"p1", definitions)
+	var activation: Dictionary = {}
+	for command: Dictionary in sword_commands:
+		if str(command.get("type", "")) == "ACTIVATE_EQUIPMENT_EFFECT" and str(command.get("card_instance_id", "")) == str(sword_id): activation = command
+	_expect(not activation.is_empty(), "demon blade should expose a generic combat equipment command")
+	if not activation.is_empty():
+		var activate_result := RulesEngine.dispatch(sword_state, _command_envelope(sword_state, activation, "cmd-activate-sword"), definitions)
+		_expect(bool(activate_result.get("ok", false)), "demon blade activation should create a mandatory serialized cost")
+		if bool(activate_result.get("ok", false)):
+			sword_state = activate_result["state"] as GameStateData
+			var pay_sword := RulesEngine.dispatch(sword_state, _command_envelope(sword_state, {"type":"RESOLVE_CHOICE","choice_id":str(sword_state.effect_state.get("choice_id", "")),"card_instance_id":str(enemy_cost_id),"skip":false}, "cmd-pay-sword"), definitions)
+			_expect(bool(pay_sword.get("ok", false)), "demon blade enemy discard should resolve")
+			if bool(pay_sword.get("ok", false)):
+				var sword_bonus := int((((pay_sword["state"] as GameStateData).players[&"p1"] as PlayerStateData).turn_bonuses.get("card_combat_modifiers", {}) as Dictionary).get(str(sword_wearer), 0))
+				_expect(sword_bonus == 1, "demon blade should use the discarded enemy's printed purchase power")
 
 
 func _test_official_adventurer_content_and_supply() -> void:
@@ -364,7 +570,7 @@ func _test_two_player_state() -> void:
 
 func _test_official_starting_setup() -> void:
 	var state := GameStateData.create_vertical_slice()
-	_expect(state.cards.size() == 131, "setup should include all formal supply and boss instances")
+	_expect(state.cards.size() == 182, "setup should include all formal supply and boss instances")
 	var monster_instance_count := 0
 	var monster_definition_ids: Dictionary = {}
 	for card_instance_id: StringName in state.cards:
@@ -3161,11 +3367,8 @@ func _test_public_row_gain_monsters() -> void:
 	# No legal public candidate completes immediately without a pending choice.
 	var no_candidate := GameStateData.create_vertical_slice(282)
 	var no_candidate_definitions := base_definitions.duplicate()
-	for definition_id: StringName in [
-		&"base:resource/resource-02",
-		&"base:resource/resource-03",
-		&"base:resource/resource-08",
-	]:
+	for resource_number in range(1, 29):
+		var definition_id := StringName("base:resource/resource-%02d" % resource_number)
 		var expensive := (base_definitions[definition_id] as CardDefinition).duplicate(true) as CardDefinition
 		expensive.cost = 5
 		no_candidate_definitions[definition_id] = expensive
@@ -3681,7 +3884,7 @@ func _test_supply_setup_and_determinism() -> void:
 		_expect(first_row.card_instance_ids.size() == 3, "supply row %s should start with three cards" % row_id)
 		_expect(first_row.card_instance_ids == second_row.card_instance_ids, "same seed should produce the same %s order" % row_id)
 	_expect((first.zones[SupplyService.RECRUIT_DECK_ID] as ZoneData).card_instance_ids.size() == 57, "recruit deck should retain fifty-seven official adventurers")
-	_expect((first.zones[SupplyService.SHOP_DECK_ID] as ZoneData).card_instance_ids.size() == 5, "shop deck should retain five vertical-slice cards")
+	_expect((first.zones[SupplyService.SHOP_DECK_ID] as ZoneData).card_instance_ids.size() == 56, "shop deck should retain fifty-six cards after the opening row")
 	_expect(InvariantService.validate(first).is_empty(), "initial supply should satisfy invariants")
 
 
@@ -4001,6 +4204,39 @@ func _test_combat_hud_integration() -> void:
 			preview_labels += 1
 	_expect(attack_buttons == 4, "combat HUD should show optional skeleton and mandatory draw rewards")
 	_expect(preview_labels == 3, "combat HUD should preview participants for each target")
+	app.queue_free()
+
+
+func _test_official_resource_hud_integration() -> void:
+	var packed := load("res://scenes/boot/main.tscn") as PackedScene
+	var app := packed.instantiate() as GameApp
+	root.add_child(app)
+	await process_frame
+	var state := app.session.state
+	var holy_water_id := _move_definition_to_player_hand(state, &"base:resource/resource-04", &"p1")
+	var monster_id := &"card-monster-rabbit-demon-01"
+	ZoneService.move_card(state, monster_id, ZoneService.find_card_zone(state, monster_id), &"p1:hand")
+	(state.cards[monster_id] as Dictionary)["owner_id"] = "p1"
+	app.session._emit_state_changed()
+	await process_frame
+	var full_card_text_found := false
+	var use_button: Button
+	for child: Node in app.hud.hand_actions.get_children():
+		if child is Label and "驅邪聖水｜費用 2｜榮譽 1" in (child as Label).text \
+				and "棄置 1 張魔物後，抽 3 張牌" in (child as Label).text:
+			full_card_text_found = true
+		elif child is Button and (child as Button).text == "使用":
+			var index := child.get_index()
+			if index > 0 and app.hud.hand_actions.get_child(index - 1) is Label \
+					and "驅邪聖水" in (app.hud.hand_actions.get_child(index - 1) as Label).text:
+				use_button = child as Button
+	_expect(full_card_text_found, "resource HUD should show type values and complete rules text")
+	_expect(use_button != null, "resource HUD should expose a legal item action")
+	if use_button != null:
+		use_button.pressed.emit()
+		await process_frame
+		_expect("必要成本" in app.hud.hand_summary.text and "魔物" in app.hud.hand_summary.text, "resource pending HUD should show its locked mandatory cost")
+		_expect(app.hud.end_phase_button.disabled, "resource cost pending choice should trap command focus")
 	app.queue_free()
 
 
@@ -4954,6 +5190,24 @@ func _find_instance_by_definition(state: GameStateData, definition_id: StringNam
 		if StringName(card.get("definition_id", "")) == definition_id:
 			return card_instance_id
 	return &""
+
+
+func _move_definition_to_player_hand(
+	state: GameStateData, definition_id: StringName, player_id: StringName
+) -> StringName:
+	var card_id := _find_instance_by_definition(state, definition_id)
+	if card_id.is_empty():
+		return &""
+	var player := state.players[player_id] as PlayerStateData
+	var source_zone_id := ZoneService.find_card_zone(state, card_id)
+	if source_zone_id != StringName(player.zone_ids[&"hand"]):
+		var move_result := ZoneService.move_card(
+			state, card_id, source_zone_id, StringName(player.zone_ids[&"hand"])
+		)
+		if not bool(move_result.get("ok", false)):
+			return &""
+	(state.cards[card_id] as Dictionary)["owner_id"] = str(player_id)
+	return card_id
 
 
 func _expose_monster(

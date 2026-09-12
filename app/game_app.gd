@@ -16,6 +16,7 @@ func _ready() -> void:
 	enemy_token.selected.connect(_on_entity_selected)
 	hud.end_phase_requested.connect(_on_end_phase_requested)
 	hud.equip_item_requested.connect(_on_equip_item_requested)
+	hud.activate_equipment_effect_requested.connect(_on_activate_equipment_effect_requested)
 	hud.play_adventurer_requested.connect(_on_play_adventurer_requested)
 	hud.use_item_requested.connect(_on_use_item_requested)
 	hud.attack_target_requested.connect(_on_attack_target_requested)
@@ -48,6 +49,12 @@ func _on_end_phase_requested() -> void:
 
 func _on_equip_item_requested(card_instance_id: StringName, target_card_id: StringName) -> void:
 	session.equip_item(card_instance_id, target_card_id)
+
+
+func _on_activate_equipment_effect_requested(
+	card_instance_id: StringName, effect_index: int
+) -> void:
+	session.activate_equipment_effect(card_instance_id, effect_index)
 
 
 func _on_play_adventurer_requested(card_instance_id: StringName) -> void:

@@ -59,6 +59,8 @@ static func dispatch(
 			error = _apply_end_phase(draft, events, definitions)
 		&"EQUIP_ITEM":
 			error = EquipmentService.apply(draft, actor_id, command, definitions, events)
+		&"ACTIVATE_EQUIPMENT_EFFECT":
+			error = EquipmentService.apply(draft, actor_id, command, definitions, events)
 		&"PLAY_ADVENTURER":
 			error = PartyService.apply(draft, actor_id, command, definitions, events)
 		&"USE_ITEM":
@@ -137,6 +139,8 @@ static func _validate_command(
 			return ""
 		&"EQUIP_ITEM":
 			return EquipmentService.validate(state, actor_id, command, definitions)
+		&"ACTIVATE_EQUIPMENT_EFFECT":
+			return EquipmentService.validate(state, actor_id, command, definitions)
 		&"PLAY_ADVENTURER":
 			return PartyService.validate(state, actor_id, command, definitions)
 		&"USE_ITEM":
@@ -178,6 +182,10 @@ static func _apply_end_phase(
 			state.round_number += 1
 	else:
 		state.phase = PHASES[phase_index + 1]
+		if old_phase == &"action1":
+			var phase_player := state.players.get(old_player_id) as PlayerStateData
+			if phase_player != null and bool(phase_player.turn_facts.get("skip_combat", false)):
+				state.phase = &"action2"
 	events.append({
 		"type": "phase_changed",
 		"actor_id": str(old_player_id),
@@ -199,6 +207,8 @@ static func _apply_end_phase(
 		trigger_timing = &"on_combat_start"
 	elif old_phase == &"combat" and state.phase == &"action2":
 		trigger_timing = &"on_combat_end"
+	elif old_phase == &"action2" and state.phase == &"purchase":
+		trigger_timing = &"on_purchase_start"
 	if not trigger_timing.is_empty():
 		return EffectResolver.resolve_party_trigger(
 			state, old_player_id, trigger_timing, events, definitions
