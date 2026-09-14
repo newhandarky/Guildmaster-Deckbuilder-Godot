@@ -3,20 +3,26 @@ extends RefCounted
 
 signal state_changed(public_state: Dictionary)
 signal events_committed(events: Array[Dictionary])
+signal private_view_changed(viewer_id: StringName, private_state: Dictionary)
+signal private_events_committed(viewer_id: StringName, events: Array[Dictionary])
 signal command_rejected(error_code: String)
 
 const CONTENT_PACK_PATH := "res://content/packs/base_vertical_slice.json"
-const RULESET_FINGERPRINT := "ruleset:vertical-slice:0.19.0"
+const RULESET_FINGERPRINT := "ruleset:vertical-slice:0.20.0"
 
 var state: GameStateData
 var content_registry := ContentRegistry.new()
 
 
-func start_new_game(seed_value: int = 20260909, enable_helpers: bool = true) -> PackedStringArray:
+func start_new_game(
+	seed_value: int = 20260909, enable_helpers: bool = true, enable_bonds: bool = true
+) -> PackedStringArray:
 	var errors := content_registry.load_pack(CONTENT_PACK_PATH)
 	if not errors.is_empty():
 		return errors
-	state = GameStateData.create_vertical_slice(seed_value, content_registry.definitions, enable_helpers)
+	state = GameStateData.create_vertical_slice(
+		seed_value, content_registry.definitions, enable_helpers, enable_bonds
+	)
 	errors.append_array(InvariantService.validate(state))
 	if errors.is_empty():
 		_emit_state_changed()
@@ -202,7 +208,10 @@ func submit_command(envelope: Dictionary) -> Dictionary:
 		return result
 	state = result["state"] as GameStateData
 	_emit_state_changed()
-	events_committed.emit(result["events"])
+	events_committed.emit(_visible_events(result["events"], &""))
+	private_events_committed.emit(
+		_required_choice_actor(), _visible_events(result["events"], _required_choice_actor())
+	)
 	return result
 
 
@@ -211,7 +220,7 @@ func snapshot() -> Dictionary:
 		return {}
 	return {
 		"snapshot_schema_version": 1,
-		"app_version": "0.19.0",
+		"app_version": "0.20.0",
 		"content_fingerprint": content_registry.pack_fingerprint,
 		"ruleset_fingerprint": RULESET_FINGERPRINT,
 		"state": state.to_dictionary(),
@@ -220,15 +229,39 @@ func snapshot() -> Dictionary:
 
 
 func _emit_state_changed() -> void:
-	var public_state := state.to_dictionary()
+	var public_state := PlayerView.project(state, &"")
 	public_state["definitions"] = content_registry.to_public_dictionary()
-	public_state["legal_commands"] = get_legal_commands(_required_choice_actor())
 	public_state["active_resources"] = ResourceService.evaluate_player(
 		state,
 		state.active_player_id,
 		content_registry.definitions
 	)
 	state_changed.emit(public_state)
+	var viewer_id := _required_choice_actor()
+	var private_state := get_player_view(viewer_id)
+	private_state["definitions"] = content_registry.to_public_dictionary()
+	private_state["legal_commands"] = get_legal_commands(viewer_id)
+	private_state["active_resources"] = public_state["active_resources"]
+	private_view_changed.emit(viewer_id, private_state)
+
+
+func get_player_view(viewer_id: StringName) -> Dictionary:
+	if state == null or not state.players.has(viewer_id):
+		return {}
+	return PlayerView.project(state, viewer_id)
+
+
+func _visible_events(events: Array[Dictionary], viewer_id: StringName) -> Array[Dictionary]:
+	var visible: Array[Dictionary] = []
+	for event: Dictionary in events:
+		var filtered := event.duplicate(true)
+		if StringName(event.get("type", "")) in [
+			&"bond_setup_requested", &"bond_choice_progressed", &"bond_completion_requested"
+		] and StringName(event.get("required_actor_id", event.get("actor_id", ""))) != viewer_id:
+			filtered.erase("private_card_ids")
+			filtered.erase("card_instance_id")
+		visible.append(filtered)
+	return visible
 
 
 func _required_choice_actor() -> StringName:

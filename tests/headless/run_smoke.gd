@@ -2,13 +2,14 @@ extends SceneTree
 
 const BossService = preload("res://domain/state/boss_service.gd")
 const BossRuleEvaluator = preload("res://domain/rules/boss_rule_evaluator.gd")
+const BondSuite = preload("res://tests/headless/bond_suite.gd")
 
 var _failures: PackedStringArray = []
 
 
 func _baseline_state(seed: int = 20260909, definitions: Dictionary = {}) -> GameStateData:
 	# Legacy regression fixtures isolate their earlier card mechanics from the new global helper.
-	return GameStateData.create_vertical_slice(seed, definitions, false)
+	return GameStateData.create_vertical_slice(seed, definitions, false, false)
 
 
 func _init() -> void:
@@ -102,11 +103,13 @@ func _run() -> void:
 	_test_official_helper_continuous_and_lifecycle()
 	_test_official_helper_choices_and_rotation()
 	await _test_official_helper_hud()
+	_failures.append_array(BondSuite.new().run(_load_definitions()))
+	await _test_bond_hud()
 
 
 func _helper_state(number: int, seed: int = 1900) -> GameStateData:
 	var definitions := _load_definitions()
-	var state := GameStateData.create_vertical_slice(seed, definitions)
+	var state := GameStateData.create_vertical_slice(seed, definitions, true, false)
 	state.effect_state.clear()
 	for player_id: StringName in state.turn_order:
 		(state.players[player_id] as PlayerStateData).reset_turn_scope()
@@ -127,8 +130,8 @@ func _test_official_helper_content_and_setup() -> void:
 	for index in 12:
 		var definition := definitions.get(StringName("base:helper/helper-%02d" % (index + 1))) as CardDefinition
 		_expect(definition != null and definition.card_type == &"helper" and definition.copies == 1 and definition.display_name == expected_names[index] and not definition.rules_text.is_empty() and not definition.effects.is_empty(), "helper %02d should have formal content" % (index + 1))
-	var first := GameStateData.create_vertical_slice(1911, definitions)
-	var second := GameStateData.create_vertical_slice(1911, definitions)
+	var first := GameStateData.create_vertical_slice(1911, definitions, true, false)
+	var second := GameStateData.create_vertical_slice(1911, definitions, true, false)
 	_expect(CanonicalJson.sha256(first.to_dictionary()) == CanonicalJson.sha256(second.to_dictionary()), "helper setup should be deterministic")
 	_expect(InvariantService.validate(first).is_empty(), "helper setup should satisfy invariants")
 	var total := 0
@@ -418,11 +421,105 @@ func _test_official_helper_hud() -> void:
 	await process_frame
 
 
+func _test_bond_hud() -> void:
+	var packed := load("res://scenes/boot/main.tscn") as PackedScene
+	var app := packed.instantiate() as GameApp
+	root.add_child(app)
+	await process_frame
+	_expect(app.session.state.bonds_enabled and "秘密羈絆設置" in app.hud.hand_title.text \
+			and "玩家一" in app.hud.hand_summary.text and app.hud.end_phase_button.disabled,
+		"bond HUD begins with private setup and closed ordinary commands")
+	var labels := ""
+	var buttons: Array[Button] = []
+	for child: Node in app.hud.hand_actions.get_children():
+		if child is Label:
+			labels += (child as Label).text
+		if child is Button:
+			buttons.append(child as Button)
+	_expect(buttons.size() == 7 and "榮譽" in labels and "效果：" in labels,
+		"bond HUD shows seven candidates with full data")
+	if buttons.size() == 7:
+		_expect(buttons[0].focus_neighbor_top == buttons[6].get_path() \
+				and buttons[6].focus_neighbor_bottom == buttons[0].get_path(),
+			"bond setup focus remains cyclic")
+	var first_private := str((app.session.state.effect_state.get("eligible_card_ids", []) as Array)[0])
+	for _index in 10:
+		var choice := app.session.state.effect_state
+		if StringName(choice.get("op", "")) != &"select_bonds":
+			break
+		var pick := ""
+		for raw_id: Variant in choice.get("eligible_card_ids", []):
+			if str(raw_id) not in (choice.get("selected_card_ids", []) as Array):
+				pick = str(raw_id)
+				break
+		var result := app.session.resolve_choice(str(choice.get("choice_id", "")), StringName(pick), false)
+		_expect(bool(result.get("ok", false)), "bond HUD setup choice commits")
+		if not bool(result.get("ok", false)):
+			break
+		await process_frame
+		if StringName(app.session.state.effect_state.get("required_actor_id", "")) == &"p2":
+			_expect("玩家二" in app.hud.hand_summary.text and app.hud.end_phase_button.disabled \
+					and not app.hud._cards.has(first_private),
+				"bond HUD changes to next required actor without leaking first player's bond")
+	_expect(app.session.state.effect_state.is_empty() and "本人未完成羈絆" in _labels_text(app.hud.hand_actions),
+		"bond HUD displays only current player's incomplete bonds after setup")
+	if app.session.state.effect_state.is_empty():
+		BondSuite.new()._install_bond(app.session.state, &"card-bond-24", &"p1")
+		(app.session.state.players[&"p1"] as PlayerStateData).turn_facts["defeated_monster_count"] = 1
+		var bond_events: Array[Dictionary] = []
+		BondService.check(app.session.state, &"p1", &"after_defeat", {}, bond_events, app.session.content_registry.definitions)
+		app.session._emit_state_changed()
+		await process_frame
+		var claim_buttons: Array[Button] = []
+		for child: Node in app.hud.hand_actions.get_children():
+			if child is Button:
+				claim_buttons.append(child as Button)
+		_expect("羈絆完成選擇" in app.hud.hand_title.text and "全場鎮壓" in _labels_text(app.hud.hand_actions) \
+				and app.hud.end_phase_button.disabled and claim_buttons.size() >= 2,
+			"bond HUD shows private claim candidates and confirmation")
+		if claim_buttons.size() >= 2:
+			_expect(claim_buttons[0].focus_neighbor_top == claim_buttons.back().get_path() \
+					and claim_buttons.back().focus_neighbor_bottom == claim_buttons[0].get_path(),
+				"bond completion focus remains cyclic")
+		var claim := app.session.resolve_choice(
+			str(app.session.state.effect_state.get("choice_id", "")), &"card-bond-24", false
+		)
+		_expect(bool(claim.get("ok", false)), "bond HUD stages selected claim")
+		if bool(claim.get("ok", false)):
+			await process_frame
+			_expect("確認完成" in _button_text(app.hud.hand_actions), "bond HUD confirms staged subset")
+			var committed := app.session.resolve_choice(
+				str(app.session.state.effect_state.get("choice_id", "")), &"", true
+			)
+			_expect(bool(committed.get("ok", false)), "bond HUD confirms selected claim")
+			await process_frame
+			_expect("已完成羈絆" in app.hud.market_summary.text and "全場鎮壓" in app.hud.market_summary.text,
+				"completed bond becomes public in HUD")
+	app.queue_free()
+	await process_frame
+
+
+func _labels_text(container: Node) -> String:
+	var result := ""
+	for child: Node in container.get_children():
+		if child is Label:
+			result += (child as Label).text
+	return result
+
+
+func _button_text(container: Node) -> String:
+	var result := ""
+	for child: Node in container.get_children():
+		if child is Button:
+			result += (child as Button).text
+	return result
+
+
 func _test_content_pack() -> void:
 	var registry := ContentRegistry.new()
 	var errors := registry.load_pack("res://content/packs/base_vertical_slice.json")
 	_expect(errors.is_empty(), "base content pack should validate: %s" % "; ".join(errors))
-	_expect(registry.definitions.size() == 102, "base pack should load 102 formal definitions")
+	_expect(registry.definitions.size() == 132, "base pack should load 132 formal definitions")
 	var mimic := registry.definitions.get(&"base:monster/monster-02") as CardDefinition
 	_expect(
 		mimic != null and mimic.copies == 3 and mimic.combat == 5 \
@@ -511,7 +608,7 @@ func _test_content_pack_reload() -> void:
 	var first_fingerprint := registry.pack_fingerprint
 	var second_errors := registry.load_pack("res://content/packs/base_vertical_slice.json")
 	_expect(first_errors.is_empty() and second_errors.is_empty(), "content pack should be safely reloadable")
-	_expect(registry.definitions.size() == 102, "content reload must not retain duplicate definitions")
+	_expect(registry.definitions.size() == 132, "content reload must not retain duplicate definitions")
 	_expect(registry.pack_fingerprint == first_fingerprint, "same content should keep the same fingerprint")
 
 
@@ -5233,7 +5330,7 @@ func _test_turn_rotation() -> void:
 
 func _test_session_turn_integration() -> void:
 	var session := GameSession.new()
-	var errors := session.start_new_game(91, false)
+	var errors := session.start_new_game(91, false, false)
 	_expect(errors.is_empty(), "session should start a two-player game")
 	if not errors.is_empty():
 		return

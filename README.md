@@ -41,6 +41,8 @@ godot --headless --path . --script res://tests/headless/run_smoke.gd
 
 0.19.0 已加入 12 張官方協助者（各 1 張），每局按 Boss 數選取，僅公開 1 張。Boss 討伐後與通用輪替 operation 共用離場→容量收斂／離場效果→新卡登場／進場效果 transition；回合開始、購買開始、休息抽牌前與持續效果也由權威狀態觸發。情報商的跨玩家交牌與進／離場輪抽沿用正式 Zone、可序列化 pending choice、required actor、Legal Commands 及原子性 dispatch。自定義協助者未載入。
 
-正式卡池逐卡對照見 [`content/packs/OFFICIAL_ADVENTURERS.md`](content/packs/OFFICIAL_ADVENTURERS.md)、[`content/packs/OFFICIAL_RESOURCES.md`](content/packs/OFFICIAL_RESOURCES.md) 與 [`content/packs/OFFICIAL_HELPERS.md`](content/packs/OFFICIAL_HELPERS.md)。
+0.20.0 已加入 30 種官方羈絆（各 1 張）。設置時每位玩家從私人 7 張候選選 5 張，未選的 2 張移出本局；相同條件共用資料驅動 predicate 與回合事實記錄。符合條件時以可序列化選擇流程決定同批完成的任意子集合，確認前不公開，未完成羈絆只在持有者 PlayerView 可見。第 5 張或最後 Boss 觸發當前輪次結束政策，起始玩家右手邊玩家完成回合後依正式榮譽與同分序計分。保留 Snapshot、deterministic hash、Legal Commands 與原子性 dispatch。
 
-HUD 會顯示官方卡牌與目前協助者的完整效果，並在待選擇狀態顯示來源、候選、進度與 required actor；強制選擇期間維持鍵盤／手把焦點封閉。完整 final-round policy 留待後續規則模組。`docs/` 是本機企劃資料，已由 `.gitignore` 排除，自定義卡片維持停用。
+正式卡池逐卡對照見 [`content/packs/OFFICIAL_ADVENTURERS.md`](content/packs/OFFICIAL_ADVENTURERS.md)、[`content/packs/OFFICIAL_RESOURCES.md`](content/packs/OFFICIAL_RESOURCES.md)、[`content/packs/OFFICIAL_HELPERS.md`](content/packs/OFFICIAL_HELPERS.md) 與 [`content/packs/OFFICIAL_BONDS.md`](content/packs/OFFICIAL_BONDS.md)。
+
+HUD 會顯示官方卡牌與目前協助者的完整效果、本人未完成羈絆及所有公開已完成羈絆，待選擇時顯示候選、進度與 required actor；強制選擇期間維持鍵盤／手把焦點封閉。`docs/` 是本機企劃資料，已由 `.gitignore` 排除，自定義卡片維持停用。

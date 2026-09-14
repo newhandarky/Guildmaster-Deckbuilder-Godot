@@ -1,0 +1,568 @@
+{
+  "definitions": [
+    {
+      "definition_id": "base:bond/bond-01",
+      "display_name": "提振士氣",
+      "card_type": "bond",
+      "copies": 1,
+      "honor": 4,
+      "tags": [
+        "bond"
+      ],
+      "rules_text": "討伐階段開始時，隊伍中有 3 位冒險者，且皆為輔助或法師。",
+      "completion_rule": {
+        "timing": "combat_start",
+        "op": "party_exact_all_tags",
+        "count": 3,
+        "tags": [
+          "support",
+          "mage"
+        ]
+      },
+      "presentation_id": "base:presentation/bond-01"
+    },
+    {
+      "definition_id": "base:bond/bond-02",
+      "display_name": "獨挑大樑",
+      "card_type": "bond",
+      "copies": 1,
+      "honor": 4,
+      "tags": [
+        "bond"
+      ],
+      "rules_text": "僅使用 1 位冒險者擊敗魔物。",
+      "completion_rule": {
+        "timing": "after_defeat",
+        "op": "combat_participants_exact",
+        "count": 1,
+        "target_type": "monster"
+      },
+      "presentation_id": "base:presentation/bond-02"
+    },
+    {
+      "definition_id": "base:bond/bond-03",
+      "display_name": "魅惑時間",
+      "card_type": "bond",
+      "copies": 1,
+      "honor": 4,
+      "tags": [
+        "bond"
+      ],
+      "rules_text": "討伐階段開始時，隊伍最後有 2 位法師。",
+      "completion_rule": {
+        "timing": "combat_start",
+        "op": "party_edge_tags",
+        "edge": "back",
+        "count": 2,
+        "tag": "mage"
+      },
+      "presentation_id": "base:presentation/bond-03"
+    },
+    {
+      "definition_id": "base:bond/bond-04",
+      "display_name": "卸甲逃跑",
+      "card_type": "bond",
+      "copies": 1,
+      "honor": 3,
+      "tags": [
+        "bond"
+      ],
+      "rules_text": "擊敗魔物或魔王後，隊伍中僅剩 1 位冒險者。",
+      "completion_rule": {
+        "timing": "after_defeat",
+        "op": "party_exact",
+        "count": 1
+      },
+      "presentation_id": "base:presentation/bond-04"
+    },
+    {
+      "definition_id": "base:bond/bond-05",
+      "display_name": "設備改造",
+      "card_type": "bond",
+      "copies": 1,
+      "honor": 3,
+      "tags": [
+        "bond"
+      ],
+      "rules_text": "一回合內從商店購買 2 張以上裝備。",
+      "completion_rule": {
+        "timing": "turn_fact",
+        "op": "fact_min",
+        "key": "bought_equipment",
+        "count": 2
+      },
+      "presentation_id": "base:presentation/bond-05"
+    },
+    {
+      "definition_id": "base:bond/bond-06",
+      "display_name": "順手牽羊",
+      "card_type": "bond",
+      "copies": 1,
+      "honor": 3,
+      "tags": [
+        "bond"
+      ],
+      "rules_text": "一回合內招募冒險者，並購買道具或裝備。",
+      "completion_rule": {
+        "timing": "turn_fact",
+        "op": "facts_all_min",
+        "keys": [
+          "recruited_adventurer",
+          "bought_resource"
+        ],
+        "count": 1
+      },
+      "presentation_id": "base:presentation/bond-06"
+    },
+    {
+      "definition_id": "base:bond/bond-07",
+      "display_name": "援護射擊",
+      "card_type": "bond",
+      "copies": 1,
+      "honor": 4,
+      "tags": [
+        "bond"
+      ],
+      "rules_text": "討伐階段開始時，隊伍最後有 2 位遠程。",
+      "completion_rule": {
+        "timing": "combat_start",
+        "op": "party_edge_tags",
+        "edge": "back",
+        "count": 2,
+        "tag": "ranged"
+      },
+      "presentation_id": "base:presentation/bond-07"
+    },
+    {
+      "definition_id": "base:bond/bond-08",
+      "display_name": "颯爽登場",
+      "card_type": "bond",
+      "copies": 1,
+      "honor": 4,
+      "tags": [
+        "bond"
+      ],
+      "rules_text": "一回合內把 3 位非基礎冒險者加入隊伍。",
+      "completion_rule": {
+        "timing": "turn_fact",
+        "op": "fact_min",
+        "key": "nonstarter_party_entries",
+        "count": 3
+      },
+      "presentation_id": "base:presentation/bond-08"
+    },
+    {
+      "definition_id": "base:bond/bond-09",
+      "display_name": "恐懼凝視",
+      "card_type": "bond",
+      "copies": 1,
+      "honor": 4,
+      "tags": [
+        "bond"
+      ],
+      "rules_text": "討伐階段開始時，隊伍中至少有 3 位坦克或近戰。",
+      "completion_rule": {
+        "timing": "combat_start",
+        "op": "party_tag_count",
+        "count": 3,
+        "tags": [
+          "tank",
+          "melee"
+        ]
+      },
+      "presentation_id": "base:presentation/bond-09"
+    },
+    {
+      "definition_id": "base:bond/bond-10",
+      "display_name": "野性狂化",
+      "card_type": "bond",
+      "copies": 1,
+      "honor": 4,
+      "tags": [
+        "bond"
+      ],
+      "rules_text": "討伐階段開始時，隊伍最前端有 2 位近戰。",
+      "completion_rule": {
+        "timing": "combat_start",
+        "op": "party_edge_tags",
+        "edge": "front",
+        "count": 2,
+        "tag": "melee"
+      },
+      "presentation_id": "base:presentation/bond-10"
+    },
+    {
+      "definition_id": "base:bond/bond-11",
+      "display_name": "急速施法",
+      "card_type": "bond",
+      "copies": 1,
+      "honor": 5,
+      "tags": [
+        "bond"
+      ],
+      "rules_text": "擊敗魔物或魔王後，隊伍內有 2 位以上輔助。",
+      "completion_rule": {
+        "timing": "after_defeat",
+        "op": "party_tag_count",
+        "count": 2,
+        "tags": [
+          "support"
+        ]
+      },
+      "presentation_id": "base:presentation/bond-11"
+    },
+    {
+      "definition_id": "base:bond/bond-12",
+      "display_name": "肉身強化",
+      "card_type": "bond",
+      "copies": 1,
+      "honor": 5,
+      "tags": [
+        "bond"
+      ],
+      "rules_text": "擊敗魔物或魔王後，隊伍內有 2 位以上坦克。",
+      "completion_rule": {
+        "timing": "after_defeat",
+        "op": "party_tag_count",
+        "count": 2,
+        "tags": [
+          "tank"
+        ]
+      },
+      "presentation_id": "base:presentation/bond-12"
+    },
+    {
+      "definition_id": "base:bond/bond-13",
+      "display_name": "全力以赴",
+      "card_type": "bond",
+      "copies": 1,
+      "honor": 4,
+      "tags": [
+        "bond"
+      ],
+      "rules_text": "一個行動階段中使用 3 張以上道具。",
+      "completion_rule": {
+        "timing": "turn_fact",
+        "op": "action_fact_min",
+        "key": "items_used",
+        "count": 3
+      },
+      "presentation_id": "base:presentation/bond-13"
+    },
+    {
+      "definition_id": "base:bond/bond-14",
+      "display_name": "情熱舞蹈",
+      "card_type": "bond",
+      "copies": 1,
+      "honor": 6,
+      "tags": [
+        "bond"
+      ],
+      "rules_text": "討伐階段開始時，隊伍中有 5 種不同職業的冒險者各 1 位，其中至少 3 位為非基礎冒險者。",
+      "completion_rule": {
+        "timing": "combat_start",
+        "op": "party_profession_set",
+        "tags": [
+          "support",
+          "mage",
+          "tank",
+          "melee",
+          "ranged"
+        ],
+        "nonstarter_min": 3
+      },
+      "presentation_id": "base:presentation/bond-14"
+    },
+    {
+      "definition_id": "base:bond/bond-15",
+      "display_name": "天馬行空",
+      "card_type": "bond",
+      "copies": 1,
+      "honor": 5,
+      "tags": [
+        "bond"
+      ],
+      "rules_text": "擊敗魔物或魔王後，隊伍內有 2 位以上遠程。",
+      "completion_rule": {
+        "timing": "after_defeat",
+        "op": "party_tag_count",
+        "count": 2,
+        "tags": [
+          "ranged"
+        ]
+      },
+      "presentation_id": "base:presentation/bond-15"
+    },
+    {
+      "definition_id": "base:bond/bond-16",
+      "display_name": "精明交涉",
+      "card_type": "bond",
+      "copies": 1,
+      "honor": 5,
+      "tags": [
+        "bond"
+      ],
+      "rules_text": "一回合內招募 2 位以上冒險者。",
+      "completion_rule": {
+        "timing": "turn_fact",
+        "op": "fact_min",
+        "key": "recruited_adventurer",
+        "count": 2
+      },
+      "presentation_id": "base:presentation/bond-16"
+    },
+    {
+      "definition_id": "base:bond/bond-17",
+      "display_name": "預知未來",
+      "card_type": "bond",
+      "copies": 1,
+      "honor": 7,
+      "tags": [
+        "bond"
+      ],
+      "rules_text": "一回合內額外抽取 3 張以上的牌。",
+      "completion_rule": {
+        "timing": "turn_fact",
+        "op": "fact_min",
+        "key": "extra_cards_drawn",
+        "count": 3
+      },
+      "presentation_id": "base:presentation/bond-17"
+    },
+    {
+      "definition_id": "base:bond/bond-18",
+      "display_name": "出其不意",
+      "card_type": "bond",
+      "copies": 1,
+      "honor": 3,
+      "tags": [
+        "bond"
+      ],
+      "rules_text": "討伐魔物或魔王時，有 3 種以上職業的非基礎冒險者被一同棄至棄牌堆。",
+      "completion_rule": {
+        "timing": "combat_departure",
+        "op": "combat_departure_professions",
+        "count": 3
+      },
+      "presentation_id": "base:presentation/bond-18"
+    },
+    {
+      "definition_id": "base:bond/bond-19",
+      "display_name": "魔力爆發",
+      "card_type": "bond",
+      "copies": 1,
+      "honor": 5,
+      "tags": [
+        "bond"
+      ],
+      "rules_text": "擊敗魔物或魔王後，隊伍內有 2 位以上法師。",
+      "completion_rule": {
+        "timing": "after_defeat",
+        "op": "party_tag_count",
+        "count": 2,
+        "tags": [
+          "mage"
+        ]
+      },
+      "presentation_id": "base:presentation/bond-19"
+    },
+    {
+      "definition_id": "base:bond/bond-20",
+      "display_name": "勇氣吶喊",
+      "card_type": "bond",
+      "copies": 1,
+      "honor": 5,
+      "tags": [
+        "bond"
+      ],
+      "rules_text": "擊敗魔物或魔王後，隊伍內有 2 位以上近戰。",
+      "completion_rule": {
+        "timing": "after_defeat",
+        "op": "party_tag_count",
+        "count": 2,
+        "tags": [
+          "melee"
+        ]
+      },
+      "presentation_id": "base:presentation/bond-20"
+    },
+    {
+      "definition_id": "base:bond/bond-21",
+      "display_name": "靈光一閃",
+      "card_type": "bond",
+      "copies": 1,
+      "honor": 5,
+      "tags": [
+        "bond"
+      ],
+      "rules_text": "隊伍中有 3 位以上同職業的冒險者。",
+      "completion_rule": {
+        "timing": "party_state",
+        "op": "party_same_profession_min",
+        "count": 3
+      },
+      "presentation_id": "base:presentation/bond-21"
+    },
+    {
+      "definition_id": "base:bond/bond-22",
+      "display_name": "精神陶亂",
+      "card_type": "bond",
+      "copies": 1,
+      "honor": 4,
+      "tags": [
+        "bond"
+      ],
+      "rules_text": "討伐階段開始時，隊伍最前端有 2 位坦克。",
+      "completion_rule": {
+        "timing": "combat_start",
+        "op": "party_edge_tags",
+        "edge": "front",
+        "count": 2,
+        "tag": "tank"
+      },
+      "presentation_id": "base:presentation/bond-22"
+    },
+    {
+      "definition_id": "base:bond/bond-23",
+      "display_name": "冒冒失失",
+      "card_type": "bond",
+      "copies": 1,
+      "honor": 6,
+      "tags": [
+        "bond"
+      ],
+      "rules_text": "一回合內有 3 張以上裝備隨冒險者一同棄至棄牌堆。",
+      "completion_rule": {
+        "timing": "turn_fact",
+        "op": "fact_min",
+        "key": "combat_equipment_discarded",
+        "count": 3
+      },
+      "presentation_id": "base:presentation/bond-23"
+    },
+    {
+      "definition_id": "base:bond/bond-24",
+      "display_name": "全場鎮壓",
+      "card_type": "bond",
+      "copies": 1,
+      "honor": 3,
+      "tags": [
+        "bond"
+      ],
+      "rules_text": "擊敗 1 隻魔物。",
+      "completion_rule": {
+        "timing": "after_defeat",
+        "op": "fact_min",
+        "key": "defeated_monster_count",
+        "count": 1
+      },
+      "presentation_id": "base:presentation/bond-24"
+    },
+    {
+      "definition_id": "base:bond/bond-25",
+      "display_name": "母性感化",
+      "card_type": "bond",
+      "copies": 1,
+      "honor": 4,
+      "tags": [
+        "bond"
+      ],
+      "rules_text": "一回合內使用 3 張以上魔物進行購買。",
+      "completion_rule": {
+        "timing": "turn_fact",
+        "op": "fact_min",
+        "key": "monster_cards_used_for_purchase",
+        "count": 3
+      },
+      "presentation_id": "base:presentation/bond-25"
+    },
+    {
+      "definition_id": "base:bond/bond-26",
+      "display_name": "魔性誘惑",
+      "card_type": "bond",
+      "copies": 1,
+      "honor": 4,
+      "tags": [
+        "bond"
+      ],
+      "rules_text": "一回合內擊敗 2 隻以上魔物。",
+      "completion_rule": {
+        "timing": "after_defeat",
+        "op": "fact_min",
+        "key": "defeated_monster_count",
+        "count": 2
+      },
+      "presentation_id": "base:presentation/bond-26"
+    },
+    {
+      "definition_id": "base:bond/bond-27",
+      "display_name": "悠悠哉哉",
+      "card_type": "bond",
+      "copies": 1,
+      "honor": 4,
+      "tags": [
+        "bond"
+      ],
+      "rules_text": "一回合內花費購買力 7 以上。",
+      "completion_rule": {
+        "timing": "turn_fact",
+        "op": "spent_purchase_min",
+        "count": 7
+      },
+      "presentation_id": "base:presentation/bond-27"
+    },
+    {
+      "definition_id": "base:bond/bond-28",
+      "display_name": "鎮魂演奏",
+      "card_type": "bond",
+      "copies": 1,
+      "honor": 4,
+      "tags": [
+        "bond"
+      ],
+      "rules_text": "擊敗魔物或魔王後，隊伍中剩餘 2 位以上冒險者皆為同一職業。",
+      "completion_rule": {
+        "timing": "after_defeat",
+        "op": "party_all_same_profession_min",
+        "count": 2
+      },
+      "presentation_id": "base:presentation/bond-28"
+    },
+    {
+      "definition_id": "base:bond/bond-29",
+      "display_name": "神聖祈禱",
+      "card_type": "bond",
+      "copies": 1,
+      "honor": 4,
+      "tags": [
+        "bond"
+      ],
+      "rules_text": "討伐階段開始時，隊伍最後有 2 位輔助。",
+      "completion_rule": {
+        "timing": "combat_start",
+        "op": "party_edge_tags",
+        "edge": "back",
+        "count": 2,
+        "tag": "support"
+      },
+      "presentation_id": "base:presentation/bond-29"
+    },
+    {
+      "definition_id": "base:bond/bond-30",
+      "display_name": "洗腦操縱",
+      "card_type": "bond",
+      "copies": 1,
+      "honor": 4,
+      "tags": [
+        "bond"
+      ],
+      "rules_text": "隊伍中有 3 種以上不同職業的非起始冒險者。",
+      "completion_rule": {
+        "timing": "party_state",
+        "op": "party_nonstarter_professions_min",
+        "count": 3
+      },
+      "presentation_id": "base:presentation/bond-30"
+    }
+  ]
+}

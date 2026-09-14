@@ -77,6 +77,8 @@ static func dispatch(
 			return _failure("unsupported_command", before_hash)
 	if not error.is_empty():
 		return _failure(error, before_hash)
+	BondService.record_and_check(draft, state.phase, events, definitions)
+	BondService.update_final_round(draft, events)
 
 	var invariant_errors := InvariantService.validate(draft)
 	if not invariant_errors.is_empty():
@@ -207,6 +209,11 @@ static func _apply_end_phase(
 	elif old_phase == &"action2" and state.phase == &"purchase":
 		trigger_timing = &"on_purchase_start"
 	if not trigger_timing.is_empty():
+		if trigger_timing == &"on_combat_start" and state.bonds_enabled:
+			BondService.check(state, old_player_id, &"combat_start", {}, events, definitions)
+			if not state.effect_state.is_empty():
+				state.effect_state["bond_combat_start_continuation"] = true
+				return ""
 		var trigger_error := EffectResolver.resolve_party_trigger(
 			state, old_player_id, trigger_timing, events, definitions
 		)
@@ -234,6 +241,8 @@ static func finish_rest_phase(
 	events.append({"type":"hand_restocked","player_id":str(old_player_id),"requested_count":hand_size,"drawn_count":int(draw_result.get("drawn_count", 0))})
 	outgoing_player.reset_turn_scope()
 	events.append({"type":"turn_resources_reset","player_id":str(old_player_id)})
+	if BondService.finish_if_boundary(state, old_player_id, events, definitions):
+		return ""
 	state.phase = &"action1"
 	var player_index := state.turn_order.find(old_player_id)
 	state.active_player_id = state.turn_order[(player_index + 1) % state.turn_order.size()]

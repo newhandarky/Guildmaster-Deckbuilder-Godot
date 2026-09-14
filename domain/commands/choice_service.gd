@@ -11,6 +11,8 @@ static func get_legal_commands(
 	if StringName(choice.get("type", "")) != &"pending_choice" \
 			or _required_actor_id(choice) != actor_id:
 		return commands
+	if StringName(choice.get("op", "")) in [&"select_bonds", &"complete_bonds"]:
+		return BondService.legal_commands(state, actor_id)
 	var selected_card_ids := choice.get("selected_card_ids", []) as Array
 	var candidate_ids := (
 		choice.get("remaining_card_ids", []) as Array
@@ -51,6 +53,8 @@ static func validate(
 	var choice := state.effect_state
 	if StringName(choice.get("type", "")) != &"pending_choice":
 		return "no_pending_choice"
+	if StringName(choice.get("op", "")) in [&"select_bonds", &"complete_bonds"]:
+		return BondService.validate_choice(state, actor_id, command)
 	if _required_actor_id(choice) != actor_id:
 		return "wrong_choice_actor"
 	if str(command.get("choice_id", "")) != str(choice.get("choice_id", "")):
@@ -359,6 +363,8 @@ static func apply(
 	var skip := bool(command.get("skip", false))
 	var card_instance_id := StringName(command.get("card_instance_id", ""))
 	var operation := StringName(choice.get("op", ""))
+	if operation in [&"select_bonds", &"complete_bonds"]:
+		return BondService.apply_choice(state, actor_id, command, events, definitions)
 	if operation == &"draft_gain_card":
 		return _apply_draft_gain(state, actor_id, choice, card_instance_id, events, definitions)
 	if operation == &"choose_supply_deck_draft":

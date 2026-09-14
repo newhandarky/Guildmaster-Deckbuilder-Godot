@@ -328,6 +328,7 @@ static func apply(
 	player.turn_facts[&"defeated_enemy"] = true
 	var counter_key := &"defeated_monster_count"
 	player.turn_facts[counter_key] = int(player.turn_facts.get(counter_key, 0)) + 1
+	player.counters[counter_key] = int(player.counters.get(counter_key, 0)) + 1
 	var defeat_trigger_error := EffectResolver.resolve_party_trigger(
 		state, actor_id, &"on_enemy_defeated_if_attached", events, definitions
 	)

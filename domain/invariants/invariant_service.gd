@@ -9,6 +9,7 @@ static func validate(state: GameStateData) -> PackedStringArray:
 	_validate_turn_order(state, errors)
 	_validate_players(state, errors)
 	_validate_supply_zones(state, errors)
+	errors.append_array(BondService.validate_state(state))
 	_validate_effect_state(state, errors)
 	var locations: Dictionary = {}
 	for zone_id: Variant in state.zones:
@@ -292,6 +293,8 @@ static func _validate_players(state: GameStateData, errors: PackedStringArray) -
 		&"equipment": &"equipment",
 		&"play_area": &"play_area",
 		&"bonds": &"bonds",
+		&"bond_candidates": &"temporary_choice",
+		&"completed_bonds": &"bonds",
 		&"removed": &"removed",
 		&"inspection": &"temporary_choice",
 	}
@@ -331,7 +334,7 @@ static func _validate_players(state: GameStateData, errors: PackedStringArray) -
 				errors.append("Player zone %s has the wrong owner" % zone_id)
 			elif zone.kind != expected_zone_kinds[zone_key]:
 				errors.append("Player zone %s has invalid kind %s" % [zone_id, zone.kind])
-			var expected_visibility: StringName = &"owner_only" if zone_key in [&"draw_pile", &"hand", &"bonds", &"inspection"] else &"public"
+			var expected_visibility: StringName = &"owner_only" if zone_key in [&"draw_pile", &"hand", &"bonds", &"bond_candidates", &"inspection"] else &"public"
 			if zone != null and zone.visibility != expected_visibility:
 				errors.append("Player zone %s has invalid visibility %s" % [zone_id, zone.visibility])
 
@@ -362,6 +365,8 @@ static func _validate_effect_state(state: GameStateData, errors: PackedStringArr
 	var operation := StringName(choice.get("op", ""))
 	if player != null:
 		match operation:
+			&"select_bonds", &"complete_bonds":
+				pass
 			&"choose_supply_deck_draft":
 				if StringName(choice.get("source_zone_id", "")) != HelperService.DRAFT_ROW_ID \
 						or StringName(choice.get("destination_zone_id", "")) != HelperService.DRAFT_ROW_ID:
@@ -552,7 +557,7 @@ static func _validate_effect_state(state: GameStateData, errors: PackedStringArr
 	var maximum := int(choice.get("max_selections", -1))
 	var maximum_limit := (
 		eligible_seen.size()
-		if operation in [&"order_deck_top", &"choose_refresh_row"]
+		if operation in [&"order_deck_top", &"choose_refresh_row", &"select_bonds", &"complete_bonds"]
 		else (2 if operation in [&"choose_remove_card", &"choose_gain_card"] else 1)
 	)
 	if minimum < 0 or maximum < minimum or maximum > maximum_limit:

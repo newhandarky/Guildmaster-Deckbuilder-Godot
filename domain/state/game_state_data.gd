@@ -5,12 +5,14 @@ const ZoneDataType = preload("res://domain/state/zone_data.gd")
 const PlayerStateDataType = preload("res://domain/state/player_state_data.gd")
 const BossServiceType = preload("res://domain/state/boss_service.gd")
 const HelperServiceType = preload("res://domain/state/helper_service.gd")
+const BondServiceType = preload("res://domain/state/bond_service.gd")
 
 var schema_version: int = 1
 var game_id: StringName = &"game-demo-001"
-var content_version: String = "0.19.0"
-var ruleset_version: String = "0.19.0"
+var content_version: String = "0.20.0"
+var ruleset_version: String = "0.20.0"
 var helpers_enabled: bool = true
+var bonds_enabled: bool = true
 var seed_value: int = 20260909
 var rng_state: int = 0
 var revision: int = 0
@@ -24,15 +26,19 @@ var players: Dictionary = {}
 var cards: Dictionary = {}
 var zones: Dictionary = {}
 var effect_state: Dictionary = {}
+var final_round: Dictionary = {}
+var final_scores: Dictionary = {}
 var event_cursor: int = 0
 var processed_command_ids: Array[String] = []
 
 
 static func create_vertical_slice(
-	seed: int = 20260909, definitions: Dictionary = {}, enable_helpers: bool = true
+	seed: int = 20260909, definitions: Dictionary = {}, enable_helpers: bool = true,
+	enable_bonds: bool = true
 ) -> GameStateData:
 	var state := GameStateData.new()
 	state.helpers_enabled = enable_helpers
+	state.bonds_enabled = enable_bonds
 	state.seed_value = seed
 	state.rng_state = DeterministicRng.new(seed).get_state()
 	var player_one := PlayerStateDataType.create(&"p1", 0, "玩家一")
@@ -293,6 +299,8 @@ static func create_vertical_slice(
 	BossServiceType.setup(state, definitions)
 	if enable_helpers:
 		HelperServiceType.setup(state, definitions)
+	if enable_bonds:
+		BondServiceType.setup(state, definitions)
 	return state
 
 
@@ -303,6 +311,7 @@ static func from_dictionary(data: Dictionary) -> GameStateData:
 	state.content_version = str(data.get("content_version", ""))
 	state.ruleset_version = str(data.get("ruleset_version", ""))
 	state.helpers_enabled = bool(data.get("helpers_enabled", true))
+	state.bonds_enabled = bool(data.get("bonds_enabled", false))
 	state.seed_value = int(data.get("seed", 0))
 	state.rng_state = int(data.get("rng_state", 0))
 	state.revision = int(data.get("revision", 0))
@@ -325,6 +334,8 @@ static func from_dictionary(data: Dictionary) -> GameStateData:
 		var zone := ZoneDataType.from_dictionary(serialized_zones[zone_id])
 		state.zones[zone.zone_id] = zone
 	state.effect_state = (data.get("effect_state", {}) as Dictionary).duplicate(true)
+	state.final_round = (data.get("final_round", {}) as Dictionary).duplicate(true)
+	state.final_scores = (data.get("final_scores", {}) as Dictionary).duplicate(true)
 	state.event_cursor = int(data.get("event_cursor", 0))
 	for command_id: Variant in data.get("processed_command_ids", []):
 		state.processed_command_ids.append(str(command_id))
@@ -338,6 +349,7 @@ func clone_state() -> GameStateData:
 	copy.content_version = content_version
 	copy.ruleset_version = ruleset_version
 	copy.helpers_enabled = helpers_enabled
+	copy.bonds_enabled = bonds_enabled
 	copy.seed_value = seed_value
 	copy.rng_state = rng_state
 	copy.revision = revision
@@ -353,6 +365,8 @@ func clone_state() -> GameStateData:
 	for zone_id: Variant in zones:
 		copy.zones[zone_id] = (zones[zone_id] as ZoneData).clone_zone()
 	copy.effect_state = effect_state.duplicate(true)
+	copy.final_round = final_round.duplicate(true)
+	copy.final_scores = final_scores.duplicate(true)
 	copy.event_cursor = event_cursor
 	copy.processed_command_ids.assign(processed_command_ids)
 	return copy
@@ -374,6 +388,7 @@ func to_dictionary() -> Dictionary:
 		"content_version": content_version,
 		"ruleset_version": ruleset_version,
 		"helpers_enabled": helpers_enabled,
+		"bonds_enabled": bonds_enabled,
 		"seed": seed_value,
 		# JSON numbers are doubles, so encode the 64-bit RNG state losslessly.
 		"rng_state": str(rng_state),
@@ -388,6 +403,8 @@ func to_dictionary() -> Dictionary:
 		"cards": serialized_cards,
 		"zones": serialized_zones,
 		"effect_state": effect_state.duplicate(true),
+		"final_round": final_round.duplicate(true),
+		"final_scores": final_scores.duplicate(true),
 		"event_cursor": event_cursor,
 		"processed_command_ids": processed_command_ids.duplicate(),
 	}
@@ -402,12 +419,14 @@ static func _add_player_zones(state: GameStateData, player: PlayerStateData) -> 
 		&"equipment": &"equipment",
 		&"play_area": &"play_area",
 		&"bonds": &"bonds",
+		&"bond_candidates": &"temporary_choice",
+		&"completed_bonds": &"bonds",
 		&"removed": &"removed",
 		&"inspection": &"temporary_choice",
 	}
 	for zone_key: StringName in PlayerStateData.REQUIRED_ZONE_KEYS:
 		var visibility: StringName = (
-			&"owner_only" if zone_key in [&"draw_pile", &"hand", &"bonds", &"inspection"] else &"public"
+			&"owner_only" if zone_key in [&"draw_pile", &"hand", &"bonds", &"bond_candidates", &"inspection"] else &"public"
 		)
 		var zone := ZoneDataType.new(player.zone_ids[zone_key], zone_kinds[zone_key], visibility)
 		zone.metadata = {"owner_id": str(player.player_id)}

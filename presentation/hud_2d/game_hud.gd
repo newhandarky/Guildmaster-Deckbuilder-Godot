@@ -63,10 +63,10 @@ func update_state(state: Dictionary) -> void:
 		_clear_refresh_selection()
 	_cards = (state.get("cards", {}) as Dictionary).duplicate(true)
 	_definitions = (state.get("definitions", {}) as Dictionary).duplicate(true)
+	var players := state.get("players", {}) as Dictionary
 	round_label.text = "回合 %d" % int(state.get("round", 1))
 	phase_label.text = "階段：%s" % _localized_phase(str(state.get("phase", "")))
 	var active_player_id := str(state.get("active_player_id", ""))
-	var players := state.get("players", {}) as Dictionary
 	var active_player := players.get(active_player_id, {}) as Dictionary
 	active_player_label.text = "目前玩家：%s" % str(active_player.get("display_name", active_player_id))
 	revision_label.text = "Revision %d" % int(state.get("revision", 0))
@@ -75,6 +75,27 @@ func update_state(state: Dictionary) -> void:
 		int(resources.get("combat", 0)),
 		int(resources.get("purchase_power", 0)),
 	]
+	var final_round := state.get("final_round", {}) as Dictionary
+	if not final_round.is_empty():
+		resource_label.text += "　終局輪：回合 %d" % int(final_round.get("trigger_round", 0))
+	if str(state.get("status", "")) == "finished":
+		var scores := state.get("final_scores", {}) as Dictionary
+		var score_labels: Array[String] = []
+		for player_id: Variant in state.get("turn_order", []):
+			var score := scores.get(str(player_id), {}) as Dictionary
+			score_labels.append("%s %d 榮譽" % [
+				str((players.get(str(player_id), {}) as Dictionary).get("display_name", player_id)),
+				int(score.get("honor", 0)),
+			])
+		resource_label.text += "　遊戲結束｜%s" % "、".join(score_labels)
+		var winners := scores.get("winners", []) as Array
+		if not winners.is_empty():
+			var winner_names: Array[String] = []
+			for raw_winner: Variant in winners:
+				winner_names.append(str((players.get(str(raw_winner), {}) as Dictionary).get(
+					"display_name", raw_winner
+				)))
+			resource_label.text += "｜勝者：%s" % "、".join(winner_names)
 	var legal_commands := state.get("legal_commands", []) as Array
 	end_phase_button.disabled = not _commands_contain_type(legal_commands, "END_PHASE")
 	end_phase_button.text = (
@@ -82,6 +103,20 @@ func update_state(state: Dictionary) -> void:
 	)
 	_rebuild_hand(state, active_player_id)
 	_rebuild_market(state)
+	var public_bonds: Array[String] = []
+	for raw_player_id: Variant in players:
+		var public_player := players[raw_player_id] as Dictionary
+		var public_zones := public_player.get("zone_ids", {}) as Dictionary
+		var completed := (state.get("zones", {}) as Dictionary).get(
+			str(public_zones.get("completed_bonds", "")), {}
+		) as Dictionary
+		for raw_id: Variant in completed.get("card_instance_ids", []):
+			public_bonds.append("%s：%s" % [
+				str(public_player.get("display_name", raw_player_id)),
+				_card_display_name(str(raw_id)),
+			])
+	if not public_bonds.is_empty():
+		market_summary.text += "　已完成羈絆：%s" % "、".join(public_bonds)
 
 
 func show_entity(display_name: String, details: String) -> void:
@@ -105,6 +140,15 @@ func show_events(events: Array[Dictionary]) -> void:
 			return
 	for index in range(events.size() - 1, -1, -1):
 		var event := events[index] as Dictionary
+		if event.get("type") == "bonds_completed":
+			event_label.text = "羈絆確認完成 %d 張" % int(event.get("count", 0))
+			return
+		if event.get("type") == "final_round_started":
+			event_label.text = "已進入終局輪，完成本輪後計分"
+			return
+		if event.get("type") == "game_finished":
+			event_label.text = "遊戲結束，榮譽已結算"
+			return
 		if event.get("type") == "card_transferred":
 			event_label.text = "%s 將 %s 交給 %s" % [
 				_player_display_name(str(event.get("from_player_id", ""))),
@@ -261,6 +305,7 @@ func _rebuild_hand(state: Dictionary, active_player_id: String) -> void:
 	var removed := zones.get(str(zone_ids.get("removed", "")), {}) as Dictionary
 	var card_ids := hand_card_ids.duplicate()
 	var choice_source_label := _choice_source_summary(effect_state)
+	var choice_operation := StringName(effect_state.get("op", ""))
 	if choice_commands.is_empty():
 		hand_title.text = "手牌與合法操作"
 		hand_summary.text = "目前手牌：%d 張　移除區：%d 張" % [
@@ -268,7 +313,6 @@ func _rebuild_hand(state: Dictionary, active_player_id: String) -> void:
 			(removed.get("card_instance_ids", []) as Array).size(),
 		]
 	else:
-		var choice_operation := StringName(effect_state.get("op", ""))
 		hand_title.text = (
 			str(effect_state.get("choice_title", "多人輪抽"))
 			if choice_operation == &"draft_gain_card"
@@ -288,7 +332,14 @@ func _rebuild_hand(state: Dictionary, active_player_id: String) -> void:
 					and max_selections > 1
 			else "%d 張" % card_ids.size()
 		)
-		if choice_operation == &"draft_gain_card":
+		if choice_operation in [&"select_bonds", &"complete_bonds"]:
+			hand_title.text = "秘密羈絆設置" if choice_operation == &"select_bonds" else "羈絆完成選擇"
+			hand_summary.text = "%s｜目前應選：%s｜已選 %d/%d" % [
+				str(effect_state.get("prompt", "")),
+				_player_display_name(str(effect_state.get("required_actor_id", ""))),
+				selected_count, max_selections,
+			]
+		elif choice_operation == &"draft_gain_card":
 			hand_summary.text = "%s｜目前應選：%s｜剩餘 %d 張" % [
 				str(effect_state.get("prompt", "請完成選擇")),
 				_player_display_name(str(effect_state.get("required_actor_id", ""))),
@@ -343,6 +394,8 @@ func _rebuild_hand(state: Dictionary, active_player_id: String) -> void:
 			)
 			if StringName(effect_state.get("op", "")) == &"choose_supply_deck_draft":
 				choice_button.text = "選擇%s" % card_label.text
+			if choice_operation in [&"select_bonds", &"complete_bonds"]:
+				choice_button.text = "保留此羈絆" if choice_operation == &"select_bonds" else "選入本批完成"
 			if StringName(effect_state.get("op", "")) == &"choose_move_card" \
 					and str(effect_state.get("destination_zone_id", "")).ends_with(":discard-pile"):
 				choice_button.text = "棄置此牌"
@@ -419,12 +472,17 @@ func _rebuild_hand(state: Dictionary, active_player_id: String) -> void:
 			"完成移除（已選 %d/%d）" % [selected_count, max_selections]
 			if StringName(effect_state.get("op", "")) == &"choose_remove_card" \
 					and selected_count > 0
-			else ("完成棄置（已選 %d/%d）" % [selected_count, max_selections]
+		else ("完成棄置（已選 %d/%d）" % [selected_count, max_selections]
 				if StringName(effect_state.get("op", "")) == &"choose_move_card" \
 						and max_selections > 1 and selected_count > 0
 				else ("不棄置" if StringName(effect_state.get("op", "")) == &"choose_move_card" \
 						and max_selections > 1 else "略過%s" % _choice_action_label(StringName(effect_state.get("op", "")))))
 		)
+		if choice_operation == &"complete_bonds":
+			skip_choice_button.text = (
+				"確認完成（已選 %d 張）" % selected_count
+				if selected_count > 0 else "本次暫不完成"
+			)
 		skip_choice_button.custom_minimum_size = Vector2(0.0, 36.0)
 		skip_choice_button.focus_mode = Control.FOCUS_ALL
 		skip_choice_button.pressed.connect(
@@ -434,6 +492,19 @@ func _rebuild_hand(state: Dictionary, active_player_id: String) -> void:
 		)
 		hand_actions.add_child(skip_choice_button)
 		action_buttons.append(skip_choice_button)
+	if choice_commands.is_empty():
+		var own_bonds := zones.get(str(zone_ids.get("bonds", "")), {}) as Dictionary
+		if not (own_bonds.get("card_instance_ids", []) as Array).is_empty():
+			var bond_header := Label.new()
+			bond_header.text = "本人未完成羈絆"
+			hand_actions.add_child(bond_header)
+			for raw_id: Variant in own_bonds.get("card_instance_ids", []):
+				var own_card := cards.get(str(raw_id), {}) as Dictionary
+				var own_definition := definitions.get(str(own_card.get("definition_id", "")), {}) as Dictionary
+				var bond_label := Label.new()
+				bond_label.text = _hand_card_text(own_definition)
+				bond_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+				hand_actions.add_child(bond_label)
 
 	end_phase_button.focus_neighbor_top = NodePath()
 	skip_button.focus_neighbor_top = NodePath()
@@ -527,6 +598,8 @@ func _localized_choice_source(source_zone_key: StringName) -> String:
 		&"helper_draft_source": "官方供應牌庫",
 		&"helper_draft_row": "協助者輪抽區",
 		&"inspection": "自己的查看區",
+		&"bond_candidates": "秘密候選羈絆",
+		&"bonds": "自己的未完成羈絆",
 		&"equipment": "自己的裝備區",
 		&"effect_source": "效果來源",
 		&"monster_row": "魔物區",

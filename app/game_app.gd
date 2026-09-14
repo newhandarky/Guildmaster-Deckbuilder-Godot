@@ -26,10 +26,10 @@ func _ready() -> void:
 	hud.buy_card_requested.connect(_on_buy_card_requested)
 	hud.refresh_market_requested.connect(_on_refresh_market_requested)
 	hud.skip_animation_requested.connect(animation_director.skip_all)
-	session.state_changed.connect(hud.update_state)
-	session.events_committed.connect(_on_events_committed)
+	session.private_view_changed.connect(_on_private_view_changed)
+	session.private_events_committed.connect(_on_private_events_committed)
 	session.command_rejected.connect(hud.show_error)
-	var errors := session.start_new_game(20260909, enable_helpers)
+	var errors := session.start_new_game(20260909, enable_helpers, enable_helpers)
 	if not errors.is_empty():
 		push_error("Unable to start vertical slice: %s" % "; ".join(errors))
 
@@ -43,6 +43,14 @@ func _unhandled_input(event: InputEvent) -> void:
 func _on_entity_selected(entity_id: StringName, display_name: String, details: String) -> void:
 	hud.show_entity(display_name, details)
 	animation_director.play_selection(entity_id)
+
+
+func _on_private_view_changed(_viewer_id: StringName, private_state: Dictionary) -> void:
+	hud.update_state(private_state)
+
+
+func _on_private_events_committed(_viewer_id: StringName, events: Array[Dictionary]) -> void:
+	_on_events_committed(events)
 
 
 func _on_end_phase_requested() -> void:
