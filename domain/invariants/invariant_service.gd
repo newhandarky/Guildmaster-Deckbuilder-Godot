@@ -4,7 +4,7 @@ extends RefCounted
 const BossServiceType = preload("res://domain/state/boss_service.gd")
 
 
-static func validate(state: GameStateData) -> PackedStringArray:
+static func validate(state: GameStateData, definitions: Dictionary = {}) -> PackedStringArray:
 	var errors := PackedStringArray()
 	_validate_turn_order(state, errors)
 	_validate_players(state, errors)
@@ -32,6 +32,10 @@ static func validate(state: GameStateData) -> PackedStringArray:
 			if not state.cards.has(instance_id):
 				errors.append("Zone %s references missing card %s" % [zone_id, instance_id])
 				continue
+			if not zone_owner_id.is_empty() and StringName(
+				(state.cards[instance_id] as Dictionary).get("owner_id", "")
+			) != zone_owner_id:
+				errors.append("Card %s owner differs from zone %s" % [instance_id, zone_id])
 			if locations.has(instance_id):
 				errors.append("Card %s exists in both %s and %s" % [instance_id, locations[instance_id], zone_id])
 				continue
@@ -48,7 +52,7 @@ static func validate(state: GameStateData) -> PackedStringArray:
 			errors.append("Card %s references missing owner %s" % [instance_id, owner_id])
 		if not locations.has(instance_id):
 			errors.append("Card %s is not in any zone" % instance_id)
-	_validate_equipment_attachments(state, locations, errors)
+	_validate_equipment_attachments(state, locations, errors, definitions)
 	var command_ids: Dictionary = {}
 	for command_id: String in state.processed_command_ids:
 		if command_id.is_empty():
@@ -203,7 +207,8 @@ static func _validate_boss_zones(state: GameStateData, errors: PackedStringArray
 static func _validate_equipment_attachments(
 	state: GameStateData,
 	locations: Dictionary,
-	errors: PackedStringArray
+	errors: PackedStringArray,
+	definitions: Dictionary
 ) -> void:
 	var occupied_targets: Dictionary = {}
 	for instance_id: Variant in state.cards:
@@ -236,15 +241,27 @@ static func _validate_equipment_attachments(
 		if not state.cards.has(target_id):
 			errors.append("Equipment %s references missing target %s" % [instance_id, target_id])
 			continue
-		if occupied_targets.has(target_id):
-			errors.append("Target %s has more than one equipment" % target_id)
-		else:
-			occupied_targets[target_id] = instance_id
+		occupied_targets[target_id] = int(occupied_targets.get(target_id, 0)) + 1
 		var owner_id := StringName(card.get("owner_id", ""))
 		var target_card := state.cards[target_id] as Dictionary
 		if StringName(target_card.get("owner_id", "")) != owner_id:
 			errors.append("Equipment %s and target %s have different owners" % [instance_id, target_id])
 		var target_state := target_card.get("state", {}) as Dictionary
+		var capacity := int(target_state.get("equipment_capacity", 1))
+		if capacity < 1 or capacity > 3:
+			errors.append("Target %s has invalid equipment capacity" % target_id)
+			capacity = 1
+		var target_definition := definitions.get(StringName(target_card.get("definition_id", ""))) as CardDefinition
+		if target_definition != null:
+			var rule_capacity := 1
+			for effect: Dictionary in target_definition.effects:
+				if StringName(effect.get("op", "")) == &"equipment_policy":
+					rule_capacity = int(effect.get("capacity", 1))
+			if capacity != rule_capacity:
+				errors.append("Target %s equipment capacity differs from its definition" % target_id)
+			capacity = rule_capacity
+		if int(occupied_targets[target_id]) > capacity:
+			errors.append("Target %s has more than %d equipment" % [target_id, capacity])
 		var target_equipment_value: Variant = target_state.get("equipment_ids", [])
 		if not target_equipment_value is Array:
 			errors.append("Equipment target %s equipment_ids must be an Array" % target_id)
@@ -518,11 +535,23 @@ static func _validate_effect_state(state: GameStateData, errors: PackedStringArr
 				)
 		elif operation == &"choose_gain_card":
 			var source_zone_id := StringName(choice.get("source_zone_id", ""))
-			var expected_zone_id := destination_zone_id if selected_seen.has(card_instance_id) else source_zone_id
+			var expected_zone_id := source_zone_id
+			if selected_seen.has(card_instance_id):
+				expected_zone_id = ZoneService.resolved_destination(
+					state, card_instance_id, destination_zone_id
+				)
+				if StringName((choice.get("selected_destination_zone_ids", {}) as Dictionary).get(
+					str(card_instance_id), ""
+				)) != expected_zone_id:
+					errors.append("Pending gain card %s has invalid locked destination" % card_instance_id)
 			if ZoneService.find_card_zone(state, card_instance_id) != expected_zone_id:
 				errors.append("Pending choice card %s is not in its expected zone" % card_instance_id)
 			var card := state.cards.get(card_instance_id) as Dictionary
-			var expected_owner := actor_id if selected_seen.has(card_instance_id) else &""
+			var destination := state.zones.get(expected_zone_id) as ZoneData
+			var expected_owner := (
+				StringName(destination.metadata.get("owner_id", actor_id))
+				if selected_seen.has(card_instance_id) and destination != null else &""
+			)
 			if card == null or StringName(card.get("owner_id", "")) != expected_owner:
 				errors.append("Pending gain card %s has invalid ownership" % card_instance_id)
 		elif operation in [&"confirm_effect", &"choose_move_card", &"inspect_deck_top", \
@@ -530,6 +559,14 @@ static func _validate_effect_state(state: GameStateData, errors: PackedStringArr
 				&"choose_target_combat_modifier", &"choose_refresh_row", \
 				&"choose_equipment_replacement", &"choose_transfer_card"]:
 			var expected_zone_id := StringName(choice.get("source_zone_id", ""))
+			if operation == &"choose_move_card" and selected_seen.has(card_instance_id):
+				expected_zone_id = ZoneService.resolved_destination(
+					state, card_instance_id, destination_zone_id
+				)
+				if StringName((choice.get("selected_destination_zone_ids", {}) as Dictionary).get(
+					str(card_instance_id), ""
+				)) != expected_zone_id:
+					errors.append("Pending move card %s has invalid locked destination" % card_instance_id)
 			if ZoneService.find_card_zone(state, card_instance_id) != expected_zone_id:
 				errors.append("Pending choice card %s moved from its locked source" % card_instance_id)
 		elif operation == &"pay_post_departure_cost":
@@ -557,7 +594,8 @@ static func _validate_effect_state(state: GameStateData, errors: PackedStringArr
 	var maximum := int(choice.get("max_selections", -1))
 	var maximum_limit := (
 		eligible_seen.size()
-		if operation in [&"order_deck_top", &"choose_refresh_row", &"select_bonds", &"complete_bonds"]
+		if operation in [&"order_deck_top", &"inspect_deck_top", &"choose_move_card", \
+			&"choose_refresh_row", &"select_bonds", &"complete_bonds"]
 		else (2 if operation in [&"choose_remove_card", &"choose_gain_card"] else 1)
 	)
 	if minimum < 0 or maximum < minimum or maximum > maximum_limit:

@@ -3,6 +3,7 @@ extends SceneTree
 const BossService = preload("res://domain/state/boss_service.gd")
 const BossRuleEvaluator = preload("res://domain/rules/boss_rule_evaluator.gd")
 const BondSuite = preload("res://tests/headless/bond_suite.gd")
+const CpuSuite = preload("res://tests/headless/cpu_suite.gd")
 
 var _failures: PackedStringArray = []
 
@@ -105,6 +106,9 @@ func _run() -> void:
 	await _test_official_helper_hud()
 	_failures.append_array(BondSuite.new().run(_load_definitions()))
 	await _test_bond_hud()
+	var cpu_suite := CpuSuite.new()
+	cpu_suite.run()
+	_failures.append_array(await cpu_suite.run_ui(self))
 
 
 func _helper_state(number: int, seed: int = 1900) -> GameStateData:
@@ -382,6 +386,7 @@ func _test_official_helper_choices_and_rotation() -> void:
 func _test_official_helper_hud() -> void:
 	var packed := load("res://scenes/boot/main.tscn") as PackedScene
 	var app := packed.instantiate() as GameApp
+	app.enable_cpu = false
 	app.enable_helpers = true
 	root.add_child(app)
 	await process_frame
@@ -424,6 +429,7 @@ func _test_official_helper_hud() -> void:
 func _test_bond_hud() -> void:
 	var packed := load("res://scenes/boot/main.tscn") as PackedScene
 	var app := packed.instantiate() as GameApp
+	app.enable_cpu = false
 	root.add_child(app)
 	await process_frame
 	_expect(app.session.state.bonds_enabled and "秘密羈絆設置" in app.hud.hand_title.text \
@@ -731,6 +737,24 @@ func _test_official_resource_core_effects() -> void:
 		var cleanup_events: Array[Dictionary] = []
 		DeckService.discard_hand_and_play_area(cat_state, &"p2", cleanup_events)
 		_expect(ZoneService.find_card_zone(cat_state, cat_id) == &"p1:discard-pile" and str((cat_state.cards[cat_id] as Dictionary).get("owner_id", "")) == "p1", "cat doll discard should continue around the two-player seating cycle")
+	var supply_cat_state := _baseline_state(18041, definitions)
+	var supply_cat_id := _find_instance_by_definition(supply_cat_state, &"base:resource/resource-06")
+	var supply_deck := supply_cat_state.zones[SupplyService.SHOP_DECK_ID] as ZoneData
+	var supply_source := ZoneService.find_card_zone(supply_cat_state, supply_cat_id)
+	if supply_source != SupplyService.SHOP_DECK_ID:
+		ZoneService.move_card(supply_cat_state, supply_cat_id, supply_source, SupplyService.SHOP_DECK_ID)
+	else:
+		supply_deck.card_instance_ids.erase(supply_cat_id)
+		supply_deck.card_instance_ids.append(supply_cat_id)
+	var supply_events: Array[Dictionary] = []
+	var supply_gain := SupplyService.take_supply_cards(supply_cat_state,
+		SupplyService.SHOP_DECK_ID, &"p1:discard-pile", &"p1", 1,
+		&"test_supply_gain", supply_events)
+	_expect(bool(supply_gain.get("ok", false)) \
+		and ZoneService.find_card_zone(supply_cat_state, supply_cat_id) == &"p2:discard-pile" \
+		and str((supply_cat_state.cards[supply_cat_id] as Dictionary).get("owner_id", "")) == "p2" \
+		and InvariantService.validate(supply_cat_state, definitions).is_empty(),
+		"supply gain respects cross-player discard destination and owner")
 
 	var tea_state := _baseline_state(1805, definitions)
 	var tea_id := _move_definition_to_player_hand(tea_state, &"base:resource/resource-26", &"p1")
@@ -4567,6 +4591,7 @@ func _test_market_refresh_selection_order_is_deterministic() -> void:
 func _test_official_adventurer_hud_integration() -> void:
 	var packed := load("res://scenes/boot/main.tscn") as PackedScene
 	var app := packed.instantiate() as GameApp
+	app.enable_cpu = false
 	app.enable_helpers = false
 	root.add_child(app)
 	await process_frame
@@ -4584,6 +4609,7 @@ func _test_official_adventurer_hud_integration() -> void:
 func _test_market_refresh_hud_integration() -> void:
 	var packed := load("res://scenes/boot/main.tscn") as PackedScene
 	var app := packed.instantiate() as GameApp
+	app.enable_cpu = false
 	app.enable_helpers = false
 	root.add_child(app)
 	await process_frame
@@ -4613,6 +4639,7 @@ func _test_market_refresh_hud_integration() -> void:
 func _test_combat_hud_integration() -> void:
 	var packed := load("res://scenes/boot/main.tscn") as PackedScene
 	var app := packed.instantiate() as GameApp
+	app.enable_cpu = false
 	app.enable_helpers = false
 	root.add_child(app)
 	await process_frame
@@ -4633,6 +4660,7 @@ func _test_combat_hud_integration() -> void:
 func _test_official_resource_hud_integration() -> void:
 	var packed := load("res://scenes/boot/main.tscn") as PackedScene
 	var app := packed.instantiate() as GameApp
+	app.enable_cpu = false
 	app.enable_helpers = false
 	root.add_child(app)
 	await process_frame
@@ -4667,6 +4695,7 @@ func _test_official_resource_hud_integration() -> void:
 func _test_boss_hud_integration() -> void:
 	var packed := load("res://scenes/boot/main.tscn") as PackedScene
 	var app := packed.instantiate() as GameApp
+	app.enable_cpu = false
 	app.enable_helpers = false
 	root.add_child(app)
 	await process_frame
@@ -4694,6 +4723,7 @@ func _test_boss_hud_integration() -> void:
 func _test_boss_choice_hud_integration() -> void:
 	var packed := load("res://scenes/boot/main.tscn") as PackedScene
 	var app := packed.instantiate() as GameApp
+	app.enable_cpu = false
 	app.enable_helpers = false
 	root.add_child(app)
 	await process_frame
@@ -4726,6 +4756,7 @@ func _test_boss_choice_hud_integration() -> void:
 	app.queue_free()
 
 	var lich_app := packed.instantiate() as GameApp
+	lich_app.enable_cpu = false
 	lich_app.enable_helpers = false
 	root.add_child(lich_app)
 	await process_frame
@@ -4750,6 +4781,7 @@ func _test_boss_choice_hud_integration() -> void:
 func _test_pending_choice_hud_integration() -> void:
 	var packed := load("res://scenes/boot/main.tscn") as PackedScene
 	var app := packed.instantiate() as GameApp
+	app.enable_cpu = false
 	app.enable_helpers = false
 	root.add_child(app)
 	await process_frame
@@ -4804,6 +4836,7 @@ func _test_pending_choice_hud_integration() -> void:
 func _test_discard_choice_hud_integration() -> void:
 	var packed := load("res://scenes/boot/main.tscn") as PackedScene
 	var app := packed.instantiate() as GameApp
+	app.enable_cpu = false
 	app.enable_helpers = false
 	root.add_child(app)
 	await process_frame
@@ -4852,6 +4885,7 @@ func _test_discard_choice_hud_integration() -> void:
 func _test_multi_zone_removal_hud_integration() -> void:
 	var packed := load("res://scenes/boot/main.tscn") as PackedScene
 	var app := packed.instantiate() as GameApp
+	app.enable_cpu = false
 	app.enable_helpers = false
 	root.add_child(app)
 	await process_frame
@@ -4941,6 +4975,7 @@ func _test_multi_zone_removal_hud_integration() -> void:
 func _test_gargoyle_choice_hud_integration() -> void:
 	var packed := load("res://scenes/boot/main.tscn") as PackedScene
 	var app := packed.instantiate() as GameApp
+	app.enable_cpu = false
 	app.enable_helpers = false
 	root.add_child(app)
 	await process_frame
@@ -5000,6 +5035,7 @@ func _test_gargoyle_choice_hud_integration() -> void:
 func _test_shop_gain_choice_hud_integration() -> void:
 	var packed := load("res://scenes/boot/main.tscn") as PackedScene
 	var app := packed.instantiate() as GameApp
+	app.enable_cpu = false
 	app.enable_helpers = false
 	root.add_child(app)
 	await process_frame
@@ -5059,6 +5095,7 @@ func _test_shop_gain_choice_hud_integration() -> void:
 func _test_fire_elemental_hud_integration() -> void:
 	var packed := load("res://scenes/boot/main.tscn") as PackedScene
 	var app := packed.instantiate() as GameApp
+	app.enable_cpu = false
 	app.enable_helpers = false
 	root.add_child(app)
 	await process_frame
@@ -5113,6 +5150,7 @@ func _test_fire_elemental_hud_integration() -> void:
 func _test_mimic_and_lamia_hud_integration() -> void:
 	var packed := load("res://scenes/boot/main.tscn") as PackedScene
 	var mimic_app := packed.instantiate() as GameApp
+	mimic_app.enable_cpu = false
 	mimic_app.enable_helpers = false
 	root.add_child(mimic_app)
 	await process_frame
@@ -5142,6 +5180,7 @@ func _test_mimic_and_lamia_hud_integration() -> void:
 	await process_frame
 
 	var lamia_app := packed.instantiate() as GameApp
+	lamia_app.enable_cpu = false
 	lamia_app.enable_helpers = false
 	root.add_child(lamia_app)
 	await process_frame

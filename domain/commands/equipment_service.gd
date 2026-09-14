@@ -255,6 +255,10 @@ static func apply(
 	card["state"] = card_state
 	existing_equipment.append(str(card_instance_id))
 	target_state["equipment_ids"] = existing_equipment
+	if capacity > 1:
+		target_state["equipment_capacity"] = capacity
+	else:
+		target_state.erase("equipment_capacity")
 	target_card["state"] = target_state
 	events.append({
 		"type": "card_equipped",

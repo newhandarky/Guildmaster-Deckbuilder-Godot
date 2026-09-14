@@ -20,18 +20,19 @@ godot --path .
 
 ```bash
 godot --headless --path . --script res://tests/headless/run_smoke.gd
+godot --headless --path . --script res://tests/headless/run_cpu_games.gd
 ```
 
 ## 架構邊界
 
-- `domain/`：兩位玩家、純資料規則、集中式 Zone／牌庫／供應列／魔物循環／Boss 與協助者供應、登場及輪替／隊伍／裝備／道具／待選擇服務、target-aware 討伐、FIFO 效果解析、資源與 Boss 規則 evaluator、命令、RNG、invariants；不得依賴 Node 或 Presentation。
+- `domain/`：2～4 位玩家、純資料規則、集中式 Zone／牌庫／供應列／魔物循環／Boss 與協助者供應、登場及輪替／隊伍／裝備／道具／待選擇服務、target-aware 討伐、FIFO 效果解析、資源與 Boss 規則 evaluator、命令、RNG、invariants；不得依賴 Node 或 Presentation。
 - `content/`：基礎版 CardDefinition 與 Content Pack；不含自定義冒險者。
 - `app/`：GameSession 與應用程式協調。
 - `presentation/`：3D 桌面、HUD、動畫；只呈現已提交結果。
 - `scenes/`：可執行場景。
 - `tests/`：headless 規則與整合測試。
 
-目前的 vertical slice 已完成 14 種基礎魔物：官方起始配置 → 兩位玩家五階段輪替 → `ATTACK_TARGET` 依最短隊伍前綴討伐 → 參戰者與裝備離場 → 骷髏循環、抽牌／重抽、多區域移除、公開列取得等資料驅動效果；寶箱怪使用可重播的 deterministic D6 資源獎勵；蛇妖從隱藏物資牌庫公開牌至正式輪抽區，並由擊敗者起依座位順序強制取得至各自手牌；所有延遲效果沿用可序列化 `pending_choice`、原子性命令、Legal Commands、事件與 Snapshot/hash。招募區與商店仍只在休息階段統一補列，自定義冒險者維持停用。
+目前的 vertical slice 已完成 14 種基礎魔物：官方起始配置 → 2～4 位玩家五階段輪替 → `ATTACK_TARGET` 依最短隊伍前綴討伐 → 參戰者與裝備離場 → 骷髏循環、抽牌／重抽、多區域移除、公開列取得等資料驅動效果；寶箱怪使用可重播的 deterministic D6 資源獎勵；蛇妖從隱藏物資牌庫公開牌至正式輪抽區，並由擊敗者起依座位順序強制取得至各自手牌；所有延遲效果沿用可序列化 `pending_choice`、原子性命令、Legal Commands、事件與 Snapshot/hash。招募區與商店仍只在休息階段統一補列，自定義冒險者維持停用。
 
 0.16.0 已完成 11 張基礎 Boss 的正式規則接線。共用流程涵蓋依玩家數建立本局 Boss 牌庫、公開登場與休息階段輪替、職業／公開區需求修正、參戰人數限制、裝備失效、參戰者替代離場、公開附件、公共牌庫直接取得、強制多張取得，以及巫妖「離場已提交但討伐失敗」例外。多步獎勵由可序列化 `pending_choice` 與 continuation 保持 Boss 在場，完成後才提交擊敗、所有權、統計與進程事件。
 
@@ -42,6 +43,8 @@ godot --headless --path . --script res://tests/headless/run_smoke.gd
 0.19.0 已加入 12 張官方協助者（各 1 張），每局按 Boss 數選取，僅公開 1 張。Boss 討伐後與通用輪替 operation 共用離場→容量收斂／離場效果→新卡登場／進場效果 transition；回合開始、購買開始、休息抽牌前與持續效果也由權威狀態觸發。情報商的跨玩家交牌與進／離場輪抽沿用正式 Zone、可序列化 pending choice、required actor、Legal Commands 及原子性 dispatch。自定義協助者未載入。
 
 0.20.0 已加入 30 種官方羈絆（各 1 張）。設置時每位玩家從私人 7 張候選選 5 張，未選的 2 張移出本局；相同條件共用資料驅動 predicate 與回合事實記錄。符合條件時以可序列化選擇流程決定同批完成的任意子集合，確認前不公開，未完成羈絆只在持有者 PlayerView 可見。第 5 張或最後 Boss 觸發當前輪次結束政策，起始玩家右手邊玩家完成回合後依正式榮譽與同分序計分。保留 Snapshot、deterministic hash、Legal Commands 與原子性 dispatch。
+
+0.21.0 提供 1 位人類加 3 位 CPU 的離線對局；既有兩人規則與測試仍保留。CPU 僅依自己的 PlayerView、Legal Commands、公開 action features、公開卡片資料及 deterministic profile 選擇命令，以 canonical command 排序解決同分，並記錄穩定 reason／score／context fingerprint。Session 協調 CPU 依座位處理秘密羈絆、跨玩家待選、一般五階段、Boss／協助者及終局，玩家 HUD 固定只投影 `p1` 的私人資料。headless runner 使用固定 20 個 seed 驗證四人對局在 250 rounds 內結束，失敗時留下最小 trace；128 actions／turn 與 512 autonomous steps 上限維持原值。
 
 正式卡池逐卡對照見 [`content/packs/OFFICIAL_ADVENTURERS.md`](content/packs/OFFICIAL_ADVENTURERS.md)、[`content/packs/OFFICIAL_RESOURCES.md`](content/packs/OFFICIAL_RESOURCES.md)、[`content/packs/OFFICIAL_HELPERS.md`](content/packs/OFFICIAL_HELPERS.md) 與 [`content/packs/OFFICIAL_BONDS.md`](content/packs/OFFICIAL_BONDS.md)。
 

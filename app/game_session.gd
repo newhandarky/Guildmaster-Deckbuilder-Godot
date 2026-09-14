@@ -8,22 +8,25 @@ signal private_events_committed(viewer_id: StringName, events: Array[Dictionary]
 signal command_rejected(error_code: String)
 
 const CONTENT_PACK_PATH := "res://content/packs/base_vertical_slice.json"
-const RULESET_FINGERPRINT := "ruleset:vertical-slice:0.20.0"
+const RULESET_FINGERPRINT := "ruleset:vertical-slice:0.21.0"
 
 var state: GameStateData
 var content_registry := ContentRegistry.new()
+var public_definitions: Dictionary = {}
 
 
 func start_new_game(
-	seed_value: int = 20260909, enable_helpers: bool = true, enable_bonds: bool = true
+	seed_value: int = 20260909, enable_helpers: bool = true, enable_bonds: bool = true,
+	player_count: int = 2
 ) -> PackedStringArray:
 	var errors := content_registry.load_pack(CONTENT_PACK_PATH)
 	if not errors.is_empty():
 		return errors
+	public_definitions = content_registry.to_public_dictionary()
 	state = GameStateData.create_vertical_slice(
-		seed_value, content_registry.definitions, enable_helpers, enable_bonds
+		seed_value, content_registry.definitions, enable_helpers, enable_bonds, player_count
 	)
-	errors.append_array(InvariantService.validate(state))
+	errors.append_array(InvariantService.validate(state, content_registry.definitions))
 	if errors.is_empty():
 		_emit_state_changed()
 	return errors
@@ -208,10 +211,12 @@ func submit_command(envelope: Dictionary) -> Dictionary:
 		return result
 	state = result["state"] as GameStateData
 	_emit_state_changed()
-	events_committed.emit(_visible_events(result["events"], &""))
-	private_events_committed.emit(
-		_required_choice_actor(), _visible_events(result["events"], _required_choice_actor())
-	)
+	if not events_committed.get_connections().is_empty():
+		events_committed.emit(_visible_events(result["events"], &""))
+	if not private_events_committed.get_connections().is_empty():
+		private_events_committed.emit(
+			_required_choice_actor(), _visible_events(result["events"], _required_choice_actor())
+		)
 	return result
 
 
@@ -220,7 +225,7 @@ func snapshot() -> Dictionary:
 		return {}
 	return {
 		"snapshot_schema_version": 1,
-		"app_version": "0.20.0",
+		"app_version": "0.21.0",
 		"content_fingerprint": content_registry.pack_fingerprint,
 		"ruleset_fingerprint": RULESET_FINGERPRINT,
 		"state": state.to_dictionary(),
@@ -229,26 +234,80 @@ func snapshot() -> Dictionary:
 
 
 func _emit_state_changed() -> void:
-	var public_state := PlayerView.project(state, &"")
-	public_state["definitions"] = content_registry.to_public_dictionary()
-	public_state["active_resources"] = ResourceService.evaluate_player(
-		state,
-		state.active_player_id,
-		content_registry.definitions
-	)
-	state_changed.emit(public_state)
-	var viewer_id := _required_choice_actor()
-	var private_state := get_player_view(viewer_id)
-	private_state["definitions"] = content_registry.to_public_dictionary()
-	private_state["legal_commands"] = get_legal_commands(viewer_id)
-	private_state["active_resources"] = public_state["active_resources"]
-	private_view_changed.emit(viewer_id, private_state)
+	if not state_changed.get_connections().is_empty():
+		var public_state := PlayerView.project(state, &"")
+		public_state["definitions"] = public_definitions
+		state_changed.emit(public_state)
+	if not private_view_changed.get_connections().is_empty():
+		var viewer_id := _required_choice_actor()
+		private_view_changed.emit(viewer_id, get_ui_view(viewer_id))
 
 
 func get_player_view(viewer_id: StringName) -> Dictionary:
 	if state == null or not state.players.has(viewer_id):
 		return {}
 	return PlayerView.project(state, viewer_id)
+
+
+func get_public_view() -> Dictionary:
+	return PlayerView.project(state, &"") if state != null else {}
+
+
+func get_turn_access() -> Dictionary:
+	if state == null:
+		return {}
+	return {
+		"game_id": str(state.game_id), "status": str(state.status),
+		"actor_id": str(_required_choice_actor()), "revision": state.revision,
+	}
+
+
+func get_progress_view(viewer_id: StringName) -> Dictionary:
+	if state == null:
+		return {}
+	var choice := state.effect_state.duplicate(true)
+	if not choice.is_empty() and _required_choice_actor() != viewer_id:
+		choice = {"op": "private_choice", "required_actor_id": str(_required_choice_actor())}
+	return {
+		"phase": str(state.phase), "active_player_id": str(state.active_player_id),
+		"status": str(state.status), "effect_state": choice,
+	}
+
+
+func get_state_hash() -> String:
+	return CanonicalJson.sha256(state.to_dictionary()) if state != null else ""
+
+
+func get_client_context(viewer_id: StringName) -> Dictionary:
+	if state == null or not state.players.has(viewer_id):
+		return {}
+	var view := get_player_view(viewer_id)
+	view["content_fingerprint"] = content_registry.pack_fingerprint
+	view["ruleset_fingerprint"] = RULESET_FINGERPRINT
+	var legal := get_legal_commands(viewer_id)
+	return {
+		"player_view": view,
+		"legal_commands": legal,
+		"action_features": ActionFeatureService.project(
+			state, viewer_id, content_registry.definitions, legal
+		),
+		"public_definitions": public_definitions,
+		"ruleset_fingerprint": RULESET_FINGERPRINT,
+	}
+
+
+func get_ui_view(viewer_id: StringName) -> Dictionary:
+	var view := get_player_view(viewer_id)
+	if view.is_empty():
+		return view
+	view["viewer_id"] = str(viewer_id)
+	view["definitions"] = public_definitions
+	view["legal_commands"] = get_legal_commands(viewer_id)
+	view["active_resources"] = (
+		ResourceService.evaluate_player(state, viewer_id, content_registry.definitions)
+		if viewer_id == state.active_player_id else {}
+	)
+	return view
 
 
 func _visible_events(events: Array[Dictionary], viewer_id: StringName) -> Array[Dictionary]:

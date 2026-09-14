@@ -9,8 +9,8 @@ const BondServiceType = preload("res://domain/state/bond_service.gd")
 
 var schema_version: int = 1
 var game_id: StringName = &"game-demo-001"
-var content_version: String = "0.20.0"
-var ruleset_version: String = "0.20.0"
+var content_version: String = "0.21.0"
+var ruleset_version: String = "0.21.0"
 var helpers_enabled: bool = true
 var bonds_enabled: bool = true
 var seed_value: int = 20260909
@@ -34,20 +34,20 @@ var processed_command_ids: Array[String] = []
 
 static func create_vertical_slice(
 	seed: int = 20260909, definitions: Dictionary = {}, enable_helpers: bool = true,
-	enable_bonds: bool = true
+	enable_bonds: bool = true, player_count: int = 2
 ) -> GameStateData:
 	var state := GameStateData.new()
 	state.helpers_enabled = enable_helpers
 	state.bonds_enabled = enable_bonds
 	state.seed_value = seed
 	state.rng_state = DeterministicRng.new(seed).get_state()
-	var player_one := PlayerStateDataType.create(&"p1", 0, "玩家一")
-	var player_two := PlayerStateDataType.create(&"p2", 1, "玩家二")
-	state.turn_order = [&"p1", &"p2"]
-	state.players = {
-		player_one.player_id: player_one,
-		player_two.player_id: player_two,
-	}
+	assert(player_count >= 2 and player_count <= 4)
+	for seat_index in player_count:
+		var player_id := StringName("p%d" % (seat_index + 1))
+		var display_name: String = ["玩家一", "玩家二", "玩家三", "玩家四"][seat_index]
+		var player := PlayerStateDataType.create(player_id, seat_index, display_name)
+		state.turn_order.append(player_id)
+		state.players[player_id] = player
 	state.cards = {
 		&"card-monster-mimic-01": {
 			"instance_id": "card-monster-mimic-01",

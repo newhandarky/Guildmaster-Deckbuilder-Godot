@@ -81,7 +81,9 @@ static func take_supply_cards(
 		)
 		if not bool(move_result.get("ok", false)):
 			return {"ok": false, "error": str(move_result.get("error", "supply_gain_failed"))}
-		(state.cards[gained_id] as Dictionary)["owner_id"] = str(actor_id)
+		(state.cards[gained_id] as Dictionary)["owner_id"] = str(
+			ZoneService.actual_owner_after_move(state, move_result, actor_id)
+		)
 		var move_event := (move_result.get("event", {}) as Dictionary).duplicate(true)
 		move_event["reason"] = str(reason)
 		move_event["actor_id"] = str(actor_id)

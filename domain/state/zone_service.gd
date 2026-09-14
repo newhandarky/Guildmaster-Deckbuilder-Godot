@@ -10,6 +10,29 @@ static func find_card_zone(state: GameStateData, card_instance_id: StringName) -
 	return &""
 
 
+static func resolved_destination(
+	state: GameStateData, card_instance_id: StringName, requested_zone_id: StringName
+) -> StringName:
+	var destination := state.zones.get(requested_zone_id) as ZoneData
+	if destination == null:
+		return &""
+	var replacement := _resolve_discard_destination_replacement(
+		state, card_instance_id, destination
+	)
+	return StringName(replacement.get("zone_id", requested_zone_id))
+
+
+static func actual_owner_after_move(
+	state: GameStateData, move_result: Dictionary, fallback_id: StringName
+) -> StringName:
+	var actual_zone_id := StringName((move_result.get("event", {}) as Dictionary).get(
+		"to_zone_id", ""
+	))
+	var actual_zone := state.zones.get(actual_zone_id) as ZoneData
+	return StringName(actual_zone.metadata.get("owner_id", fallback_id)) \
+		if actual_zone != null else fallback_id
+
+
 static func move_card(
 	state: GameStateData,
 	card_instance_id: StringName,

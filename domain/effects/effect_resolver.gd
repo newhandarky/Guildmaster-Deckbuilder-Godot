@@ -976,7 +976,9 @@ static func resolve_party_trigger(
 		source_ids.append_array(equipment.card_instance_ids)
 	for raw_source_id: Variant in player.turn_facts.get("combat_participant_ids", []):
 		var departed_id := StringName(str(raw_source_id))
-		if departed_id not in source_ids:
+		var departed_card := state.cards.get(departed_id) as Dictionary
+		if departed_card != null and StringName(departed_card.get("owner_id", "")) == actor_id \
+				and departed_id not in source_ids:
 			source_ids.append(departed_id)
 	for source_card_id: StringName in source_ids:
 		var definition := _definition_for_card(state, definitions, source_card_id)
@@ -1141,9 +1143,10 @@ static func _definition_for_card(
 	definitions: Dictionary,
 	card_instance_id: StringName
 ) -> CardDefinition:
-	var card := state.cards.get(card_instance_id) as Dictionary
-	if card == null:
+	var raw_card: Variant = state.cards.get(card_instance_id)
+	if not raw_card is Dictionary:
 		return null
+	var card := raw_card as Dictionary
 	return definitions.get(StringName(card.get("definition_id", ""))) as CardDefinition
 
 

@@ -9,6 +9,10 @@ extends Node
 
 var session := GameSession.new()
 var enable_helpers := true
+var enable_cpu := true
+var cpu_orchestrator := CpuSessionOrchestrator.new()
+var _cpu_advancing := false
+var _cpu_advance_scheduled := false
 
 
 func _ready() -> void:
@@ -27,9 +31,12 @@ func _ready() -> void:
 	hud.refresh_market_requested.connect(_on_refresh_market_requested)
 	hud.skip_animation_requested.connect(animation_director.skip_all)
 	session.private_view_changed.connect(_on_private_view_changed)
-	session.private_events_committed.connect(_on_private_events_committed)
+	session.events_committed.connect(_on_events_committed)
+	session.state_changed.connect(_schedule_cpu_advance)
 	session.command_rejected.connect(hud.show_error)
-	var errors := session.start_new_game(20260909, enable_helpers, enable_helpers)
+	var errors := session.start_new_game(
+		20260909, enable_helpers, enable_helpers, 4 if enable_cpu else 2
+	)
 	if not errors.is_empty():
 		push_error("Unable to start vertical slice: %s" % "; ".join(errors))
 
@@ -46,33 +53,55 @@ func _on_entity_selected(entity_id: StringName, display_name: String, details: S
 
 
 func _on_private_view_changed(_viewer_id: StringName, private_state: Dictionary) -> void:
-	hud.update_state(private_state)
+	if enable_cpu:
+		hud.update_state(session.get_ui_view(&"p1"))
+	else:
+		hud.update_state(private_state)
 
 
-func _on_private_events_committed(_viewer_id: StringName, events: Array[Dictionary]) -> void:
-	_on_events_committed(events)
+func _schedule_cpu_advance(_public_state: Dictionary) -> void:
+	if not enable_cpu or _cpu_advancing or _cpu_advance_scheduled:
+		return
+	_cpu_advance_scheduled = true
+	_run_cpu_advance.call_deferred()
+
+
+func _run_cpu_advance() -> void:
+	_cpu_advance_scheduled = false
+	if _cpu_advancing:
+		return
+	_cpu_advancing = true
+	var result := cpu_orchestrator.advance(session, &"p1")
+	_cpu_advancing = false
+	if not bool(result.get("ok", false)):
+		hud.show_error("CPU 對局暫停：%s" % result.get("error", "unknown"))
 
 
 func _on_end_phase_requested() -> void:
-	session.end_phase()
+	if _human_can_act():
+		session.end_phase()
 
 
 func _on_equip_item_requested(card_instance_id: StringName, target_card_id: StringName) -> void:
-	session.equip_item(card_instance_id, target_card_id)
+	if _human_can_act():
+		session.equip_item(card_instance_id, target_card_id)
 
 
 func _on_activate_equipment_effect_requested(
 	card_instance_id: StringName, effect_index: int
 ) -> void:
-	session.activate_equipment_effect(card_instance_id, effect_index)
+	if _human_can_act():
+		session.activate_equipment_effect(card_instance_id, effect_index)
 
 
 func _on_play_adventurer_requested(card_instance_id: StringName) -> void:
-	session.play_adventurer(card_instance_id)
+	if _human_can_act():
+		session.play_adventurer(card_instance_id)
 
 
 func _on_use_item_requested(card_instance_id: StringName) -> void:
-	session.use_item(card_instance_id)
+	if _human_can_act():
+		session.use_item(card_instance_id)
 
 
 func _on_attack_target_requested(
@@ -80,7 +109,8 @@ func _on_attack_target_requested(
 	claim_optional_reward: bool,
 	use_optional_departures: bool
 ) -> void:
-	session.attack_target(target_card_id, claim_optional_reward, use_optional_departures)
+	if _human_can_act():
+		session.attack_target(target_card_id, claim_optional_reward, use_optional_departures)
 
 
 func _on_resolve_choice_requested(
@@ -88,11 +118,13 @@ func _on_resolve_choice_requested(
 	card_instance_id: StringName,
 	skip: bool
 ) -> void:
-	session.resolve_choice(choice_id, card_instance_id, skip)
+	if _human_can_act():
+		session.resolve_choice(choice_id, card_instance_id, skip)
 
 
 func _on_buy_card_requested(card_instance_id: StringName, source_row_id: StringName) -> void:
-	session.buy_card(card_instance_id, source_row_id)
+	if _human_can_act():
+		session.buy_card(card_instance_id, source_row_id)
 
 
 func _on_refresh_market_requested(
@@ -100,7 +132,12 @@ func _on_refresh_market_requested(
 	row_id: StringName,
 	card_instance_ids: Array[StringName]
 ) -> void:
-	session.refresh_market(discard_card_id, row_id, card_instance_ids)
+	if _human_can_act():
+		session.refresh_market(discard_card_id, row_id, card_instance_ids)
+
+
+func _human_can_act() -> bool:
+	return not enable_cpu or not session.get_legal_commands(&"p1").is_empty()
 
 
 func _on_events_committed(events: Array[Dictionary]) -> void:

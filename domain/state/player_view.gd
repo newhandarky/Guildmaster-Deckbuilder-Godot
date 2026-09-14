@@ -20,10 +20,14 @@ static func project(state: GameStateData, viewer_id: StringName) -> Dictionary:
 			cards.erase(str(raw_id))
 		zone["card_instance_ids"] = []
 	var choice := view.get("effect_state", {}) as Dictionary
-	if not choice.is_empty() and StringName(choice.get("required_actor_id", "")) != viewer_id:
-		if StringName(choice.get("op", "")) in [&"select_bonds", &"complete_bonds"]:
+	var required_actor := StringName(choice.get("required_actor_id", choice.get("actor_id", "")))
+	if not choice.is_empty() and required_actor != viewer_id:
+		var source_zone := zones.get(str(choice.get("source_zone_id", "")), {}) as Dictionary
+		if StringName(source_zone.get("visibility", "")) != &"public":
 			view["effect_state"] = {
-				"type": "pending_choice", "op": "private_bond_choice",
-				"required_actor_id": str(choice.get("required_actor_id", "")),
+				"type": "pending_choice",
+				"op": "private_bond_choice" if StringName(choice.get("op", "")) \
+					in [&"select_bonds", &"complete_bonds"] else "private_choice",
+				"required_actor_id": str(required_actor),
 			}
 	return view

@@ -442,7 +442,13 @@ static func apply(
 			events.append(move_event)
 			var card := state.cards[card_instance_id] as Dictionary
 			if operation == &"choose_gain_card":
-				card["owner_id"] = str(actor_id)
+				card["owner_id"] = str(ZoneService.actual_owner_after_move(
+					state, move_result, actor_id
+				))
+			if operation in [&"choose_gain_card", &"choose_move_card"]:
+				var destinations := choice.get("selected_destination_zone_ids", {}) as Dictionary
+				destinations[str(card_instance_id)] = str(move_event.get("to_zone_id", ""))
+				choice["selected_destination_zone_ids"] = destinations
 			if operation == &"choose_transfer_card":
 				card["owner_id"] = str(choice.get("recipient_id", ""))
 				events.append({
@@ -805,9 +811,10 @@ static func _definition_for_card(
 	definitions: Dictionary,
 	card_instance_id: StringName
 ) -> CardDefinition:
-	var card := state.cards.get(card_instance_id) as Dictionary
-	if card == null:
+	var raw_card: Variant = state.cards.get(card_instance_id)
+	if not raw_card is Dictionary:
 		return null
+	var card := raw_card as Dictionary
 	return definitions.get(StringName(card.get("definition_id", ""))) as CardDefinition
 
 

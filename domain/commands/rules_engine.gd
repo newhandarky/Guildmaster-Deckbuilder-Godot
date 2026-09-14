@@ -10,7 +10,7 @@ static func get_legal_commands(
 	definitions: Dictionary = {}
 ) -> Array[Dictionary]:
 	var commands: Array[Dictionary] = []
-	if not InvariantService.validate(state).is_empty():
+	if not InvariantService.validate(state, definitions).is_empty():
 		return commands
 	if state.status != &"active":
 		return commands
@@ -40,7 +40,7 @@ static func dispatch(
 	definitions: Dictionary = {}
 ) -> Dictionary:
 	var before_hash := CanonicalJson.sha256(state.to_dictionary())
-	var state_errors := InvariantService.validate(state)
+	var state_errors := InvariantService.validate(state, definitions)
 	if not state_errors.is_empty():
 		return _failure("invalid_state: %s" % "; ".join(state_errors), before_hash)
 	var error := _validate_envelope(state, envelope)
@@ -80,7 +80,7 @@ static func dispatch(
 	BondService.record_and_check(draft, state.phase, events, definitions)
 	BondService.update_final_round(draft, events)
 
-	var invariant_errors := InvariantService.validate(draft)
+	var invariant_errors := InvariantService.validate(draft, definitions)
 	if not invariant_errors.is_empty():
 		return _failure("invariant_failure: %s" % "; ".join(invariant_errors), before_hash)
 

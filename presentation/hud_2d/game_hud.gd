@@ -101,7 +101,7 @@ func update_state(state: Dictionary) -> void:
 	end_phase_button.text = (
 		"請先完成選擇" if not state.get("effect_state", {}).is_empty() else "結束目前階段"
 	)
-	_rebuild_hand(state, active_player_id)
+	_rebuild_hand(state, str(state.get("viewer_id", active_player_id)))
 	_rebuild_market(state)
 	var public_bonds: Array[String] = []
 	for raw_player_id: Variant in players:
@@ -530,10 +530,16 @@ func _rebuild_hand(state: Dictionary, active_player_id: String) -> void:
 			)
 	if not action_buttons.is_empty():
 		if not choice_commands.is_empty():
-			action_buttons[0].call_deferred("grab_focus")
+			_grab_focus_if_current.call_deferred(action_buttons[0])
 		else:
 			end_phase_button.focus_neighbor_top = action_buttons.back().get_path()
 			skip_button.focus_neighbor_top = action_buttons.back().get_path()
+
+
+func _grab_focus_if_current(button: Button) -> void:
+	if is_instance_valid(button) and button.is_inside_tree() \
+			and button.get_parent() == hand_actions:
+		button.grab_focus()
 
 
 func _hand_card_text(definition: Dictionary) -> String:
