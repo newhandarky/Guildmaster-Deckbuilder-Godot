@@ -40,6 +40,13 @@ const SUPPORTED_OPERATIONS: Array[StringName] = [
 	&"draw_by_party_professions",
 	&"grant_attached_equipment_combat",
 	&"grant_card_combat_from_selected_field",
+	&"reveal_deck_until_type",
+	&"grant_resource_by_zone_count",
+	&"rest_hand_size",
+	&"party_capacity",
+	&"choose_transfer_card",
+	&"choose_supply_deck_draft",
+	&"rotate_helper",
 ]
 
 
@@ -95,9 +102,18 @@ static func validate_effects(effects: Array[Dictionary], definition_id: StringNa
 			if StringName(effect.get("source_deck_zone_id", "")).is_empty() \
 					or StringName(effect.get("choice_zone_id", "")).is_empty():
 				errors.append("Draft gain requires source and choice zones at %s[%d]" % [definition_id, index])
+			var source_id := StringName(effect.get("source_deck_zone_id", ""))
+			var choice_id := StringName(effect.get("choice_zone_id", ""))
+			if not ((source_id == SupplyService.SHOP_DECK_ID and choice_id == SupplyService.RESOURCE_DRAFT_ROW_ID) \
+					or (source_id in [SupplyService.RECRUIT_DECK_ID, SupplyService.SHOP_DECK_ID] and choice_id == HelperService.DRAFT_ROW_ID)):
+				errors.append("Draft gain must use an official supply and matching public choice zone at %s[%d]" % [definition_id, index])
 			if int(effect.get("cards_per_player", 0)) != 1 \
 					or StringName(effect.get("destination_zone_key", "")) != &"hand":
 				errors.append("Draft gain rule is invalid at %s[%d]" % [definition_id, index])
+		if operation == &"choose_supply_deck_draft":
+			if effect.get("source_deck_zone_ids", []) != [str(SupplyService.RECRUIT_DECK_ID), str(SupplyService.SHOP_DECK_ID)] \
+					or StringName(effect.get("choice_zone_id", "")) != HelperService.DRAFT_ROW_ID:
+				errors.append("Helper draft requires the official supply decks and choice zone at %s[%d]" % [definition_id, index])
 		if operation == &"gain_from_supply_deck":
 			if StringName(effect.get("source_deck_zone_id", "")) \
 					not in [SupplyService.RECRUIT_DECK_ID, SupplyService.SHOP_DECK_ID]:
@@ -548,6 +564,86 @@ static func resolve(
 					events.append(move_event)
 					events.append({"type":"card_revealed","actor_id":str(actor_id),"card_instance_id":str(top_id)})
 				continue
+			&"reveal_deck_until_type":
+				var deck := state.zones.get(player.zone_ids.get(&"draw_pile", &"")) as ZoneData
+				var destination := state.zones.get(player.zone_ids.get(StringName(effect.get("destination_zone_key", "hand")), &"")) as ZoneData
+				if deck == null or destination == null:
+					return "missing_player_card_zone"
+				var allowed := _normalized_allowed_tags(effect.get("allowed_card_types", []))
+				var revealed: Array[String] = []
+				while not deck.card_instance_ids.is_empty():
+					var top_id: StringName = deck.card_instance_ids.back()
+					var top_definition := _definition_for_card(state, definitions, top_id)
+					var matched := top_definition != null and top_definition.card_type in allowed
+					revealed.append(str(top_id))
+					events.append({"type":"card_revealed","actor_id":str(actor_id),"card_instance_id":str(top_id),"matched":matched,"source_card_instance_id":str(effect.get("source_card_instance_id", ""))})
+					if not matched:
+						break
+					var move_result := ZoneService.move_card(state, top_id, deck.zone_id, destination.zone_id)
+					if not bool(move_result.get("ok", false)):
+						return str(move_result.get("error", "reveal_gain_failed"))
+					var move_event := (move_result.get("event", {}) as Dictionary).duplicate(true)
+					move_event["reason"] = "revealed_enemy_gained"
+					events.append(move_event)
+				events.append({"type":"effect_resolved","actor_id":str(actor_id),"op":str(operation),"revealed_card_ids":revealed,"source_card_instance_id":str(effect.get("source_card_instance_id", ""))})
+				continue
+			&"grant_resource_by_zone_count":
+				if not _condition_matches(state, actor_id, effect):
+					continue
+				var zone := state.zones.get(player.zone_ids.get(StringName(effect.get("zone_key", "")), &"")) as ZoneData
+				var granted_resource := StringName(effect.get("resource", ""))
+				if zone == null or granted_resource not in [&"purchase_power", &"combat"]:
+					return "invalid_zone_resource_reward"
+				var granted := zone.card_instance_ids.size() * int(effect.get("amount_each", 0))
+				player.turn_resources[granted_resource] = int(player.turn_resources.get(granted_resource, 0)) + granted
+				events.append({"type":"effect_resolved","actor_id":str(actor_id),"op":str(operation),"amount":granted,"resource":str(granted_resource),"source_card_instance_id":str(effect.get("source_card_instance_id", ""))})
+				continue
+			&"choose_transfer_card":
+				var source := state.zones.get(player.zone_ids.get(&"hand", &"")) as ZoneData
+				var next_index := (state.turn_order.find(actor_id) + 1) % state.turn_order.size()
+				var recipient_id := state.turn_order[next_index]
+				var recipient := state.players[recipient_id] as PlayerStateData
+				if source == null or recipient == null:
+					return "missing_transfer_zone"
+				var candidates: Array[String] = []
+				for card_id: StringName in source.card_instance_ids:
+					candidates.append(str(card_id))
+				if candidates.is_empty():
+					events.append({"type":"effect_resolved","actor_id":str(actor_id),"op":str(operation),"selected_count":0,"reason":"no_eligible_candidates"})
+					continue
+				state.effect_state = _card_choice(state, actor_id, operation, effect, source.zone_id, &"hand", StringName(recipient.zone_ids[&"hand"]), candidates, 1, 1)
+				state.effect_state["recipient_id"] = str(recipient_id)
+				state.effect_state["continuation_effects"] = _remaining_effects(effects, index + 1)
+				events.append(_choice_requested_event(state.effect_state))
+				return ""
+			&"choose_supply_deck_draft":
+				var options: Array[String] = []
+				var has_cards := false
+				for raw_id: Variant in effect.get("source_deck_zone_ids", []):
+					var deck := state.zones.get(StringName(str(raw_id))) as ZoneData
+					if deck == null:
+						return "missing_helper_supply_deck"
+					options.append(str(raw_id))
+					has_cards = has_cards or not deck.card_instance_ids.is_empty()
+				if not has_cards:
+					events.append({"type":"effect_resolved","actor_id":str(actor_id),"op":str(operation),"reason":"source_decks_empty"})
+					continue
+				state.effect_state = _card_choice(state, actor_id, operation, effect, HelperService.DRAFT_ROW_ID, &"helper_draft_source", HelperService.DRAFT_ROW_ID, options, 1, 1)
+				state.effect_state["choice_title"] = str(effect.get("choice_title", "多人輪抽"))
+				state.effect_state["source_card_zone_id"] = str(ZoneService.find_card_zone(state, StringName(effect.get("source_card_instance_id", ""))))
+				state.effect_state["continuation_effects"] = _remaining_effects(effects, index + 1)
+				events.append(_choice_requested_event(state.effect_state))
+				return ""
+			&"rotate_helper":
+				var rotate_error := HelperService.rotate(state, actor_id, events, definitions)
+				if not rotate_error.is_empty():
+					return rotate_error
+				if not state.effect_state.is_empty():
+					state.effect_state["continuation_effects"] = _remaining_effects(effects, index + 1)
+					return ""
+				continue
+			&"rest_hand_size", &"party_capacity":
+				continue
 			&"draw_then_choose_discard":
 				var draw_result := DeckService.draw_cards(state, actor_id, int(effect.get("draw_amount", 0)), events)
 				if not bool(draw_result.get("ok", false)):
@@ -790,7 +886,10 @@ static func resolve(
 					"prompt": str(effect.get("prompt", "選擇 1 張加入自己的手牌")),
 					"source_deck_zone_id": str(source_deck_zone_id),
 					"source_zone_id": str(choice_zone_id),
-					"source_zone_key": "resource_draft_row",
+					"source_zone_key": (
+						"helper_draft_row" if choice_zone_id == HelperService.DRAFT_ROW_ID
+						else "resource_draft_row"
+					),
 					"choice_zone_id": str(choice_zone_id),
 					"destination_zone_key": str(effect.get("destination_zone_key", "hand")),
 					"eligible_card_ids": revealed_card_ids.duplicate(),
@@ -805,6 +904,7 @@ static func resolve(
 					"effect_index": index,
 					"source_effect": effect.duplicate(true),
 					"source_card_instance_id": str(effect.get("source_card_instance_id", "")),
+					"source_card_zone_id": str(effect.get("source_card_zone_id", "")),
 					"continuation_effects": _remaining_effects(effects, index + 1),
 				}
 				events.append({
@@ -922,7 +1022,7 @@ static func _card_choice(
 	minimum: int,
 	maximum: int
 ) -> Dictionary:
-	return {"type":"pending_choice","choice_id":"choice-%06d" % (state.revision + 1),"actor_id":str(actor_id),"required_actor_id":str(actor_id),"op":str(operation),"prompt":str(effect.get("prompt","選擇卡牌")),"source_zone_id":str(source_zone_id),"source_zone_key":str(source_zone_key),"destination_zone_id":str(destination_zone_id),"eligible_card_ids":eligible_ids.duplicate(),"selected_card_ids":[],"selected_count":0,"min_selections":minimum,"max_selections":maximum,"source_card_instance_id":str(effect.get("source_card_instance_id","")),"source_effect":effect.duplicate(true)}
+	return {"type":"pending_choice","choice_id":"choice-%06d" % (state.revision + 1),"actor_id":str(actor_id),"required_actor_id":str(actor_id),"op":str(operation),"prompt":str(effect.get("prompt","選擇卡牌")),"source_zone_id":str(source_zone_id),"source_zone_key":str(source_zone_key),"destination_zone_id":str(destination_zone_id),"eligible_card_ids":eligible_ids.duplicate(),"selected_card_ids":[],"selected_count":0,"min_selections":minimum,"max_selections":maximum,"source_card_instance_id":str(effect.get("source_card_instance_id","")),"source_card_zone_id":str(ZoneService.find_card_zone(state, StringName(effect.get("source_card_instance_id","")))),"source_effect":effect.duplicate(true)}
 
 
 static func _choice_requested_event(choice: Dictionary) -> Dictionary:

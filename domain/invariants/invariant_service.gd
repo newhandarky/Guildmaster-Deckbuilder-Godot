@@ -71,6 +71,10 @@ static func validate(state: GameStateData) -> PackedStringArray:
 
 static func _validate_supply_zones(state: GameStateData, errors: PackedStringArray) -> void:
 	_validate_boss_zones(state, errors)
+	if state.helpers_enabled:
+		_validate_helper_zones(state, errors)
+	elif state.zones.has(HelperService.DECK_ID) or state.zones.has(HelperService.ACTIVE_ID):
+		errors.append("Disabled helper mode cannot contain helper zones")
 	for row_zone_id: StringName in [SupplyService.RECRUIT_ROW_ID, SupplyService.SHOP_ROW_ID]:
 		var row := state.zones.get(row_zone_id) as ZoneData
 		if row == null:
@@ -121,6 +125,39 @@ static func _validate_supply_zones(state: GameStateData, errors: PackedStringArr
 static func _boss_attachment_contains(state: GameStateData, card_id: StringName) -> bool:
 	var zone := state.zones.get(BossServiceType.BOSS_ATTACHMENT_ID) as ZoneData
 	return zone != null and card_id in zone.card_instance_ids
+
+
+static func _validate_helper_zones(state: GameStateData, errors: PackedStringArray) -> void:
+	for zone_id: StringName in [HelperService.DECK_ID, HelperService.ACTIVE_ID, HelperService.RESERVE_ID, HelperService.REMOVED_ID, HelperService.DRAFT_ROW_ID]:
+		if not state.zones.has(zone_id):
+			errors.append("Missing helper zone %s" % zone_id)
+			return
+	var deck := state.zones[HelperService.DECK_ID] as ZoneData
+	var active := state.zones[HelperService.ACTIVE_ID] as ZoneData
+	var reserve := state.zones[HelperService.RESERVE_ID] as ZoneData
+	var removed := state.zones[HelperService.REMOVED_ID] as ZoneData
+	var draft := state.zones[HelperService.DRAFT_ROW_ID] as ZoneData
+	if deck.kind != &"ordered_deck" or deck.visibility != &"hidden" \
+			or reserve.kind != &"ordered_deck" or reserve.visibility != &"hidden" \
+			or active.kind != &"face_up_row" or active.visibility != &"public" \
+			or removed.kind != &"removed" or draft.kind != &"face_up_row" \
+			or draft.visibility != &"public" or not bool(draft.metadata.get("temporary_choice_zone", false)):
+		errors.append("Helper zone configuration is invalid")
+	if active.card_instance_ids.size() > 1:
+		errors.append("Only one helper may be active")
+	if draft.card_instance_ids.size() > state.players.size():
+		errors.append("Helper draft exceeds player count")
+	if StringName(state.effect_state.get("op", "")) != &"draft_gain_card" \
+			and not draft.card_instance_ids.is_empty():
+		errors.append("Helper draft row must be empty outside draft choice")
+	var helper_count := deck.card_instance_ids.size() + active.card_instance_ids.size() \
+			+ reserve.card_instance_ids.size() + removed.card_instance_ids.size()
+	if helper_count != 12:
+		errors.append("Official helper instance count must remain 12")
+	for zone: ZoneData in [deck, active, reserve, removed]:
+		for card_id: StringName in zone.card_instance_ids:
+			if not str(card_id).begins_with("card-helper-"):
+				errors.append("Helper zone contains a non-helper card")
 
 
 static func _validate_boss_zones(state: GameStateData, errors: PackedStringArray) -> void:
@@ -315,11 +352,27 @@ static func _validate_effect_state(state: GameStateData, errors: PackedStringArr
 	var choice_id := str(choice.get("choice_id", ""))
 	if choice_id.is_empty():
 		errors.append("Pending choice requires a choice ID")
+	var locked_source_zone := StringName(choice.get("source_card_zone_id", ""))
+	if not locked_source_zone.is_empty() and ZoneService.find_card_zone(
+		state, StringName(choice.get("source_card_instance_id", ""))
+	) != locked_source_zone:
+		errors.append("Pending choice effect source moved from its locked zone")
 	var destination_zone_id := StringName(choice.get("destination_zone_id", ""))
 	var player := state.players.get(actor_id) as PlayerStateData
 	var operation := StringName(choice.get("op", ""))
 	if player != null:
 		match operation:
+			&"choose_supply_deck_draft":
+				if StringName(choice.get("source_zone_id", "")) != HelperService.DRAFT_ROW_ID \
+						or StringName(choice.get("destination_zone_id", "")) != HelperService.DRAFT_ROW_ID:
+					errors.append("Pending helper draft source selection zone is invalid")
+			&"choose_transfer_card":
+				var next_index := (state.turn_order.find(actor_id) + 1) % state.turn_order.size()
+				var recipient := state.players[state.turn_order[next_index]] as PlayerStateData
+				if StringName(choice.get("source_zone_id", "")) != StringName(player.zone_ids.get(&"hand", &"")) \
+						or StringName(choice.get("destination_zone_id", "")) != StringName(recipient.zone_ids.get(&"hand", &"")) \
+						or StringName(choice.get("recipient_id", "")) != recipient.player_id:
+					errors.append("Pending helper transfer zones are invalid")
 			&"choose_equipment_replacement":
 				if StringName(choice.get("source_zone_id", "")) \
 						!= StringName(player.zone_ids.get(&"equipment", &"")) \
@@ -470,7 +523,7 @@ static func _validate_effect_state(state: GameStateData, errors: PackedStringArr
 		elif operation in [&"confirm_effect", &"choose_move_card", &"inspect_deck_top", \
 				&"order_deck_top", \
 				&"choose_target_combat_modifier", &"choose_refresh_row", \
-				&"choose_equipment_replacement"]:
+				&"choose_equipment_replacement", &"choose_transfer_card"]:
 			var expected_zone_id := StringName(choice.get("source_zone_id", ""))
 			if ZoneService.find_card_zone(state, card_instance_id) != expected_zone_id:
 				errors.append("Pending choice card %s moved from its locked source" % card_instance_id)
@@ -485,6 +538,9 @@ static func _validate_effect_state(state: GameStateData, errors: PackedStringArr
 			_validate_draft_candidate(
 				state, choice, card_instance_id, selected_seen.has(card_instance_id), errors
 			)
+		elif operation == &"choose_supply_deck_draft":
+			if card_instance_id not in [SupplyService.RECRUIT_DECK_ID, SupplyService.SHOP_DECK_ID]:
+				errors.append("Pending helper draft has invalid supply option")
 	for selected_id: Variant in selected_card_ids:
 		if not eligible_seen.has(StringName(str(selected_id))):
 			errors.append("Pending choice selected cards must be locked candidates")

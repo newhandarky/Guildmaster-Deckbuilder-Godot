@@ -167,19 +167,16 @@ static func _apply_end_phase(
 		var supply_error := SupplyService.refill_vertical_slice_rows(state, events, definitions)
 		if not supply_error.is_empty():
 			return supply_error
-		var outgoing_player := state.players[old_player_id] as PlayerStateData
-		outgoing_player.reset_turn_scope()
-		events.append({"type": "turn_resources_reset", "player_id": str(old_player_id)})
-		var rest_error := DeckService.restock_hand(state, old_player_id, 5, events)
-		if not rest_error.is_empty():
-			return rest_error
-		state.phase = PHASES[0]
-		var player_index := state.turn_order.find(state.active_player_id)
-		state.active_player_id = state.turn_order[(player_index + 1) % state.turn_order.size()]
-		var next_player := state.players[state.active_player_id] as PlayerStateData
-		next_player.reset_turn_scope()
-		if state.active_player_id == state.starting_player_id:
-			state.round_number += 1
+		var cleanup_error := DeckService.discard_hand_and_play_area(state, old_player_id, events)
+		if not cleanup_error.is_empty():
+			return cleanup_error
+		var helper_error := HelperService.trigger(state, old_player_id, &"on_rest_before_draw", events, definitions)
+		if not helper_error.is_empty():
+			return helper_error
+		if not state.effect_state.is_empty():
+			state.effect_state["helper_rest_boundary"] = true
+			return ""
+		return finish_rest_phase(state, events, definitions)
 	else:
 		state.phase = PHASES[phase_index + 1]
 		if old_phase == &"action1":
@@ -210,10 +207,45 @@ static func _apply_end_phase(
 	elif old_phase == &"action2" and state.phase == &"purchase":
 		trigger_timing = &"on_purchase_start"
 	if not trigger_timing.is_empty():
-		return EffectResolver.resolve_party_trigger(
+		var trigger_error := EffectResolver.resolve_party_trigger(
 			state, old_player_id, trigger_timing, events, definitions
 		)
+		if not trigger_error.is_empty():
+			return trigger_error
+		if trigger_timing == &"on_purchase_start":
+			if not state.effect_state.is_empty():
+				state.effect_state["helper_purchase_boundary"] = true
+				return ""
+			return HelperService.trigger(state, old_player_id, trigger_timing, events, definitions)
 	return ""
+
+
+static func finish_rest_phase(
+	state: GameStateData, events: Array[Dictionary], definitions: Dictionary
+) -> String:
+	if state.phase != &"rest" or not state.effect_state.is_empty():
+		return "invalid_rest_boundary"
+	var old_player_id := state.active_player_id
+	var outgoing_player := state.players[old_player_id] as PlayerStateData
+	var hand_size := HelperService.rule_amount(state, definitions, &"rest_hand_size", 5)
+	var draw_result := DeckService.draw_cards(state, old_player_id, hand_size, events)
+	if not bool(draw_result.get("ok", false)):
+		return str(draw_result.get("error", "draw_failed"))
+	events.append({"type":"hand_restocked","player_id":str(old_player_id),"requested_count":hand_size,"drawn_count":int(draw_result.get("drawn_count", 0))})
+	outgoing_player.reset_turn_scope()
+	events.append({"type":"turn_resources_reset","player_id":str(old_player_id)})
+	state.phase = &"action1"
+	var player_index := state.turn_order.find(old_player_id)
+	state.active_player_id = state.turn_order[(player_index + 1) % state.turn_order.size()]
+	var next_player := state.players[state.active_player_id] as PlayerStateData
+	next_player.reset_turn_scope()
+	if state.active_player_id == state.starting_player_id:
+		state.round_number += 1
+	events.append({"type":"phase_changed","actor_id":str(old_player_id),"from_phase":"rest","to_phase":"action1","round":state.round_number})
+	events.append({"type":"active_player_changed","from_player_id":str(old_player_id),"to_player_id":str(state.active_player_id),"round":state.round_number})
+	if state.active_player_id == state.starting_player_id:
+		events.append({"type":"round_started","round":state.round_number})
+	return HelperService.trigger(state, state.active_player_id, &"on_turn_start", events, definitions)
 
 
 static func _failure(code: String, state_hash: String) -> Dictionary:

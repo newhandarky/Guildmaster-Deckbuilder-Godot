@@ -71,7 +71,7 @@ static func apply(
 	var player := state.players[actor_id] as PlayerStateData
 	var party_zone_id := StringName(player.zone_ids[&"party"])
 	var party := state.zones[party_zone_id] as ZoneData
-	if party.card_instance_ids.size() >= BASE_PARTY_CAPACITY:
+	if party.card_instance_ids.size() >= HelperService.party_capacity(state, definitions):
 		var outgoing_id: StringName = party.card_instance_ids[0]
 		var departure_error := discard_party_member_with_equipment(
 			state, player, outgoing_id, &"party_capacity", events

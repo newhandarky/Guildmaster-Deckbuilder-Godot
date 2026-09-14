@@ -73,6 +73,11 @@ static func effective_purchase_cost(
 					and StringName(effect.get("source_zone_id", "")) == source_zone_id \
 					and StringName(effect.get("card_type", "")) == definition.card_type:
 				cost += int(effect.get("amount", 0))
+	for effect: Dictionary in HelperService.active_effects(state, definitions):
+		if StringName(effect.get("op", "")) == &"purchase_cost_modifier" \
+				and StringName(effect.get("timing", "")) == &"continuous" \
+				and str(definition.card_type) in (effect.get("card_types", []) as Array):
+			cost += int(effect.get("amount", 0))
 	return maxi(0, cost)
 
 

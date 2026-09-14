@@ -119,7 +119,8 @@ static func complete_defeat(
 		"defeated_count": int(player.turn_facts[&"defeated_boss_count"]),
 		"defeated_monster_count": int(player.turn_facts.get(&"defeated_monster_count", 0)),
 	})
-	return ""
+	return HelperService.rotate(state, actor_id, events, definitions) \
+		if state.helpers_enabled else ""
 
 
 static func continue_defeat_after_choice(

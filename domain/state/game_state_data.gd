@@ -4,11 +4,13 @@ extends RefCounted
 const ZoneDataType = preload("res://domain/state/zone_data.gd")
 const PlayerStateDataType = preload("res://domain/state/player_state_data.gd")
 const BossServiceType = preload("res://domain/state/boss_service.gd")
+const HelperServiceType = preload("res://domain/state/helper_service.gd")
 
 var schema_version: int = 1
 var game_id: StringName = &"game-demo-001"
-var content_version: String = "0.18.0"
-var ruleset_version: String = "0.18.0"
+var content_version: String = "0.19.0"
+var ruleset_version: String = "0.19.0"
+var helpers_enabled: bool = true
 var seed_value: int = 20260909
 var rng_state: int = 0
 var revision: int = 0
@@ -26,8 +28,11 @@ var event_cursor: int = 0
 var processed_command_ids: Array[String] = []
 
 
-static func create_vertical_slice(seed: int = 20260909, definitions: Dictionary = {}) -> GameStateData:
+static func create_vertical_slice(
+	seed: int = 20260909, definitions: Dictionary = {}, enable_helpers: bool = true
+) -> GameStateData:
 	var state := GameStateData.new()
+	state.helpers_enabled = enable_helpers
 	state.seed_value = seed
 	state.rng_state = DeterministicRng.new(seed).get_state()
 	var player_one := PlayerStateDataType.create(&"p1", 0, "玩家一")
@@ -286,6 +291,8 @@ static func create_vertical_slice(seed: int = 20260909, definitions: Dictionary 
 	state.zones[monsters.zone_id] = monsters
 	_add_vertical_slice_supplies(state, definitions)
 	BossServiceType.setup(state, definitions)
+	if enable_helpers:
+		HelperServiceType.setup(state, definitions)
 	return state
 
 
@@ -295,6 +302,7 @@ static func from_dictionary(data: Dictionary) -> GameStateData:
 	state.game_id = StringName(data.get("game_id", ""))
 	state.content_version = str(data.get("content_version", ""))
 	state.ruleset_version = str(data.get("ruleset_version", ""))
+	state.helpers_enabled = bool(data.get("helpers_enabled", true))
 	state.seed_value = int(data.get("seed", 0))
 	state.rng_state = int(data.get("rng_state", 0))
 	state.revision = int(data.get("revision", 0))
@@ -329,6 +337,7 @@ func clone_state() -> GameStateData:
 	copy.game_id = game_id
 	copy.content_version = content_version
 	copy.ruleset_version = ruleset_version
+	copy.helpers_enabled = helpers_enabled
 	copy.seed_value = seed_value
 	copy.rng_state = rng_state
 	copy.revision = revision
@@ -364,6 +373,7 @@ func to_dictionary() -> Dictionary:
 		"game_id": str(game_id),
 		"content_version": content_version,
 		"ruleset_version": ruleset_version,
+		"helpers_enabled": helpers_enabled,
 		"seed": seed_value,
 		# JSON numbers are doubles, so encode the 64-bit RNG state losslessly.
 		"rng_state": str(rng_state),

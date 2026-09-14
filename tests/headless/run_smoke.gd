@@ -6,6 +6,11 @@ const BossRuleEvaluator = preload("res://domain/rules/boss_rule_evaluator.gd")
 var _failures: PackedStringArray = []
 
 
+func _baseline_state(seed: int = 20260909, definitions: Dictionary = {}) -> GameStateData:
+	# Legacy regression fixtures isolate their earlier card mechanics from the new global helper.
+	return GameStateData.create_vertical_slice(seed, definitions, false)
+
+
 func _init() -> void:
 	await _run()
 	if _failures.is_empty():
@@ -93,13 +98,331 @@ func _run() -> void:
 	_test_canonical_integer_numbers()
 	_test_seeded_rng()
 	_test_rng_state_restore()
+	_test_official_helper_content_and_setup()
+	_test_official_helper_continuous_and_lifecycle()
+	_test_official_helper_choices_and_rotation()
+	await _test_official_helper_hud()
+
+
+func _helper_state(number: int, seed: int = 1900) -> GameStateData:
+	var definitions := _load_definitions()
+	var state := GameStateData.create_vertical_slice(seed, definitions)
+	state.effect_state.clear()
+	for player_id: StringName in state.turn_order:
+		(state.players[player_id] as PlayerStateData).reset_turn_scope()
+	var active_id := HelperService.active_card_id(state)
+	var target_id := StringName("card-helper-%02d" % number)
+	if active_id != target_id:
+		var source_id := ZoneService.find_card_zone(state, target_id)
+		var out := ZoneService.move_card(state, active_id, HelperService.ACTIVE_ID, source_id)
+		_expect(bool(out.get("ok", false)), "helper fixture should move the initial active card")
+		var into := ZoneService.move_card(state, target_id, source_id, HelperService.ACTIVE_ID)
+		_expect(bool(into.get("ok", false)), "helper fixture should reveal the target card")
+	return state
+
+
+func _test_official_helper_content_and_setup() -> void:
+	var definitions := _load_definitions()
+	var expected_names := ["流浪道具商人", "流浪道具商人", "公會櫃台小姐", "公會櫃台小姐", "酒吧老闆", "酒吧老闆", "謎之少女", "謎之少女", "武器舖店主", "武器舖店主", "情報商", "情報商"]
+	for index in 12:
+		var definition := definitions.get(StringName("base:helper/helper-%02d" % (index + 1))) as CardDefinition
+		_expect(definition != null and definition.card_type == &"helper" and definition.copies == 1 and definition.display_name == expected_names[index] and not definition.rules_text.is_empty() and not definition.effects.is_empty(), "helper %02d should have formal content" % (index + 1))
+	var first := GameStateData.create_vertical_slice(1911, definitions)
+	var second := GameStateData.create_vertical_slice(1911, definitions)
+	_expect(CanonicalJson.sha256(first.to_dictionary()) == CanonicalJson.sha256(second.to_dictionary()), "helper setup should be deterministic")
+	_expect(InvariantService.validate(first).is_empty(), "helper setup should satisfy invariants")
+	var total := 0
+	for zone_id in [HelperService.DECK_ID, HelperService.ACTIVE_ID, HelperService.RESERVE_ID, HelperService.REMOVED_ID]:
+		total += (first.zones[zone_id] as ZoneData).card_instance_ids.size()
+	_expect(total == 12 and (first.zones[HelperService.ACTIVE_ID] as ZoneData).card_instance_ids.size() == 1 and (first.zones[HelperService.DECK_ID] as ZoneData).card_instance_ids.size() == 3, "helper setup should select one per boss and reveal exactly one")
+	var snapshot := SnapshotCodec.encode(first, "helper-content", "helper-rules")
+	var restored := SnapshotCodec.decode(snapshot, "helper-content", "helper-rules")
+	_expect(bool(restored.get("ok", false)) and CanonicalJson.sha256((restored.get("state") as GameStateData).to_dictionary()) == CanonicalJson.sha256(first.to_dictionary()), "initial helper state should round-trip")
+
+
+func _test_official_helper_continuous_and_lifecycle() -> void:
+	var definitions := _load_definitions()
+	for spec in [[1, SupplyService.SHOP_ROW_ID, &"item"], [6, SupplyService.RECRUIT_ROW_ID, &"adventurer"], [9, SupplyService.SHOP_ROW_ID, &"equipment"]]:
+		var state := _helper_state(int(spec[0]), 1920 + int(spec[0]))
+		var row := state.zones[spec[1]] as ZoneData
+		var found := false
+		for card_id: StringName in row.card_instance_ids:
+			var card := state.cards[card_id] as Dictionary
+			var definition := definitions[StringName(card["definition_id"])] as CardDefinition
+			if definition.card_type == spec[2]:
+				found = ResourceService.effective_purchase_cost(state, &"p1", card_id, definitions) == maxi(0, int(definition.cost) - 1)
+				break
+		_expect(found, "helper %s should discount its official purchase category" % spec[0])
+	var rest_six := _helper_state(7, 1927)
+	_expect(HelperService.rule_amount(rest_six, definitions, &"rest_hand_size", 5) == 6, "helper 07 should replace rest hand size with six")
+	var cap := _helper_state(8, 1928)
+	_expect(HelperService.party_capacity(cap, definitions) == 6, "helper 08 should raise party capacity")
+	var buy := _helper_state(4, 1924)
+	var buy_player := buy.players[&"p1"] as PlayerStateData
+	buy_player.turn_facts[&"defeated_enemy"] = true
+	buy.phase = &"action2"
+	var buy_result := RulesEngine.dispatch(buy, _end_phase_envelope(buy, "helper-buy-start"), definitions)
+	_expect(bool(buy_result.get("ok", false)) and (buy_result.get("state") as GameStateData).phase == &"purchase" and int(((buy_result.get("state") as GameStateData).players[&"p1"] as PlayerStateData).turn_resources.get(&"purchase_power", 0)) == 5, "helper 04 should award once at the purchase boundary")
+	var reveal := _helper_state(3, 1923)
+	var reveal_player := reveal.players[&"p1"] as PlayerStateData
+	var draw_zone := StringName(reveal_player.zone_ids[&"draw_pile"])
+	var enemy_id := &"card-monster-mimic-02"
+	var enemy_move := ZoneService.move_card(reveal, enemy_id, ZoneService.find_card_zone(reveal, enemy_id), draw_zone)
+	_expect(bool(enemy_move.get("ok", false)), "helper 03 test enemy should enter draw pile")
+	(reveal.cards[enemy_id] as Dictionary)["owner_id"] = "p1"
+	var reveal_events: Array[Dictionary] = []
+	var reveal_error := HelperService.trigger(reveal, &"p1", &"on_purchase_start", reveal_events, definitions)
+	_expect(reveal_error.is_empty() and ZoneService.find_card_zone(reveal, enemy_id) == StringName(reveal_player.zone_ids[&"hand"]), "helper 03 should publicly reveal and gain enemy cards")
+	var capacity_state := _helper_state(8, 1938)
+	var extra_id := _move_definition_to_player_hand(capacity_state, &"base:adventurer/adventurer-01", &"p1")
+	var joined := PartyService.apply(capacity_state, &"p1", {"card_instance_id":str(extra_id)}, definitions, [])
+	_expect(joined.is_empty() and (capacity_state.zones[StringName((capacity_state.players[&"p1"] as PlayerStateData).zone_ids[&"party"])] as ZoneData).card_instance_ids.size() == 6, "helper 08 should allow a sixth party member")
+	var attached_id := _move_definition_to_player_hand(capacity_state, &"base:resource/resource-02", &"p1")
+	var equip_events: Array[Dictionary] = []
+	var equip_error := EquipmentService.apply(capacity_state, &"p1", {"type":"EQUIP_ITEM","card_instance_id":str(attached_id),"target_card_id":str(extra_id)}, definitions, equip_events)
+	_expect(equip_error.is_empty(), "helper 08 fixture should attach equipment to sixth member")
+	var departure_events: Array[Dictionary] = []
+	var departure_error := HelperService.rotate(capacity_state, &"p1", departure_events, definitions)
+	_expect(departure_error.is_empty() and ZoneService.find_card_zone(capacity_state, extra_id) == StringName((capacity_state.players[&"p1"] as PlayerStateData).zone_ids[&"discard_pile"]), "helper 08 departure should discard rightmost excess member")
+	if equip_error.is_empty() and departure_error.is_empty():
+		var attachment_state := (capacity_state.cards[attached_id] as Dictionary).get("state", {}) as Dictionary
+		_expect(ZoneService.find_card_zone(capacity_state, attached_id) == StringName((capacity_state.players[&"p1"] as PlayerStateData).zone_ids[&"discard_pile"]) and not attachment_state.has("equipped_to") and ((capacity_state.cards[extra_id] as Dictionary).get("state", {}) as Dictionary).get("equipment_ids", []) == [], "helper 08 capacity shrink should discard equipment and clear both attachment links")
+
+
+func _test_official_helper_choices_and_rotation() -> void:
+	var definitions := _load_definitions()
+	var transfer := _helper_state(11, 1941)
+	var transfer_events: Array[Dictionary] = []
+	var transfer_error := HelperService.trigger(transfer, &"p1", &"on_turn_start", transfer_events, definitions)
+	_expect(transfer_error.is_empty() and StringName(transfer.effect_state.get("op", "")) == &"choose_transfer_card", "helper 11 should force a hand transfer choice")
+	_expect(RulesEngine.get_legal_commands(transfer, &"p2", definitions).is_empty() and RulesEngine.get_legal_commands(transfer, &"p1", definitions).size() == 5, "helper 11 pending choice should close all other legal commands")
+	var hand_card := StringName((transfer.effect_state.get("eligible_card_ids", []) as Array)[0])
+	var invalid := RulesEngine.dispatch(transfer, _command_envelope(transfer, {"type":"RESOLVE_CHOICE","choice_id":str(transfer.effect_state["choice_id"]),"card_instance_id":str(hand_card),"skip":true}, "helper-invalid-skip"), definitions)
+	_expect(not bool(invalid.get("ok", false)) and invalid.get("before_hash") == invalid.get("after_hash"), "helper 11 may not skip or mutate on invalid choice")
+	var wrong_envelope := _command_envelope(transfer, {"type":"RESOLVE_CHOICE","choice_id":str(transfer.effect_state["choice_id"]),"card_instance_id":str(hand_card),"skip":false}, "helper-wrong-actor")
+	wrong_envelope["actor_id"] = "p2"
+	var wrong := RulesEngine.dispatch(transfer, wrong_envelope, definitions)
+	_expect(not bool(wrong.get("ok", false)) and wrong.get("before_hash") == wrong.get("after_hash"), "helper 11 should reject wrong actor atomically")
+	var empty_hand := _helper_state(11, 1944)
+	var empty_player := empty_hand.players[&"p1"] as PlayerStateData
+	var empty_hand_zone := empty_hand.zones[StringName(empty_player.zone_ids[&"hand"])] as ZoneData
+	for card_id: StringName in empty_hand_zone.card_instance_ids.duplicate():
+		ZoneService.move_card(empty_hand, card_id, empty_hand_zone.zone_id, StringName(empty_player.zone_ids[&"discard_pile"]))
+	var empty_events: Array[Dictionary] = []
+	var empty_error := HelperService.trigger(empty_hand, &"p1", &"on_turn_start", empty_events, definitions)
+	_expect(empty_error.is_empty() and empty_hand.effect_state.is_empty(), "helper 11 should complete without pending when hand is empty")
+	var moved := RulesEngine.dispatch(transfer, _command_envelope(transfer, {"type":"RESOLVE_CHOICE","choice_id":str(transfer.effect_state["choice_id"]),"card_instance_id":str(hand_card),"skip":false}, "helper-transfer"), definitions)
+	_expect(bool(moved.get("ok", false)), "helper 11 should transfer the chosen card")
+	if bool(moved.get("ok", false)):
+		var resulting := moved["state"] as GameStateData
+		_expect(ZoneService.find_card_zone(resulting, hand_card) == StringName((resulting.players[&"p2"] as PlayerStateData).zone_ids[&"hand"]) and StringName((resulting.cards[hand_card] as Dictionary).get("owner_id", "")) == &"p2", "helper 11 should transfer zone and ownership to left player")
+		var transfer_types: Array[String] = []
+		for event: Dictionary in moved.get("events", []):
+			transfer_types.append(str(event.get("type", "")))
+		_expect(transfer_types.find("card_transferred") > 0 and transfer_types.find("choice_resolved") > transfer_types.find("card_transferred"), "helper transfer should order move, ownership event, then choice completion")
+	var rest := _helper_state(2, 1942)
+	var item_id := _move_definition_to_player_hand(rest, &"base:resource/resource-01", &"p1")
+	var rest_player := rest.players[&"p1"] as PlayerStateData
+	ZoneService.move_card(rest, item_id, StringName(rest_player.zone_ids[&"hand"]), StringName(rest_player.zone_ids[&"discard_pile"]))
+	rest.phase = &"rest"
+	var rest_step := RulesEngine.dispatch(rest, _end_phase_envelope(rest, "helper-rest"), definitions)
+	_expect(bool(rest_step.get("ok", false)) and StringName((rest_step.get("state") as GameStateData).effect_state.get("op", "")) == &"choose_move_card", "helper 02 should pause rest after cleanup and before draw")
+	if bool(rest_step.get("ok", false)):
+		var pending := rest_step["state"] as GameStateData
+		var rest_choice := RulesEngine.dispatch(pending, _command_envelope(pending, {"type":"RESOLVE_CHOICE","choice_id":str(pending.effect_state["choice_id"]),"card_instance_id":str(item_id),"skip":false}, "helper-rest-choice"), definitions)
+		_expect(bool(rest_choice.get("ok", false)), "helper 02 should resolve rest choice")
+		if bool(rest_choice.get("ok", false)):
+			var done := rest_choice["state"] as GameStateData
+			_expect(done.active_player_id == &"p2" and ZoneService.find_card_zone(done, item_id) == StringName(rest_player.zone_ids[&"hand"]), "helper 02 selected item should be drawn before turn rotation")
+	var bar := _helper_state(5, 1945)
+	var bar_player := bar.players[&"p1"] as PlayerStateData
+	var adventurer_id := _move_definition_to_player_hand(bar, &"base:adventurer/adventurer-03", &"p1")
+	ZoneService.move_card(bar, adventurer_id, StringName(bar_player.zone_ids[&"hand"]), StringName(bar_player.zone_ids[&"discard_pile"]))
+	var bar_events: Array[Dictionary] = []
+	var bar_error := HelperService.trigger(bar, &"p1", &"on_turn_start", bar_events, definitions)
+	_expect(bar_error.is_empty() and StringName(bar.effect_state.get("op", "")) == &"choose_move_card", "helper 05 should offer a turn-start adventurer recovery")
+	var bar_repeat_events: Array[Dictionary] = []
+	var bar_repeat := HelperService.trigger(bar, &"p1", &"on_turn_start", bar_repeat_events, definitions)
+	_expect(bar_repeat.is_empty() and bar_repeat_events.is_empty(), "helper 05 should not trigger twice in one turn")
+	if not bar.effect_state.is_empty():
+		var bar_result := RulesEngine.dispatch(bar, _command_envelope(bar, {"type":"RESOLVE_CHOICE","choice_id":str(bar.effect_state["choice_id"]),"card_instance_id":str(adventurer_id),"skip":false}, "helper-bar-recover"), definitions)
+		_expect(bool(bar_result.get("ok", false)) and ZoneService.find_card_zone(bar_result.get("state") as GameStateData, adventurer_id) == StringName(bar_player.zone_ids[&"hand"]), "helper 05 should recover the chosen adventurer")
+	var smith := _helper_state(10, 1950)
+	var smith_player := smith.players[&"p1"] as PlayerStateData
+	var equipment_id := _move_definition_to_player_hand(smith, &"base:resource/resource-02", &"p1")
+	ZoneService.move_card(smith, equipment_id, StringName(smith_player.zone_ids[&"hand"]), StringName(smith_player.zone_ids[&"discard_pile"]))
+	smith.phase = &"rest"
+	var smith_rest := RulesEngine.dispatch(smith, _end_phase_envelope(smith, "helper-smith-rest"), definitions)
+	_expect(bool(smith_rest.get("ok", false)) and StringName((smith_rest.get("state") as GameStateData).effect_state.get("op", "")) == &"choose_move_card", "helper 10 should offer only equipment recovery before rest draw")
+	if bool(smith_rest.get("ok", false)):
+		var smith_pending := smith_rest["state"] as GameStateData
+		_expect(str(equipment_id) in (smith_pending.effect_state.get("eligible_card_ids", []) as Array) and str(item_id) not in (smith_pending.effect_state.get("eligible_card_ids", []) as Array), "helper 10 should filter equipment candidates")
+		var smith_choice := RulesEngine.dispatch(smith_pending, _command_envelope(smith_pending, {"type":"RESOLVE_CHOICE","choice_id":str(smith_pending.effect_state["choice_id"]),"card_instance_id":"","skip":true}, "helper-smith-skip"), definitions)
+		_expect(bool(smith_choice.get("ok", false)) and (smith_choice.get("state") as GameStateData).active_player_id == &"p2", "helper 10 may be skipped and rest should continue")
+	var draft := _helper_state(12, 1943)
+	var draft_events: Array[Dictionary] = []
+	var draft_error := HelperService.trigger(draft, &"p1", &"on_enter_helper", draft_events, definitions)
+	_expect(draft_error.is_empty() and StringName(draft.effect_state.get("op", "")) == &"choose_supply_deck_draft", "helper 12 should ask the active player to choose a supply deck")
+	var source_snapshot := SnapshotCodec.encode(draft, "helper-content", "helper-rules")
+	_expect(bool(SnapshotCodec.decode(source_snapshot, "helper-content", "helper-rules").get("ok", false)), "helper source-selection pending should round-trip")
+	var first_step := RulesEngine.dispatch(draft, _command_envelope(draft, {"type":"RESOLVE_CHOICE","choice_id":str(draft.effect_state["choice_id"]),"card_instance_id":str(SupplyService.RECRUIT_DECK_ID),"skip":false}, "helper-draft-source"), definitions)
+	var first_repeat := RulesEngine.dispatch(draft.clone_state(), _command_envelope(draft, {"type":"RESOLVE_CHOICE","choice_id":str(draft.effect_state["choice_id"]),"card_instance_id":str(SupplyService.RECRUIT_DECK_ID),"skip":false}, "helper-draft-source"), definitions)
+	_expect(bool(first_repeat.get("ok", false)) and first_step.get("after_hash") == first_repeat.get("after_hash"), "helper draft source step should replay with the same hash")
+	var bad_source := RulesEngine.dispatch(draft, _command_envelope(draft, {"type":"RESOLVE_CHOICE","choice_id":str(draft.effect_state["choice_id"]),"card_instance_id":str(SupplyService.MONSTER_CYCLE_ID),"skip":false}, "helper-draft-wrong-source"), definitions)
+	_expect(not bool(bad_source.get("ok", false)) and bad_source.get("before_hash") == bad_source.get("after_hash"), "helper 12 should reject non-supply source without mutation")
+	var empty_shop := draft.clone_state()
+	var sink := ZoneData.new(&"shared:helper-test-sink", &"removed", &"public")
+	empty_shop.zones[sink.zone_id] = sink
+	var shop := empty_shop.zones[SupplyService.SHOP_DECK_ID] as ZoneData
+	for card_id: StringName in shop.card_instance_ids.duplicate():
+		ZoneService.move_card(empty_shop, card_id, SupplyService.SHOP_DECK_ID, sink.zone_id)
+	var empty_choice := RulesEngine.dispatch(empty_shop, _command_envelope(empty_shop, {"type":"RESOLVE_CHOICE","choice_id":str(empty_shop.effect_state["choice_id"]),"card_instance_id":str(SupplyService.SHOP_DECK_ID),"skip":false}, "helper-empty-shop"), definitions)
+	_expect(bool(empty_choice.get("ok", false)) and (empty_choice.get("state") as GameStateData).effect_state.is_empty(), "helper 12 may choose an empty official deck and finish without a draft")
+	var one_card := draft.clone_state()
+	var one_card_sink := ZoneData.new(&"shared:helper-one-card-sink", &"removed", &"public")
+	one_card.zones[one_card_sink.zone_id] = one_card_sink
+	var recruit_deck := one_card.zones[SupplyService.RECRUIT_DECK_ID] as ZoneData
+	for index in recruit_deck.card_instance_ids.size() - 1:
+		var card_id: StringName = recruit_deck.card_instance_ids[0]
+		ZoneService.move_card(one_card, card_id, recruit_deck.zone_id, one_card_sink.zone_id)
+	var one_source := RulesEngine.dispatch(one_card, _command_envelope(one_card, {"type":"RESOLVE_CHOICE","choice_id":str(one_card.effect_state["choice_id"]),"card_instance_id":str(SupplyService.RECRUIT_DECK_ID),"skip":false}, "helper-one-source"), definitions)
+	_expect(bool(one_source.get("ok", false)) and (one_source.get("state") as GameStateData).effect_state.get("selection_order", []) == ["p1"], "helper 12 should draft only available supply cards")
+	_expect(bool(first_step.get("ok", false)), "helper 12 source selection should reveal a formal draft zone")
+	if bool(first_step.get("ok", false)):
+		var first_state := first_step["state"] as GameStateData
+		_expect(StringName(first_state.effect_state.get("op", "")) == &"draft_gain_card" and (first_state.zones[HelperService.DRAFT_ROW_ID] as ZoneData).card_instance_ids.size() == 2, "helper 12 should reveal two official supply cards")
+		var tampered := first_state.clone_state()
+		var tampered_card := StringName((tampered.effect_state.get("remaining_card_ids", []) as Array)[0])
+		ZoneService.move_card(tampered, tampered_card, HelperService.DRAFT_ROW_ID, StringName((tampered.players[&"p1"] as PlayerStateData).zone_ids[&"hand"]))
+		(tampered.cards[tampered_card] as Dictionary)["owner_id"] = "p1"
+		var tampered_result := RulesEngine.dispatch(tampered, _command_envelope(tampered, {"type":"RESOLVE_CHOICE","choice_id":str(tampered.effect_state["choice_id"]),"card_instance_id":str(tampered_card),"skip":false}, "helper-draft-tampered"), definitions)
+		_expect(not bool(tampered_result.get("ok", false)) and tampered_result.get("before_hash") == tampered_result.get("after_hash"), "moved helper draft candidate should fail atomically")
+		var first_card := StringName((first_state.effect_state.get("remaining_card_ids", []) as Array)[0])
+		var first_pick := RulesEngine.dispatch(first_state, _command_envelope(first_state, {"type":"RESOLVE_CHOICE","choice_id":str(first_state.effect_state["choice_id"]),"card_instance_id":str(first_card),"skip":false}, "helper-draft-first"), definitions)
+		var first_pick_repeat := RulesEngine.dispatch(first_state.clone_state(), _command_envelope(first_state, {"type":"RESOLVE_CHOICE","choice_id":str(first_state.effect_state["choice_id"]),"card_instance_id":str(first_card),"skip":false}, "helper-draft-first"), definitions)
+		_expect(bool(first_pick_repeat.get("ok", false)) and first_pick.get("after_hash") == first_pick_repeat.get("after_hash"), "helper draft middle step should replay with the same hash")
+		_expect(bool(first_pick.get("ok", false)), "helper 12 first player should choose")
+		if bool(first_pick.get("ok", false)):
+			var middle := first_pick["state"] as GameStateData
+			_expect(middle.active_player_id == &"p1" and StringName(middle.effect_state.get("required_actor_id", "")) == &"p2" and RulesEngine.get_legal_commands(middle, &"p1", definitions).is_empty(), "helper 12 should keep turn actor but require next seat")
+			var middle_snapshot := SnapshotCodec.encode(middle, "helper-content", "helper-rules")
+			_expect(bool(SnapshotCodec.decode(middle_snapshot, "helper-content", "helper-rules").get("ok", false)), "helper draft middle state should round-trip")
+			var last_card := StringName((middle.effect_state.get("remaining_card_ids", []) as Array)[0])
+			var last_envelope := _command_envelope(middle, {"type":"RESOLVE_CHOICE","choice_id":str(middle.effect_state["choice_id"]),"card_instance_id":str(last_card),"skip":false}, "helper-draft-second")
+			last_envelope["actor_id"] = "p2"
+			var last_pick := RulesEngine.dispatch(middle, last_envelope, definitions)
+			var last_repeat := RulesEngine.dispatch(middle.clone_state(), last_envelope, definitions)
+			_expect(bool(last_repeat.get("ok", false)) and last_pick.get("after_hash") == last_repeat.get("after_hash"), "helper draft final step should replay with the same hash")
+			_expect(bool(last_pick.get("ok", false)), "helper 12 second player should complete draft")
+			if bool(last_pick.get("ok", false)):
+				var finished := last_pick["state"] as GameStateData
+				_expect(finished.effect_state.is_empty() and (finished.zones[HelperService.DRAFT_ROW_ID] as ZoneData).card_instance_ids.is_empty() and ZoneService.find_card_zone(finished, last_card) == StringName((finished.players[&"p2"] as PlayerStateData).zone_ids[&"hand"]), "helper 12 draft should finish with unique zones and correct owner")
+				var final_snapshot := SnapshotCodec.encode(finished, "helper-content", "helper-rules")
+				_expect(bool(SnapshotCodec.decode(final_snapshot, "helper-content", "helper-rules").get("ok", false)), "completed helper draft should round-trip")
+	var rotation := _helper_state(12, 1953)
+	var rotation_events: Array[Dictionary] = []
+	var rotation_error := HelperService.rotate(rotation, &"p1", rotation_events, definitions)
+	_expect(rotation_error.is_empty() and StringName(rotation.effect_state.get("op", "")) == &"choose_supply_deck_draft" and HelperService.active_card_id(rotation).is_empty(), "helper 12 departure should suspend next reveal until its draft completes")
+	if rotation_error.is_empty() and not rotation.effect_state.is_empty():
+		var rotation_source := RulesEngine.dispatch(rotation, _command_envelope(rotation, {"type":"RESOLVE_CHOICE","choice_id":str(rotation.effect_state["choice_id"]),"card_instance_id":str(SupplyService.SHOP_DECK_ID),"skip":false}, "helper-rotation-source"), definitions)
+		_expect(bool(rotation_source.get("ok", false)), "helper leave draft should accept a supply source")
+		if bool(rotation_source.get("ok", false)):
+			var rotation_pending := rotation_source["state"] as GameStateData
+			for picker in ["p1", "p2"]:
+				var candidate := str((rotation_pending.effect_state.get("remaining_card_ids", []) as Array)[0])
+				var envelope := _command_envelope(rotation_pending, {"type":"RESOLVE_CHOICE","choice_id":str(rotation_pending.effect_state["choice_id"]),"card_instance_id":candidate,"skip":false}, "helper-rotation-%s" % picker)
+				envelope["actor_id"] = picker
+				var pick := RulesEngine.dispatch(rotation_pending, envelope, definitions)
+				_expect(bool(pick.get("ok", false)), "helper departure draft should accept each required actor")
+				if not bool(pick.get("ok", false)):
+					break
+				rotation_pending = pick["state"] as GameStateData
+			_expect(not HelperService.active_card_id(rotation_pending).is_empty() and (rotation_pending.zones[HelperService.DRAFT_ROW_ID] as ZoneData).card_instance_ids.is_empty(), "helper rotation should reveal the next helper only after outgoing draft completes")
+	var boss_state := _helper_state(8, 1954)
+	var boss_error := _expose_boss(boss_state, &"card-boss-10")
+	_expect(boss_error.is_empty(), "helper Boss fixture should expose a simple Boss")
+	var boss_events: Array[Dictionary] = []
+	var completion := {"actor_id":"p1","target_card_id":"card-boss-10","participant_ids":[],"claim_optional_reward":true}
+	var complete_error := BossService.complete_defeat(boss_state, &"p1", completion, boss_events, definitions)
+	_expect(complete_error.is_empty(), "Boss defeat should invoke the shared helper transition")
+	if complete_error.is_empty():
+		var event_types: Array[String] = []
+		for event: Dictionary in boss_events:
+			event_types.append(str(event.get("type", "")))
+		_expect(event_types.find("boss_defeated") >= 0 and event_types.find("helper_left") > event_types.find("boss_defeated") and event_types.find("helper_revealed") > event_types.find("helper_left"), "Boss victory should order helper leave before reveal")
+		_expect(InvariantService.validate(boss_state).is_empty(), "Boss-triggered helper transition should keep zone uniqueness")
+	var final_boss := _helper_state(12, 1955)
+	_expect(_expose_boss(final_boss, &"card-boss-10").is_empty(), "final Boss fixture should expose target")
+	var final_deck := final_boss.zones[BossService.BOSS_DECK_ID] as ZoneData
+	for card_id: StringName in final_deck.card_instance_ids.duplicate():
+		ZoneService.move_card(final_boss, card_id, final_deck.zone_id, BossService.BOSS_RESERVE_ID)
+	var final_events: Array[Dictionary] = []
+	var final_error := BossService.complete_defeat(final_boss, &"p1", completion, final_events, definitions)
+	_expect(final_error.is_empty() and StringName(final_boss.effect_state.get("op", "")) == &"choose_supply_deck_draft", "last Boss should still trigger departing helper 12")
+	if final_error.is_empty():
+		var final_source := RulesEngine.dispatch(final_boss, _command_envelope(final_boss, {"type":"RESOLVE_CHOICE","choice_id":str(final_boss.effect_state["choice_id"]),"card_instance_id":str(SupplyService.SHOP_DECK_ID),"skip":false}, "helper-final-source"), definitions)
+		_expect(bool(final_source.get("ok", false)), "last helper draft should accept supply choice")
+		if bool(final_source.get("ok", false)):
+			var final_pending := final_source["state"] as GameStateData
+			for picker in ["p1", "p2"]:
+				var candidate := str((final_pending.effect_state.get("remaining_card_ids", []) as Array)[0])
+				var envelope := _command_envelope(final_pending, {"type":"RESOLVE_CHOICE","choice_id":str(final_pending.effect_state["choice_id"]),"card_instance_id":candidate,"skip":false}, "helper-final-%s" % picker)
+				envelope["actor_id"] = picker
+				var pick := RulesEngine.dispatch(final_pending, envelope, definitions)
+				_expect(bool(pick.get("ok", false)), "last helper draft should complete each seat")
+				if not bool(pick.get("ok", false)):
+					break
+				final_pending = pick["state"] as GameStateData
+			_expect(final_pending.effect_state.is_empty() and HelperService.active_card_id(final_pending).is_empty(), "last Boss should not reveal a replacement helper")
+
+
+func _test_official_helper_hud() -> void:
+	var packed := load("res://scenes/boot/main.tscn") as PackedScene
+	var app := packed.instantiate() as GameApp
+	app.enable_helpers = true
+	root.add_child(app)
+	await process_frame
+	app.session.state = _helper_state(12, 1952)
+	var events: Array[Dictionary] = []
+	var error := HelperService.trigger(app.session.state, &"p1", &"on_enter_helper", events, app.session.content_registry.definitions)
+	_expect(error.is_empty(), "helper HUD fixture should enter source choice")
+	app.session._emit_state_changed()
+	await process_frame
+	var helper_text := ""
+	for child: Node in app.hud.market_actions.get_children():
+		if child is Label:
+			helper_text += (child as Label).text
+	_expect("情報商" in helper_text and "進場" in helper_text, "helper HUD should show the current helper and full effect")
+	var source_buttons: Array[Button] = []
+	var source_labels := ""
+	for child: Node in app.hud.hand_actions.get_children():
+		if child is Button and "選擇" in (child as Button).text:
+			source_buttons.append(child as Button)
+		elif child is Label:
+			source_labels += (child as Label).text
+	_expect(source_buttons.size() == 2 and app.hud.end_phase_button.disabled, "helper source choice should offer two focus-trapped legal buttons")
+	_expect("冒險者牌庫" in source_labels and "物資牌庫" in source_labels, "helper HUD should distinguish official draft supply sources")
+	if source_buttons.size() == 2:
+		_expect(source_buttons[0].focus_neighbor_bottom == source_buttons[1].get_path() and source_buttons[1].focus_neighbor_bottom == source_buttons[0].get_path(), "helper source choice focus should cycle")
+	var source_result := app.session.resolve_choice(str(app.session.state.effect_state.get("choice_id", "")), SupplyService.RECRUIT_DECK_ID, false)
+	_expect(bool(source_result.get("ok", false)), "helper HUD source choice should dispatch")
+	await process_frame
+	_expect("情報商物資輪抽" in app.hud.hand_title.text and "玩家一" in app.hud.hand_summary.text, "helper draft HUD should show title and required actor")
+	if bool(source_result.get("ok", false)):
+		var first_id := StringName((app.session.state.effect_state.get("remaining_card_ids", []) as Array)[0])
+		var first_pick := app.session.resolve_choice(str(app.session.state.effect_state.get("choice_id", "")), first_id, false)
+		_expect(bool(first_pick.get("ok", false)), "helper HUD first draft pick should dispatch")
+		await process_frame
+		_expect("玩家二" in app.hud.hand_summary.text and app.hud.end_phase_button.disabled and app.session.state.active_player_id == &"p1", "helper HUD should update required actor and keep ordinary actions closed")
+	app.queue_free()
+	await process_frame
 
 
 func _test_content_pack() -> void:
 	var registry := ContentRegistry.new()
 	var errors := registry.load_pack("res://content/packs/base_vertical_slice.json")
 	_expect(errors.is_empty(), "base content pack should validate: %s" % "; ".join(errors))
-	_expect(registry.definitions.size() == 90, "base pack should load ninety formal definitions")
+	_expect(registry.definitions.size() == 102, "base pack should load 102 formal definitions")
 	var mimic := registry.definitions.get(&"base:monster/monster-02") as CardDefinition
 	_expect(
 		mimic != null and mimic.copies == 3 and mimic.combat == 5 \
@@ -188,7 +511,7 @@ func _test_content_pack_reload() -> void:
 	var first_fingerprint := registry.pack_fingerprint
 	var second_errors := registry.load_pack("res://content/packs/base_vertical_slice.json")
 	_expect(first_errors.is_empty() and second_errors.is_empty(), "content pack should be safely reloadable")
-	_expect(registry.definitions.size() == 90, "content reload must not retain duplicate definitions")
+	_expect(registry.definitions.size() == 102, "content reload must not retain duplicate definitions")
 	_expect(registry.pack_fingerprint == first_fingerprint, "same content should keep the same fingerprint")
 
 
@@ -226,8 +549,8 @@ func _test_official_resource_content_and_supply() -> void:
 	_expect(copy_total == 59, "twenty-eight official resources should total fifty-nine copies")
 	for definition_id: StringName in definitions:
 		_expect(not str(definition_id).begins_with("custom:resource/"), "official pack must exclude custom resources")
-	var first := GameStateData.create_vertical_slice(1801, definitions)
-	var second := GameStateData.create_vertical_slice(1801, definitions)
+	var first := _baseline_state(1801, definitions)
+	var second := _baseline_state(1801, definitions)
 	var resource_instance_count := 0
 	var resource_zone_ids: Dictionary = {}
 	for card_id: StringName in first.cards:
@@ -246,7 +569,7 @@ func _test_official_resource_content_and_supply() -> void:
 
 func _test_official_resource_core_effects() -> void:
 	var definitions := _load_definitions()
-	var state := GameStateData.create_vertical_slice(1802, definitions)
+	var state := _baseline_state(1802, definitions)
 	var player := state.players[&"p1"] as PlayerStateData
 	var hand := state.zones[player.zone_ids[&"hand"]] as ZoneData
 	var party := state.zones[player.zone_ids[&"party"]] as ZoneData
@@ -272,7 +595,7 @@ func _test_official_resource_core_effects() -> void:
 	_expect(PartyService.discard_party_member_with_equipment(state, player, mage_id, &"combat_departure", departure_events, definitions).is_empty(), "silk ribbon combat departure should resolve")
 	_expect(ZoneService.find_card_zone(state, ribbon_id) == StringName(player.zone_ids[&"removed"]), "silk ribbon should enter removed zone on combat departure")
 
-	var cost_state := GameStateData.create_vertical_slice(1803, definitions)
+	var cost_state := _baseline_state(1803, definitions)
 	var cost_player := cost_state.players[&"p1"] as PlayerStateData
 	var holy_water_id := _move_definition_to_player_hand(cost_state, &"base:resource/resource-04", &"p1")
 	_expect(not _commands_contain(ItemService.get_legal_commands(cost_state, &"p1", definitions), "USE_ITEM"), "holy water should not be usable without a hand monster cost")
@@ -294,7 +617,7 @@ func _test_official_resource_core_effects() -> void:
 		var pay_result := RulesEngine.dispatch(cost_state, _command_envelope(cost_state, {"type":"RESOLVE_CHOICE","choice_id":str(cost_state.effect_state.get("choice_id", "")),"card_instance_id":str(monster_id),"skip":false}, "cmd-resource-cost-pay"), definitions)
 		_expect(bool(pay_result.get("ok", false)) and (pay_result["state"] as GameStateData).effect_state.is_empty(), "paying holy water cost should draw three and finish")
 
-	var cat_state := GameStateData.create_vertical_slice(1804, definitions)
+	var cat_state := _baseline_state(1804, definitions)
 	var cat_player := cat_state.players[&"p1"] as PlayerStateData
 	cat_state.phase = &"purchase"
 	cat_player.turn_resources["purchase_power"] = 10
@@ -312,7 +635,7 @@ func _test_official_resource_core_effects() -> void:
 		DeckService.discard_hand_and_play_area(cat_state, &"p2", cleanup_events)
 		_expect(ZoneService.find_card_zone(cat_state, cat_id) == &"p1:discard-pile" and str((cat_state.cards[cat_id] as Dictionary).get("owner_id", "")) == "p1", "cat doll discard should continue around the two-player seating cycle")
 
-	var tea_state := GameStateData.create_vertical_slice(1805, definitions)
+	var tea_state := _baseline_state(1805, definitions)
 	var tea_id := _move_definition_to_player_hand(tea_state, &"base:resource/resource-26", &"p1")
 	var tea_result := RulesEngine.dispatch(tea_state, _command_envelope(tea_state, {"type":"USE_ITEM","card_instance_id":str(tea_id)}, "cmd-use-tea"), definitions)
 	_expect(bool(tea_result.get("ok", false)), "special tea cup should be usable before defeating an enemy")
@@ -324,7 +647,7 @@ func _test_official_resource_core_effects() -> void:
 
 func _test_official_resource_lifecycle_and_pending() -> void:
 	var definitions := _load_definitions()
-	var scroll_state := GameStateData.create_vertical_slice(1806, definitions)
+	var scroll_state := _baseline_state(1806, definitions)
 	var scroll_player := scroll_state.players[&"p1"] as PlayerStateData
 	var scroll_id := _move_definition_to_player_hand(scroll_state, &"base:resource/resource-23", &"p1")
 	var scroll_result := RulesEngine.dispatch(scroll_state, _command_envelope(scroll_state, {"type":"USE_ITEM","card_instance_id":str(scroll_id)}, "cmd-use-scroll"), definitions)
@@ -343,7 +666,7 @@ func _test_official_resource_lifecycle_and_pending() -> void:
 			second_usable = second_usable or str(command.get("card_instance_id", "")) == str(second_scroll)
 		_expect(not second_usable, "element scroll should not be usable twice in one turn")
 
-	var wine_state := GameStateData.create_vertical_slice(1807, definitions)
+	var wine_state := _baseline_state(1807, definitions)
 	var wine_player := wine_state.players[&"p1"] as PlayerStateData
 	var wine_id := _move_definition_to_player_hand(wine_state, &"base:resource/resource-28", &"p1")
 	var adventurer_id := _move_definition_to_player_hand(wine_state, &"base:adventurer/adventurer-02", &"p1")
@@ -366,7 +689,7 @@ func _test_official_resource_lifecycle_and_pending() -> void:
 			var hand_after := (resolved_wine.zones[(resolved_wine.players[&"p1"] as PlayerStateData).zone_ids[&"hand"]] as ZoneData).card_instance_ids.size()
 			_expect(hand_after == hand_before - 1 + 3, "wine should draw the discarded adventurer's printed combat")
 
-	var sword_state := GameStateData.create_vertical_slice(1808, definitions)
+	var sword_state := _baseline_state(1808, definitions)
 	var sword_player := sword_state.players[&"p1"] as PlayerStateData
 	var sword_party := sword_state.zones[sword_player.zone_ids[&"party"]] as ZoneData
 	var sword_id := _move_definition_to_player_hand(sword_state, &"base:resource/resource-16", &"p1")
@@ -432,8 +755,8 @@ func _test_official_adventurer_content_and_supply() -> void:
 	_expect(total_copies == 60, "thirty official adventurers should total sixty copies")
 	for definition_id: StringName in definitions:
 		_expect(not str(definition_id).begins_with("custom:"), "custom adventurers must not enter the formal content pack")
-	var first := GameStateData.create_vertical_slice(1700, definitions)
-	var second := GameStateData.create_vertical_slice(1700, definitions)
+	var first := _baseline_state(1700, definitions)
+	var second := _baseline_state(1700, definitions)
 	var first_deck := first.zones[SupplyService.RECRUIT_DECK_ID] as ZoneData
 	var first_row := first.zones[SupplyService.RECRUIT_ROW_ID] as ZoneData
 	_expect(first_deck.card_instance_ids.size() + first_row.card_instance_ids.size() == 60, "official recruit supply should contain sixty unique instances")
@@ -451,7 +774,7 @@ func _test_official_adventurer_content_and_supply() -> void:
 
 func _test_official_adventurer_shared_operations() -> void:
 	var definitions := _load_definitions()
-	var state := GameStateData.create_vertical_slice(1701, definitions)
+	var state := _baseline_state(1701, definitions)
 	var player := state.players[&"p1"] as PlayerStateData
 	var recovered_id := &"card-p1-starter-adventurer-01"
 	ZoneService.move_card(state, recovered_id, player.zone_ids[&"party"], player.zone_ids[&"discard_pile"])
@@ -479,7 +802,7 @@ func _test_official_adventurer_shared_operations() -> void:
 	}, "cmd-adventurer-recover"), definitions)
 	_expect(bool(legal.get("ok", false)) and ZoneService.find_card_zone(legal["state"], recovered_id) == player.zone_ids[&"hand"], "shared move operation should recover the locked owned card")
 
-	var inspect_state := GameStateData.create_vertical_slice(1702, definitions)
+	var inspect_state := _baseline_state(1702, definitions)
 	var inspect_player := inspect_state.players[&"p1"] as PlayerStateData
 	for raw_id: Variant in (inspect_state.zones[inspect_player.zone_ids[&"hand"]] as ZoneData).card_instance_ids.slice(0, 3):
 		ZoneService.move_card(inspect_state, StringName(str(raw_id)), inspect_player.zone_ids[&"hand"], inspect_player.zone_ids[&"draw_pile"])
@@ -508,7 +831,7 @@ func _test_official_adventurer_shared_operations() -> void:
 			order_steps += 1
 		_expect(ordering.effect_state.is_empty() and (ordering.zones[inspect_player.zone_ids[&"inspection"]] as ZoneData).card_instance_ids.is_empty(), "deck ordering should restore every inspected card and clear pending state")
 
-	var target_state := GameStateData.create_vertical_slice(1703, definitions)
+	var target_state := _baseline_state(1703, definitions)
 	var target_events: Array[Dictionary] = []
 	var target_error := EffectResolver.resolve(target_state, &"p1", [{
 		"op":"choose_target_combat_modifier", "source_zone_id":str(SupplyService.MONSTER_ROW_ID),
@@ -519,7 +842,7 @@ func _test_official_adventurer_shared_operations() -> void:
 	var target_result := RulesEngine.dispatch(target_state, _command_envelope(target_state, target_command, "cmd-target-modifier"), definitions)
 	_expect(target_error.is_empty() and bool(target_result.get("ok", false)) and not ((target_result["state"] as GameStateData).players[&"p1"] as PlayerStateData).turn_bonuses.get("target_combat_modifiers", {}).is_empty(), "public target modifier should lock and apply one legal monster")
 
-	var departure_base := GameStateData.create_vertical_slice(1704, definitions)
+	var departure_base := _baseline_state(1704, definitions)
 	var departure_player := departure_base.players[&"p1"] as PlayerStateData
 	var departure_party := departure_base.zones[departure_player.zone_ids[&"party"]] as ZoneData
 	for starter_id: StringName in departure_party.card_instance_ids.duplicate():
@@ -549,13 +872,13 @@ func _test_official_adventurer_shared_operations() -> void:
 
 
 func _test_initial_invariants() -> void:
-	var state := GameStateData.create_vertical_slice()
+	var state := _baseline_state()
 	var errors := InvariantService.validate(state)
 	_expect(errors.is_empty(), "initial state should satisfy invariants: %s" % "; ".join(errors))
 
 
 func _test_two_player_state() -> void:
-	var state := GameStateData.create_vertical_slice()
+	var state := _baseline_state()
 	_expect(state.turn_order == [&"p1", &"p2"], "vertical slice should use a stable two-player turn order")
 	_expect(state.players.size() == 2, "vertical slice should create two players")
 	for player_id: StringName in state.turn_order:
@@ -569,7 +892,7 @@ func _test_two_player_state() -> void:
 
 
 func _test_official_starting_setup() -> void:
-	var state := GameStateData.create_vertical_slice()
+	var state := _baseline_state()
 	_expect(state.cards.size() == 182, "setup should include all formal supply and boss instances")
 	var monster_instance_count := 0
 	var monster_definition_ids: Dictionary = {}
@@ -608,21 +931,21 @@ func _test_official_starting_setup() -> void:
 
 
 func _test_player_invariant_guards() -> void:
-	var wrong_seat := GameStateData.create_vertical_slice()
+	var wrong_seat := _baseline_state()
 	(wrong_seat.players[&"p2"] as PlayerStateData).seat_index = 0
 	_expect(not InvariantService.validate(wrong_seat).is_empty(), "duplicate player seats must fail invariants")
 
-	var shared_zone := GameStateData.create_vertical_slice()
+	var shared_zone := _baseline_state()
 	var player_one := shared_zone.players[&"p1"] as PlayerStateData
 	player_one.zone_ids[&"hand"] = player_one.zone_ids[&"draw_pile"]
 	_expect(not InvariantService.validate(shared_zone).is_empty(), "player zone references must be unique")
 
-	var exposed_hand := GameStateData.create_vertical_slice()
+	var exposed_hand := _baseline_state()
 	(exposed_hand.zones[&"p1:hand"] as ZoneData).visibility = &"public"
 	_expect(not InvariantService.validate(exposed_hand).is_empty(), "private hand zone must not become public")
 	_expect(RulesEngine.get_legal_commands(exposed_hand, &"p1").is_empty(), "invalid state must expose no legal commands")
 
-	var attachment_state := GameStateData.create_vertical_slice()
+	var attachment_state := _baseline_state()
 	var definitions := _load_definitions()
 	var attachment_result := RulesEngine.dispatch(
 		attachment_state,
@@ -638,7 +961,7 @@ func _test_player_invariant_guards() -> void:
 
 
 func _test_legal_command_and_dispatch() -> void:
-	var state := GameStateData.create_vertical_slice()
+	var state := _baseline_state()
 	var legal := RulesEngine.get_legal_commands(state, &"p1")
 	_expect(legal.size() == 1, "active player should receive END_PHASE")
 	var result := RulesEngine.dispatch(state, _end_phase_envelope(state))
@@ -651,13 +974,13 @@ func _test_legal_command_and_dispatch() -> void:
 
 
 func _test_command_legality_guards() -> void:
-	var inactive := GameStateData.create_vertical_slice()
+	var inactive := _baseline_state()
 	inactive.status = &"finished"
 	_expect(RulesEngine.get_legal_commands(inactive, &"p1").is_empty(), "finished game should expose no commands")
 	var inactive_result := RulesEngine.dispatch(inactive, _end_phase_envelope(inactive, "cmd-inactive"))
 	_expect(str(inactive_result.get("error", "")) == "game_not_active", "dispatcher must reject commands after game end")
 
-	var pending := GameStateData.create_vertical_slice()
+	var pending := _baseline_state()
 	pending.effect_state = {
 		"type": "pending_choice",
 		"choice_id": "choice-test",
@@ -685,7 +1008,7 @@ func _test_command_legality_guards() -> void:
 	var pending_result := RulesEngine.dispatch(pending, _end_phase_envelope(pending, "cmd-pending"))
 	_expect(str(pending_result.get("error", "")) == "effects_pending", "dispatcher must enforce pending-effect legality")
 
-	var wrong_actor := GameStateData.create_vertical_slice()
+	var wrong_actor := _baseline_state()
 	var wrong_actor_envelope := _end_phase_envelope(wrong_actor, "cmd-wrong-actor")
 	wrong_actor_envelope["actor_id"] = "p2"
 	var wrong_actor_result := RulesEngine.dispatch(wrong_actor, wrong_actor_envelope)
@@ -693,7 +1016,7 @@ func _test_command_legality_guards() -> void:
 
 
 func _test_equip_item_legality_and_resources() -> void:
-	var state := GameStateData.create_vertical_slice()
+	var state := _baseline_state()
 	var definitions := _load_definitions()
 	var legal := RulesEngine.get_legal_commands(state, &"p1", definitions)
 	var play_commands: Array[Dictionary] = []
@@ -746,7 +1069,7 @@ func _test_equip_item_legality_and_resources() -> void:
 
 func _test_equip_item_rejection_is_atomic() -> void:
 	var definitions := _load_definitions()
-	var wrong_phase := GameStateData.create_vertical_slice()
+	var wrong_phase := _baseline_state()
 	wrong_phase.phase = &"combat"
 	var before_hash := CanonicalJson.sha256(wrong_phase.to_dictionary())
 	var wrong_phase_result := RulesEngine.dispatch(
@@ -757,7 +1080,7 @@ func _test_equip_item_rejection_is_atomic() -> void:
 	_expect(str(wrong_phase_result.get("error", "")) == "wrong_phase", "equipment may only be played during an action phase")
 	_expect(CanonicalJson.sha256(wrong_phase.to_dictionary()) == before_hash, "wrong-phase play must not mutate state")
 
-	var stone_state := GameStateData.create_vertical_slice()
+	var stone_state := _baseline_state()
 	var stone_hash := CanonicalJson.sha256(stone_state.to_dictionary())
 	var stone_result := RulesEngine.dispatch(
 		stone_state,
@@ -767,7 +1090,7 @@ func _test_equip_item_rejection_is_atomic() -> void:
 	_expect(str(stone_result.get("error", "")) == "unsupported_card_type", "summoning stones must stay in hand as passive purchase power")
 	_expect(CanonicalJson.sha256(stone_state.to_dictionary()) == stone_hash, "unsupported card play must be atomic")
 
-	var invalid_target := GameStateData.create_vertical_slice()
+	var invalid_target := _baseline_state()
 	var target_hash := CanonicalJson.sha256(invalid_target.to_dictionary())
 	var target_result := RulesEngine.dispatch(
 		invalid_target,
@@ -780,7 +1103,7 @@ func _test_equip_item_rejection_is_atomic() -> void:
 
 func _test_equipment_replacement() -> void:
 	var definitions := _load_definitions()
-	var state := GameStateData.create_vertical_slice()
+	var state := _baseline_state()
 	var first := RulesEngine.dispatch(
 		state,
 		_equip_item_envelope(state, &"card-p1-spirit-crystal-01", &"card-p1-starter-adventurer-01", "cmd-first-equipment"),
@@ -824,7 +1147,7 @@ func _test_equipment_replacement() -> void:
 
 
 func _test_effect_resolution_fifo() -> void:
-	var state := GameStateData.create_vertical_slice()
+	var state := _baseline_state()
 	var events: Array[Dictionary] = []
 	var effects: Array[Dictionary] = [
 		{"op": "grant_purchase_power", "amount": 2},
@@ -837,7 +1160,7 @@ func _test_effect_resolution_fifo() -> void:
 	_expect(int(player.turn_resources.get("combat", 0)) == 3, "combat effect should update turn resources")
 	_expect(events.size() == 2 and events[0].get("op") == "grant_purchase_power" and events[1].get("op") == "grant_combat", "effects should emit events in FIFO content order")
 
-	var invalid_state := GameStateData.create_vertical_slice()
+	var invalid_state := _baseline_state()
 	var invalid_hash := CanonicalJson.sha256(invalid_state.to_dictionary())
 	var invalid_events: Array[Dictionary] = []
 	var invalid_effects: Array[Dictionary] = [
@@ -850,7 +1173,7 @@ func _test_effect_resolution_fifo() -> void:
 
 func _test_equipment_survives_rest() -> void:
 	var definitions := _load_definitions()
-	var state := GameStateData.create_vertical_slice(211)
+	var state := _baseline_state(211)
 	var equip_result := RulesEngine.dispatch(
 		state,
 		_equip_item_envelope(state, &"card-p1-spirit-crystal-01", &"card-p1-starter-adventurer-01", "cmd-rest-equip"),
@@ -879,7 +1202,7 @@ func _test_equipment_survives_rest() -> void:
 
 
 func _test_monster_supply_setup_and_anchor() -> void:
-	var state := GameStateData.create_vertical_slice(219)
+	var state := _baseline_state(219)
 	var row := state.zones[SupplyService.MONSTER_ROW_ID] as ZoneData
 	var cycle := state.zones[SupplyService.MONSTER_CYCLE_ID] as ZoneData
 	_expect(row.card_instance_ids.size() == 3, "vertical slice should reveal three monsters")
@@ -898,7 +1221,7 @@ func _test_monster_supply_setup_and_anchor() -> void:
 		"monster cycle anchor should begin in the public row"
 	)
 	_expect(InvariantService.validate(state).is_empty(), "monster supply should satisfy continuity invariants")
-	var same_seed := GameStateData.create_vertical_slice(219)
+	var same_seed := _baseline_state(219)
 	_expect(
 		cycle.card_instance_ids
 			== (same_seed.zones[SupplyService.MONSTER_CYCLE_ID] as ZoneData).card_instance_ids,
@@ -957,7 +1280,7 @@ func _test_boss_content_and_supply() -> void:
 		for effect: Dictionary in definition.effects:
 			effect_ops.append(str(effect.get("op", "")))
 		_expect([rule_ops, effect_ops] == expected_operations[definition_id], "boss %s should keep its formal data-driven operations" % definition_id)
-	var state := GameStateData.create_vertical_slice(503)
+	var state := _baseline_state(503)
 	var equipment_rule := BossRuleEvaluator.evaluate(
 		state, &"p1", definitions[&"base:boss/boss-05"], definitions
 	)
@@ -985,7 +1308,7 @@ func _test_boss_content_and_supply() -> void:
 	_expect(deck.card_instance_ids.size() == 3, "two-player setup should keep three bosses in its deck")
 	_expect(reserve.card_instance_ids.size() == 7, "unselected bosses should remain in the formal reserve")
 	_expect(active.card_instance_ids.size() + deck.card_instance_ids.size() + reserve.card_instance_ids.size() == 11, "every boss instance should occupy exactly one boss zone")
-	var repeated := GameStateData.create_vertical_slice(503)
+	var repeated := _baseline_state(503)
 	_expect(
 		CanonicalJson.sha256(state.to_dictionary()) == CanonicalJson.sha256(repeated.to_dictionary()),
 		"boss selection and reveal should be deterministic for the same seed"
@@ -999,7 +1322,7 @@ func _test_boss_content_and_supply() -> void:
 
 func _test_boss_combat_and_rest_reveal() -> void:
 	var definitions := _load_definitions()
-	var state := GameStateData.create_vertical_slice(509)
+	var state := _baseline_state(509)
 	var setup_error := _expose_boss(state, &"card-boss-10")
 	_expect(setup_error.is_empty(), "boss combat fixture should expose slime girl")
 	if not setup_error.is_empty():
@@ -1051,7 +1374,7 @@ func _test_boss_combat_and_rest_reveal() -> void:
 
 func _test_boss_multi_gain_and_atomicity() -> void:
 	var definitions := _load_definitions()
-	var state := GameStateData.create_vertical_slice(521)
+	var state := _baseline_state(521)
 	_expect(_expose_boss(state, &"card-boss-01").is_empty(), "multi-gain fixture should expose red dragon")
 	var shop := state.zones[SupplyService.SHOP_ROW_ID] as ZoneData
 	var shop_deck := state.zones[SupplyService.SHOP_DECK_ID] as ZoneData
@@ -1105,7 +1428,7 @@ func _test_boss_multi_gain_and_atomicity() -> void:
 
 func _test_boss_departure_replacement() -> void:
 	var definitions := _load_definitions()
-	var state := GameStateData.create_vertical_slice(523)
+	var state := _baseline_state(523)
 	_expect(_expose_boss(state, &"card-boss-02").is_empty(), "departure fixture should expose baphomet")
 	var player := state.players[&"p1"] as PlayerStateData
 	var party := state.zones[player.zone_ids[&"party"]] as ZoneData
@@ -1137,7 +1460,7 @@ func _test_boss_departure_replacement() -> void:
 	_expect((resolved.cards[recruit_id] as Dictionary).get("state", {}).get("equipment_ids", []).is_empty(), "departure should clear the participant attachment link")
 	_expect(not (resolved.cards[&"card-p1-spirit-crystal-01"] as Dictionary).get("state", {}).has("equipped_to"), "departure should clear the equipment reverse link")
 	_expect(int((resolved.players[&"p1"] as PlayerStateData).turn_resources.get("purchase_power", 0)) == 5, "baphomet ordered reward should grant purchase power")
-	var starter_state := GameStateData.create_vertical_slice(525)
+	var starter_state := _baseline_state(525)
 	_expect(_expose_boss(starter_state, &"card-boss-02").is_empty(), "starter departure fixture should expose baphomet")
 	starter_state.phase = &"combat"
 	(starter_state.players[&"p1"] as PlayerStateData).turn_resources["combat"] = 30
@@ -1152,7 +1475,7 @@ func _test_boss_departure_replacement() -> void:
 func _test_boss_attachment_transitions() -> void:
 	var definitions := _load_definitions()
 	for spec: Array in [["card-boss-04", "base:boss/boss-04"], ["card-boss-07", "base:boss/boss-07"]]:
-		var state := GameStateData.create_vertical_slice(527)
+		var state := _baseline_state(527)
 		var boss_id := StringName(spec[0])
 		_expect(_expose_boss(state, boss_id).is_empty(), "attachment fixture should expose %s" % spec[1])
 		var reveal_events: Array[Dictionary] = []
@@ -1192,7 +1515,7 @@ func _test_boss_attachment_transitions() -> void:
 
 func _test_lich_success_and_failure() -> void:
 	var definitions := _load_definitions()
-	var failed_state := GameStateData.create_vertical_slice(529)
+	var failed_state := _baseline_state(529)
 	_expect(_expose_boss(failed_state, &"card-boss-03").is_empty(), "lich failure fixture should expose lich")
 	failed_state.phase = &"combat"
 	(failed_state.players[&"p1"] as PlayerStateData).turn_resources["combat"] = 30
@@ -1212,7 +1535,7 @@ func _test_lich_success_and_failure() -> void:
 		var failure_event_index := _event_index(failed.get("events", []), "boss_attack_failed")
 		_expect(departure_event_index >= 0 and failure_event_index > departure_event_index, "lich failure event must follow committed participant departure")
 
-	var state := GameStateData.create_vertical_slice(531)
+	var state := _baseline_state(531)
 	_expect(_expose_boss(state, &"card-boss-03").is_empty(), "lich success fixture should expose lich")
 	var adventurer_id := (state.zones[SupplyService.RECRUIT_ROW_ID] as ZoneData).card_instance_ids[0]
 	ZoneService.move_card(state, adventurer_id, SupplyService.RECRUIT_ROW_ID, &"p1:hand")
@@ -1265,7 +1588,7 @@ func _test_lich_success_and_failure() -> void:
 
 func _test_combat_preview_and_reward() -> void:
 	var definitions := _load_definitions()
-	var state := GameStateData.create_vertical_slice(221)
+	var state := _baseline_state(221)
 	var phase_result := RulesEngine.dispatch(
 		state, _end_phase_envelope(state, "cmd-combat-setup"), definitions
 	)
@@ -1370,7 +1693,7 @@ func _test_combat_preview_and_reward() -> void:
 
 func _test_combat_optional_reward_skip() -> void:
 	var definitions := _load_definitions()
-	var state := GameStateData.create_vertical_slice(225)
+	var state := _baseline_state(225)
 	var phase_result := RulesEngine.dispatch(
 		state, _end_phase_envelope(state, "cmd-combat-skip-setup"), definitions
 	)
@@ -1399,7 +1722,7 @@ func _test_combat_optional_reward_skip() -> void:
 
 func _test_standard_monster_claim_and_draw_rewards() -> void:
 	var definitions := _load_definitions()
-	var rabbit_state := GameStateData.create_vertical_slice(226)
+	var rabbit_state := _baseline_state(226)
 	var phase_result := RulesEngine.dispatch(
 		rabbit_state,
 		_end_phase_envelope(rabbit_state, "cmd-rabbit-combat-setup"),
@@ -1504,7 +1827,7 @@ func _test_standard_monster_claim_and_draw_rewards() -> void:
 	)
 	_expect(InvariantService.validate(rabbit_defeated).is_empty(), "rabbit claim should preserve invariants")
 
-	var slime_state := GameStateData.create_vertical_slice(232)
+	var slime_state := _baseline_state(232)
 	phase_result = RulesEngine.dispatch(
 		slime_state,
 		_end_phase_envelope(slime_state, "cmd-slime-combat-setup"),
@@ -1544,7 +1867,7 @@ func _test_mimic_dice_reward() -> void:
 	var definitions := _load_definitions()
 	var faces_seen: Dictionary = {}
 	for seed_value in range(1, 500):
-		var state := GameStateData.create_vertical_slice(seed_value)
+		var state := _baseline_state(seed_value)
 		var player := state.players[&"p1"] as PlayerStateData
 		player.turn_resources[&"purchase_power"] = 0
 		var events: Array[Dictionary] = []
@@ -1576,7 +1899,7 @@ func _test_mimic_dice_reward() -> void:
 			break
 	_expect(faces_seen.size() == 6, "dice reward coverage should observe all six faces")
 
-	var state := GameStateData.create_vertical_slice(307)
+	var state := _baseline_state(307)
 	var expose_error := _expose_monster(
 		state, &"card-monster-mimic-01", &"card-monster-rabbit-demon-01"
 	)
@@ -1660,7 +1983,7 @@ func _test_mimic_dice_reward() -> void:
 
 func _test_lamia_resource_draft() -> void:
 	var definitions := _load_definitions()
-	var state := GameStateData.create_vertical_slice(311)
+	var state := _baseline_state(311)
 	var expose_error := _expose_monster(
 		state, &"card-monster-lamia-01", &"card-monster-rabbit-demon-01"
 	)
@@ -1860,7 +2183,7 @@ func _test_lamia_resource_draft() -> void:
 				effect_index = index
 		_expect(resolved_index > 0 and resolved_index < effect_index, "final lamia pick should move, resolve choice, then complete effect")
 
-	var one_card := GameStateData.create_vertical_slice(313)
+	var one_card := _baseline_state(313)
 	var deck := one_card.zones[SupplyService.SHOP_DECK_ID] as ZoneData
 	while deck.card_instance_ids.size() > 1:
 		var card_id: StringName = deck.card_instance_ids.back()
@@ -1871,7 +2194,7 @@ func _test_lamia_resource_draft() -> void:
 	var one_error := EffectResolver.resolve(one_card, &"p1", [draft_effect], one_events, definitions)
 	_expect(one_error.is_empty() and (one_card.effect_state.get("eligible_card_ids", []) as Array).size() == 1, "short supply should reveal only its actual final card")
 	_expect(InvariantService.validate(one_card).is_empty(), "one-card lamia draft should satisfy invariants")
-	var empty_state := GameStateData.create_vertical_slice(317)
+	var empty_state := _baseline_state(317)
 	deck = empty_state.zones[SupplyService.SHOP_DECK_ID] as ZoneData
 	while not deck.card_instance_ids.is_empty():
 		var card_id: StringName = deck.card_instance_ids.back()
@@ -1881,7 +2204,7 @@ func _test_lamia_resource_draft() -> void:
 	var empty_error := EffectResolver.resolve(empty_state, &"p1", [draft_effect], empty_events, definitions)
 	_expect(empty_error.is_empty() and empty_state.effect_state.is_empty(), "empty supply should complete without pending choice")
 	_expect(_events_contain(empty_events, "effect_resolved"), "empty supply should emit effect completion")
-	var p2_start := GameStateData.create_vertical_slice(319)
+	var p2_start := _baseline_state(319)
 	p2_start.active_player_id = &"p2"
 	var p2_events: Array[Dictionary] = []
 	var p2_error := EffectResolver.resolve(p2_start, &"p2", [draft_effect], p2_events, definitions)
@@ -1895,7 +2218,7 @@ func _test_lamia_resource_draft() -> void:
 
 func _test_automaton_archer_pending_choice() -> void:
 	var definitions := _load_definitions()
-	var state := GameStateData.create_vertical_slice(235)
+	var state := _baseline_state(235)
 	var archer_id := &"card-monster-automaton-archer-01"
 	var expose_error := _expose_monster(
 		state, archer_id, &"card-monster-rabbit-demon-01"
@@ -2010,7 +2333,7 @@ func _test_automaton_archer_pending_choice() -> void:
 		)
 		_expect(InvariantService.validate(resolved).is_empty(), "resolved removal should preserve invariants")
 
-	var skip_state := GameStateData.create_vertical_slice(236)
+	var skip_state := _baseline_state(236)
 	_expose_monster(skip_state, archer_id, &"card-monster-rabbit-demon-01")
 	phase_result = RulesEngine.dispatch(
 		skip_state,
@@ -2055,7 +2378,7 @@ func _test_automaton_archer_pending_choice() -> void:
 
 func _test_automaton_warrior_discard_choice() -> void:
 	var definitions := _load_definitions()
-	var no_candidate := GameStateData.create_vertical_slice(237)
+	var no_candidate := _baseline_state(237)
 	var no_candidate_events: Array[Dictionary] = []
 	var no_candidate_error := EffectResolver.resolve(
 		no_candidate,
@@ -2083,7 +2406,7 @@ func _test_automaton_warrior_discard_choice() -> void:
 		"empty discard effect must not request a choice"
 	)
 
-	var state := GameStateData.create_vertical_slice(239)
+	var state := _baseline_state(239)
 	var warrior_id := &"card-monster-automaton-warrior-01"
 	var expose_error := _expose_monster(
 		state, warrior_id, &"card-monster-rabbit-demon-01"
@@ -2307,7 +2630,7 @@ func _test_automaton_warrior_discard_choice() -> void:
 func _test_multi_zone_removal_monsters() -> void:
 	var definitions := _load_definitions()
 	var lizard_id := &"card-monster-lizardfolk-mage-01"
-	var lizard_state := GameStateData.create_vertical_slice(245)
+	var lizard_state := _baseline_state(245)
 	var equip_result := RulesEngine.dispatch(
 		lizard_state,
 		_equip_item_envelope(
@@ -2504,7 +2827,7 @@ func _test_multi_zone_removal_monsters() -> void:
 				and (lizard_skip["state"] as GameStateData).effect_state.is_empty(),
 		"lizard removal should allow skipping"
 	)
-	var no_candidate := GameStateData.create_vertical_slice(246)
+	var no_candidate := _baseline_state(246)
 	var no_player := no_candidate.players[&"p1"] as PlayerStateData
 	for source_key: StringName in [&"hand", &"party", &"discard_pile"]:
 		var source := no_candidate.zones[no_player.zone_ids[source_key]] as ZoneData
@@ -2528,7 +2851,7 @@ func _test_multi_zone_removal_monsters() -> void:
 	)
 
 	var golem_id := &"card-monster-golem-01"
-	var golem_state := GameStateData.create_vertical_slice(247)
+	var golem_state := _baseline_state(247)
 	_expose_monster(golem_state, golem_id, &"card-monster-rabbit-demon-01")
 	(golem_state.players[&"p1"] as PlayerStateData).turn_resources[&"combat"] = 6
 	phase_result = RulesEngine.dispatch(
@@ -2771,7 +3094,7 @@ func _test_multi_zone_removal_monsters() -> void:
 
 func _test_gargoyle_recruit_choice() -> void:
 	var definitions := _load_definitions()
-	var no_candidate := GameStateData.create_vertical_slice(251)
+	var no_candidate := _baseline_state(251)
 	var empty_row := no_candidate.zones[SupplyService.RECRUIT_ROW_ID] as ZoneData
 	for raw_card_id: Variant in empty_row.card_instance_ids.duplicate():
 		var move_result := ZoneService.move_card(
@@ -2803,7 +3126,7 @@ func _test_gargoyle_recruit_choice() -> void:
 				and no_candidate_events[0].get("reason") == "no_eligible_candidates",
 		"empty recruit reward should emit a deterministic no-candidate resolution"
 	)
-	var filter_state := GameStateData.create_vertical_slice(252)
+	var filter_state := _baseline_state(252)
 	var filter_row := filter_state.zones[SupplyService.RECRUIT_ROW_ID] as ZoneData
 	var expensive_id := filter_row.card_instance_ids[0]
 	var expensive_card := filter_state.cards[expensive_id] as Dictionary
@@ -2835,7 +3158,7 @@ func _test_gargoyle_recruit_choice() -> void:
 		"gargoyle must exclude recruit definitions costing more than four"
 	)
 
-	var state := GameStateData.create_vertical_slice(253)
+	var state := _baseline_state(253)
 	var gargoyle_id := &"card-monster-gargoyle-01"
 	var expose_error := _expose_monster(
 		state, gargoyle_id, &"card-monster-rabbit-demon-01"
@@ -3365,7 +3688,7 @@ func _test_public_row_gain_monsters() -> void:
 	)
 
 	# No legal public candidate completes immediately without a pending choice.
-	var no_candidate := GameStateData.create_vertical_slice(282)
+	var no_candidate := _baseline_state(282)
 	var no_candidate_definitions := base_definitions.duplicate()
 	for resource_number in range(1, 29):
 		var definition_id := StringName("base:resource/resource-%02d" % resource_number)
@@ -3439,7 +3762,7 @@ func _build_public_gain_fixture(
 	source_zone_id: StringName,
 	base_definitions: Dictionary
 ) -> Dictionary:
-	var state := GameStateData.create_vertical_slice(seed)
+	var state := _baseline_state(seed)
 	var expose_error := _expose_monster(
 		state, monster_id, &"card-monster-rabbit-demon-01"
 	)
@@ -3488,7 +3811,7 @@ func _build_public_gain_fixture(
 func _test_fire_elemental_hand_redraw() -> void:
 	var definitions := _load_definitions()
 	var fire_id := &"card-monster-fire-elemental-01"
-	var state := GameStateData.create_vertical_slice(259)
+	var state := _baseline_state(259)
 	var expose_error := _expose_monster(
 		state, fire_id, &"card-monster-rabbit-demon-01"
 	)
@@ -3638,7 +3961,7 @@ func _test_fire_elemental_hand_redraw() -> void:
 			"skipping fire elemental should not begin the redraw operation"
 		)
 
-	var empty_hand_state := GameStateData.create_vertical_slice(261)
+	var empty_hand_state := _baseline_state(261)
 	_expose_monster(empty_hand_state, fire_id, &"card-monster-rabbit-demon-01")
 	var empty_player := empty_hand_state.players[&"p1"] as PlayerStateData
 	var empty_hand := empty_hand_state.zones[empty_player.zone_ids[&"hand"]] as ZoneData
@@ -3692,7 +4015,7 @@ func _test_fire_elemental_hand_redraw() -> void:
 			"zero-card redraw should not trigger an unnecessary reshuffle"
 		)
 
-	var boundary := GameStateData.create_vertical_slice(263)
+	var boundary := _baseline_state(263)
 	var boundary_player := boundary.players[&"p1"] as PlayerStateData
 	var boundary_hand := boundary.zones[boundary_player.zone_ids[&"hand"]] as ZoneData
 	for index in 2:
@@ -3732,7 +4055,7 @@ func _test_fire_elemental_hand_redraw() -> void:
 		"partial-boundary redraw should restore the locked three-card hand"
 	)
 
-	var failing_state := GameStateData.create_vertical_slice(265)
+	var failing_state := _baseline_state(265)
 	_expose_monster(failing_state, fire_id, &"card-monster-rabbit-demon-01")
 	phase_result = RulesEngine.dispatch(
 		failing_state,
@@ -3777,7 +4100,7 @@ func _test_fire_elemental_hand_redraw() -> void:
 
 func _test_combat_rejection_is_atomic() -> void:
 	var definitions := _load_definitions()
-	var wrong_phase := GameStateData.create_vertical_slice(227)
+	var wrong_phase := _baseline_state(227)
 	var command := {
 		"type": "ATTACK_TARGET",
 		"target_card_id": "card-monster-skeleton-01",
@@ -3792,7 +4115,7 @@ func _test_combat_rejection_is_atomic() -> void:
 	_expect(str(wrong_result.get("error", "")) == "wrong_phase", "attack must be combat-phase only")
 	_expect(CanonicalJson.sha256(wrong_phase.to_dictionary()) == wrong_hash, "wrong-phase attack must be atomic")
 
-	var insufficient := GameStateData.create_vertical_slice(228)
+	var insufficient := _baseline_state(228)
 	for starter_number in range(1, 5):
 		ZoneService.move_card(
 			insufficient,
@@ -3821,7 +4144,7 @@ func _test_combat_rejection_is_atomic() -> void:
 
 func _test_combat_equipment_departure() -> void:
 	var definitions := _load_definitions()
-	var state := GameStateData.create_vertical_slice(230)
+	var state := _baseline_state(230)
 	var equip_result := RulesEngine.dispatch(
 		state,
 		_equip_item_envelope(
@@ -3876,8 +4199,8 @@ func _test_combat_equipment_departure() -> void:
 
 
 func _test_supply_setup_and_determinism() -> void:
-	var first := GameStateData.create_vertical_slice(223)
-	var second := GameStateData.create_vertical_slice(223)
+	var first := _baseline_state(223)
+	var second := _baseline_state(223)
 	for row_id: StringName in [SupplyService.RECRUIT_ROW_ID, SupplyService.SHOP_ROW_ID]:
 		var first_row := first.zones[row_id] as ZoneData
 		var second_row := second.zones[row_id] as ZoneData
@@ -3890,7 +4213,7 @@ func _test_supply_setup_and_determinism() -> void:
 
 func _test_purchase_and_rest_refill() -> void:
 	var definitions := _load_definitions()
-	var state := _advance_to_purchase(GameStateData.create_vertical_slice(227), definitions, "cmd-buy-setup")
+	var state := _advance_to_purchase(_baseline_state(227), definitions, "cmd-buy-setup")
 	if state == null:
 		return
 	var legal := RulesEngine.get_legal_commands(state, &"p1", definitions)
@@ -3933,7 +4256,7 @@ func _test_purchase_and_rest_refill() -> void:
 
 func _test_purchase_rejection_is_atomic() -> void:
 	var definitions := _load_definitions()
-	var wrong_phase := GameStateData.create_vertical_slice(229)
+	var wrong_phase := _baseline_state(229)
 	var row := wrong_phase.zones[SupplyService.RECRUIT_ROW_ID] as ZoneData
 	var command := {
 		"type": "BUY_CARD",
@@ -3945,7 +4268,7 @@ func _test_purchase_rejection_is_atomic() -> void:
 	_expect(str(wrong_result.get("error", "")) == "wrong_phase", "BUY_CARD should be purchase-phase only")
 	_expect(CanonicalJson.sha256(wrong_phase.to_dictionary()) == wrong_hash, "wrong-phase purchase must be atomic")
 
-	var poor_state := _advance_to_purchase(GameStateData.create_vertical_slice(233), definitions, "cmd-poor-setup")
+	var poor_state := _advance_to_purchase(_baseline_state(233), definitions, "cmd-poor-setup")
 	if poor_state == null:
 		return
 	(poor_state.players[&"p1"] as PlayerStateData).spent_purchase_power = 4
@@ -3962,7 +4285,7 @@ func _test_purchase_rejection_is_atomic() -> void:
 
 
 func _test_supply_depletion_event_once() -> void:
-	var state := GameStateData.create_vertical_slice(239)
+	var state := _baseline_state(239)
 	var row := state.zones[SupplyService.RECRUIT_ROW_ID] as ZoneData
 	for card_instance_id: StringName in row.card_instance_ids.duplicate():
 		ZoneService.move_card(state, card_instance_id, SupplyService.RECRUIT_ROW_ID, &"p1:discard-pile")
@@ -3983,7 +4306,7 @@ func _test_supply_depletion_event_once() -> void:
 func _test_market_refresh_legality_and_commit() -> void:
 	var definitions := _load_definitions()
 	var state := _advance_to_purchase(
-		GameStateData.create_vertical_slice(240), definitions, "cmd-refresh-setup"
+		_baseline_state(240), definitions, "cmd-refresh-setup"
 	)
 	if state == null:
 		return
@@ -4060,7 +4383,7 @@ func _test_market_refresh_legality_and_commit() -> void:
 
 func _test_market_refresh_rejection_is_atomic() -> void:
 	var definitions := _load_definitions()
-	var wrong_phase := GameStateData.create_vertical_slice(242)
+	var wrong_phase := _baseline_state(242)
 	var hand := wrong_phase.zones[&"p1:hand"] as ZoneData
 	var row := wrong_phase.zones[SupplyService.RECRUIT_ROW_ID] as ZoneData
 	var command := {
@@ -4082,7 +4405,7 @@ func _test_market_refresh_rejection_is_atomic() -> void:
 	)
 
 	var invalid := _advance_to_purchase(
-		GameStateData.create_vertical_slice(244), definitions, "cmd-refresh-invalid-setup"
+		_baseline_state(244), definitions, "cmd-refresh-invalid-setup"
 	)
 	if invalid == null:
 		return
@@ -4111,7 +4434,7 @@ func _test_market_refresh_rejection_is_atomic() -> void:
 func _test_market_refresh_selection_order_is_deterministic() -> void:
 	var definitions := _load_definitions()
 	var state := _advance_to_purchase(
-		GameStateData.create_vertical_slice(246), definitions, "cmd-refresh-order-setup"
+		_baseline_state(246), definitions, "cmd-refresh-order-setup"
 	)
 	if state == null:
 		return
@@ -4147,6 +4470,7 @@ func _test_market_refresh_selection_order_is_deterministic() -> void:
 func _test_official_adventurer_hud_integration() -> void:
 	var packed := load("res://scenes/boot/main.tscn") as PackedScene
 	var app := packed.instantiate() as GameApp
+	app.enable_helpers = false
 	root.add_child(app)
 	await process_frame
 	var full_detail_found := false
@@ -4163,6 +4487,7 @@ func _test_official_adventurer_hud_integration() -> void:
 func _test_market_refresh_hud_integration() -> void:
 	var packed := load("res://scenes/boot/main.tscn") as PackedScene
 	var app := packed.instantiate() as GameApp
+	app.enable_helpers = false
 	root.add_child(app)
 	await process_frame
 	for index in 3:
@@ -4191,6 +4516,7 @@ func _test_market_refresh_hud_integration() -> void:
 func _test_combat_hud_integration() -> void:
 	var packed := load("res://scenes/boot/main.tscn") as PackedScene
 	var app := packed.instantiate() as GameApp
+	app.enable_helpers = false
 	root.add_child(app)
 	await process_frame
 	var result := app.session.end_phase()
@@ -4210,6 +4536,7 @@ func _test_combat_hud_integration() -> void:
 func _test_official_resource_hud_integration() -> void:
 	var packed := load("res://scenes/boot/main.tscn") as PackedScene
 	var app := packed.instantiate() as GameApp
+	app.enable_helpers = false
 	root.add_child(app)
 	await process_frame
 	var state := app.session.state
@@ -4243,6 +4570,7 @@ func _test_official_resource_hud_integration() -> void:
 func _test_boss_hud_integration() -> void:
 	var packed := load("res://scenes/boot/main.tscn") as PackedScene
 	var app := packed.instantiate() as GameApp
+	app.enable_helpers = false
 	root.add_child(app)
 	await process_frame
 	var expose_error := _expose_boss(app.session.state, &"card-boss-10")
@@ -4269,6 +4597,7 @@ func _test_boss_hud_integration() -> void:
 func _test_boss_choice_hud_integration() -> void:
 	var packed := load("res://scenes/boot/main.tscn") as PackedScene
 	var app := packed.instantiate() as GameApp
+	app.enable_helpers = false
 	root.add_child(app)
 	await process_frame
 	_expect(_expose_boss(app.session.state, &"card-boss-01").is_empty(), "boss choice HUD should expose red dragon")
@@ -4300,6 +4629,7 @@ func _test_boss_choice_hud_integration() -> void:
 	app.queue_free()
 
 	var lich_app := packed.instantiate() as GameApp
+	lich_app.enable_helpers = false
 	root.add_child(lich_app)
 	await process_frame
 	_expect(_expose_boss(lich_app.session.state, &"card-boss-03").is_empty(), "lich HUD should expose lich")
@@ -4323,6 +4653,7 @@ func _test_boss_choice_hud_integration() -> void:
 func _test_pending_choice_hud_integration() -> void:
 	var packed := load("res://scenes/boot/main.tscn") as PackedScene
 	var app := packed.instantiate() as GameApp
+	app.enable_helpers = false
 	root.add_child(app)
 	await process_frame
 	var expose_error := _expose_monster(
@@ -4376,6 +4707,7 @@ func _test_pending_choice_hud_integration() -> void:
 func _test_discard_choice_hud_integration() -> void:
 	var packed := load("res://scenes/boot/main.tscn") as PackedScene
 	var app := packed.instantiate() as GameApp
+	app.enable_helpers = false
 	root.add_child(app)
 	await process_frame
 	var expose_error := _expose_monster(
@@ -4423,6 +4755,7 @@ func _test_discard_choice_hud_integration() -> void:
 func _test_multi_zone_removal_hud_integration() -> void:
 	var packed := load("res://scenes/boot/main.tscn") as PackedScene
 	var app := packed.instantiate() as GameApp
+	app.enable_helpers = false
 	root.add_child(app)
 	await process_frame
 	var expose_error := _expose_monster(
@@ -4511,6 +4844,7 @@ func _test_multi_zone_removal_hud_integration() -> void:
 func _test_gargoyle_choice_hud_integration() -> void:
 	var packed := load("res://scenes/boot/main.tscn") as PackedScene
 	var app := packed.instantiate() as GameApp
+	app.enable_helpers = false
 	root.add_child(app)
 	await process_frame
 	var expose_error := _expose_monster(
@@ -4569,6 +4903,7 @@ func _test_gargoyle_choice_hud_integration() -> void:
 func _test_shop_gain_choice_hud_integration() -> void:
 	var packed := load("res://scenes/boot/main.tscn") as PackedScene
 	var app := packed.instantiate() as GameApp
+	app.enable_helpers = false
 	root.add_child(app)
 	await process_frame
 	var definitions := _load_definitions()
@@ -4627,6 +4962,7 @@ func _test_shop_gain_choice_hud_integration() -> void:
 func _test_fire_elemental_hud_integration() -> void:
 	var packed := load("res://scenes/boot/main.tscn") as PackedScene
 	var app := packed.instantiate() as GameApp
+	app.enable_helpers = false
 	root.add_child(app)
 	await process_frame
 	var expose_error := _expose_monster(
@@ -4680,6 +5016,7 @@ func _test_fire_elemental_hud_integration() -> void:
 func _test_mimic_and_lamia_hud_integration() -> void:
 	var packed := load("res://scenes/boot/main.tscn") as PackedScene
 	var mimic_app := packed.instantiate() as GameApp
+	mimic_app.enable_helpers = false
 	root.add_child(mimic_app)
 	await process_frame
 	var expose_error := _expose_monster(
@@ -4708,6 +5045,7 @@ func _test_mimic_and_lamia_hud_integration() -> void:
 	await process_frame
 
 	var lamia_app := packed.instantiate() as GameApp
+	lamia_app.enable_helpers = false
 	root.add_child(lamia_app)
 	await process_frame
 	expose_error = _expose_monster(
@@ -4763,7 +5101,7 @@ func _test_mimic_and_lamia_hud_integration() -> void:
 
 func _test_play_adventurer_capacity_and_equipment_departure() -> void:
 	var definitions := _load_definitions()
-	var state := GameStateData.create_vertical_slice(241)
+	var state := _baseline_state(241)
 	var equip_result := RulesEngine.dispatch(
 		state,
 		_equip_item_envelope(
@@ -4819,7 +5157,7 @@ func _test_play_adventurer_capacity_and_equipment_departure() -> void:
 
 func _test_use_item_draw_and_rest_cleanup() -> void:
 	var definitions := _load_definitions()
-	var state := GameStateData.create_vertical_slice(251)
+	var state := _baseline_state(251)
 	var player := state.players[&"p1"] as PlayerStateData
 	var hand := state.zones[player.zone_ids[&"hand"]] as ZoneData
 	for raw_card_id: Variant in hand.card_instance_ids.duplicate().slice(0, 2):
@@ -4866,7 +5204,7 @@ func _test_use_item_draw_and_rest_cleanup() -> void:
 
 
 func _test_turn_rotation() -> void:
-	var state := GameStateData.create_vertical_slice()
+	var state := _baseline_state()
 	var player_two := state.players[&"p2"] as PlayerStateData
 	player_two.turn_resources["combat"] = 7
 	player_two.turn_bonuses["test"] = true
@@ -4895,7 +5233,7 @@ func _test_turn_rotation() -> void:
 
 func _test_session_turn_integration() -> void:
 	var session := GameSession.new()
-	var errors := session.start_new_game(91)
+	var errors := session.start_new_game(91, false)
 	_expect(errors.is_empty(), "session should start a two-player game")
 	if not errors.is_empty():
 		return
@@ -4913,7 +5251,7 @@ func _test_session_turn_integration() -> void:
 
 
 func _test_zone_move_service() -> void:
-	var state := GameStateData.create_vertical_slice()
+	var state := _baseline_state()
 	var before_hash := CanonicalJson.sha256(state.to_dictionary())
 	var invalid := ZoneService.move_card(
 		state,
@@ -4937,7 +5275,7 @@ func _test_zone_move_service() -> void:
 
 
 func _test_rest_cleanup_and_draw() -> void:
-	var state := GameStateData.create_vertical_slice(113)
+	var state := _baseline_state(113)
 	var final_events: Array[Dictionary] = []
 	for index in 5:
 		var result := RulesEngine.dispatch(state, _end_phase_envelope(state, "cmd-rest-%d" % index))
@@ -4958,7 +5296,7 @@ func _test_rest_cleanup_and_draw() -> void:
 
 
 func _test_draw_reshuffle_boundaries() -> void:
-	var exact_draw := GameStateData.create_vertical_slice(127)
+	var exact_draw := _baseline_state(127)
 	var player := exact_draw.players[&"p1"] as PlayerStateData
 	var hand := exact_draw.zones[player.zone_ids[&"hand"]] as ZoneData
 	var original_hand := hand.card_instance_ids.duplicate()
@@ -4973,7 +5311,7 @@ func _test_draw_reshuffle_boundaries() -> void:
 	_expect(not _events_contain(exact_events, "discard_reshuffled"), "drawing the final available card must not reshuffle early")
 	_expect(exact_draw.rng_state == rng_before, "draw without shuffle must not consume RNG")
 
-	var shortage := GameStateData.create_vertical_slice(131)
+	var shortage := _baseline_state(131)
 	var shortage_events: Array[Dictionary] = []
 	var cleanup_error := DeckService.discard_hand_and_play_area(shortage, &"p1", shortage_events)
 	_expect(cleanup_error.is_empty(), "shortage fixture cleanup should succeed")
@@ -4984,8 +5322,8 @@ func _test_draw_reshuffle_boundaries() -> void:
 
 
 func _test_seeded_shuffle_order() -> void:
-	var first := GameStateData.create_vertical_slice(149)
-	var second := GameStateData.create_vertical_slice(149)
+	var first := _baseline_state(149)
+	var second := _baseline_state(149)
 	var first_events: Array[Dictionary] = []
 	var second_events: Array[Dictionary] = []
 	DeckService.discard_hand_and_play_area(first, &"p1", first_events)
@@ -5001,7 +5339,7 @@ func _test_seeded_shuffle_order() -> void:
 
 
 func _test_duplicate_command_guard() -> void:
-	var state := GameStateData.create_vertical_slice()
+	var state := _baseline_state()
 	var first := RulesEngine.dispatch(state, _end_phase_envelope(state, "cmd-duplicate"))
 	_expect(bool(first.get("ok", false)), "first command submission should succeed")
 	if bool(first.get("ok", false)):
@@ -5012,7 +5350,7 @@ func _test_duplicate_command_guard() -> void:
 
 
 func _test_twenty_blank_rounds() -> void:
-	var state := GameStateData.create_vertical_slice()
+	var state := _baseline_state()
 	for index in 200:
 		var result := RulesEngine.dispatch(state, _end_phase_envelope(state, "cmd-round-%03d" % index))
 		_expect(bool(result.get("ok", false)), "blank-round command %d should succeed" % index)
@@ -5025,8 +5363,8 @@ func _test_twenty_blank_rounds() -> void:
 
 
 func _test_twenty_round_determinism() -> void:
-	var first := GameStateData.create_vertical_slice(301)
-	var second := GameStateData.create_vertical_slice(301)
+	var first := _baseline_state(301)
+	var second := _baseline_state(301)
 	for index in 200:
 		var command_id := "cmd-deterministic-%03d" % index
 		var first_result := RulesEngine.dispatch(first, _end_phase_envelope(first, command_id))
@@ -5040,7 +5378,7 @@ func _test_twenty_round_determinism() -> void:
 
 
 func _test_stale_command_rollback() -> void:
-	var state := GameStateData.create_vertical_slice()
+	var state := _baseline_state()
 	var before_hash := CanonicalJson.sha256(state.to_dictionary())
 	var envelope := _end_phase_envelope(state)
 	envelope["expected_revision"] = 99
@@ -5052,7 +5390,7 @@ func _test_stale_command_rollback() -> void:
 
 
 func _test_snapshot_round_trip() -> void:
-	var state := GameStateData.create_vertical_slice()
+	var state := _baseline_state()
 	var definitions := _load_definitions()
 	var equip_result := RulesEngine.dispatch(
 		state,
@@ -5082,7 +5420,7 @@ func _test_snapshot_round_trip() -> void:
 
 
 func _test_snapshot_rejection_paths() -> void:
-	var state := GameStateData.create_vertical_slice()
+	var state := _baseline_state()
 	var encoded := SnapshotCodec.encode(state, "content:test", "rules:test")
 	var wrong_content := SnapshotCodec.decode(encoded, "content:other", "rules:test")
 	_expect(str(wrong_content.get("error", "")) == "content_fingerprint_mismatch", "snapshot must reject wrong content fingerprint")

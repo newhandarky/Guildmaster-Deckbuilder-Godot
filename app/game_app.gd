@@ -1,12 +1,14 @@
 class_name GameApp
 extends Node
 
+
 @onready var animation_director: AnimationDirector = %AnimationDirector
 @onready var hud: GameHud = %HUD
 @onready var player_token: SelectableToken = %PlayerToken
 @onready var enemy_token: SelectableToken = %EnemyToken
 
 var session := GameSession.new()
+var enable_helpers := true
 
 
 func _ready() -> void:
@@ -27,7 +29,7 @@ func _ready() -> void:
 	session.state_changed.connect(hud.update_state)
 	session.events_committed.connect(_on_events_committed)
 	session.command_rejected.connect(hud.show_error)
-	var errors := session.start_new_game()
+	var errors := session.start_new_game(20260909, enable_helpers)
 	if not errors.is_empty():
 		push_error("Unable to start vertical slice: %s" % "; ".join(errors))
 

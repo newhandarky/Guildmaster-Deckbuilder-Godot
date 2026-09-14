@@ -105,6 +105,19 @@ func show_events(events: Array[Dictionary]) -> void:
 			return
 	for index in range(events.size() - 1, -1, -1):
 		var event := events[index] as Dictionary
+		if event.get("type") == "card_transferred":
+			event_label.text = "%s 將 %s 交給 %s" % [
+				_player_display_name(str(event.get("from_player_id", ""))),
+				_card_display_name(str(event.get("card_instance_id", ""))),
+				_player_display_name(str(event.get("to_player_id", ""))),
+			]
+			return
+		if event.get("type") == "helper_revealed":
+			event_label.text = "協助者登場：%s" % _card_display_name(str(event.get("card_instance_id", "")))
+			return
+		if event.get("type") == "helper_left":
+			event_label.text = "協助者離場：%s" % _card_display_name(str(event.get("card_instance_id", "")))
+			return
 		if event.get("type") == "boss_revealed":
 			event_label.text = "Boss 揭示：%s" % _card_display_name(
 				str(event.get("card_instance_id", ""))
@@ -308,7 +321,9 @@ func _rebuild_hand(state: Dictionary, active_player_id: String) -> void:
 		var definition := definitions.get(str(card.get("definition_id", "")), {}) as Dictionary
 		var card_label := Label.new()
 		card_label.text = (
-			_draft_card_text(definition)
+			("冒險者牌庫" if card_id == "shared:adventurer-supply" else "物資牌庫")
+			if StringName(effect_state.get("op", "")) == &"choose_supply_deck_draft"
+			else _draft_card_text(definition)
 			if StringName(effect_state.get("op", "")) == &"draft_gain_card"
 			else _hand_card_text(definition)
 		)
@@ -326,6 +341,8 @@ func _rebuild_hand(state: Dictionary, active_player_id: String) -> void:
 				StringName(effect_state.get("op", "")),
 				card_source_label if not card_source_label.is_empty() else choice_source_label
 			)
+			if StringName(effect_state.get("op", "")) == &"choose_supply_deck_draft":
+				choice_button.text = "選擇%s" % card_label.text
 			if StringName(effect_state.get("op", "")) == &"choose_move_card" \
 					and str(effect_state.get("destination_zone_id", "")).ends_with(":discard-pile"):
 				choice_button.text = "棄置此牌"
@@ -507,6 +524,8 @@ func _localized_choice_source(source_zone_key: StringName) -> String:
 		&"recruit_row": "招募區",
 		&"shop_row": "商店",
 		&"resource_draft_row": "物資輪抽區",
+		&"helper_draft_source": "官方供應牌庫",
+		&"helper_draft_row": "協助者輪抽區",
 		&"inspection": "自己的查看區",
 		&"equipment": "自己的裝備區",
 		&"effect_source": "效果來源",
@@ -598,6 +617,7 @@ func _rebuild_market(state: Dictionary) -> void:
 	var refresh_rows := refresh_command.get("rows", {}) as Dictionary
 	var market_buttons: Array[Button] = []
 	_append_boss_info(zones)
+	_append_helper_info(zones)
 	_append_equipment_effect_actions(legal_commands, market_buttons)
 	var attack_target_count := _append_combat_actions(legal_commands, market_buttons)
 	var row_specs := [
@@ -628,7 +648,9 @@ func _rebuild_market(state: Dictionary) -> void:
 				var effective_cost := int(legal.get("effective_cost", definition.get("cost", 0)))
 				buy_button.text = "購買（實付 %d）" % effective_cost
 				if effective_cost != int(definition.get("cost", effective_cost)):
-					buy_button.tooltip_text = "隊伍效果修正：印刷費用 %d → 實付 %d" % [
+					var helper_reason := _helper_cost_reason(zones, str(definition.get("card_type", "")))
+					buy_button.tooltip_text = "%s：印刷費用 %d → 實付 %d" % [
+						helper_reason if not helper_reason.is_empty() else "隊伍效果修正",
 						int(definition.get("cost", 0)), effective_cost,
 					]
 				buy_button.custom_minimum_size = Vector2(78.0, 32.0)
@@ -731,6 +753,41 @@ func _append_boss_info(zones: Dictionary) -> void:
 	]
 	boss_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	market_actions.add_child(boss_label)
+
+
+func _append_helper_info(zones: Dictionary) -> void:
+	var active := zones.get("shared:helper-active", {}) as Dictionary
+	var deck := zones.get("shared:helper-deck", {}) as Dictionary
+	var card_ids := active.get("card_instance_ids", []) as Array
+	var label := Label.new()
+	if card_ids.is_empty():
+		label.text = "目前協助者：無｜候補 %d 張" % (deck.get("card_instance_ids", []) as Array).size()
+	else:
+		var card_id := str(card_ids[0])
+		var definition := _definition_for_instance(card_id)
+		label.text = "目前協助者：%s｜候補 %d 張\n效果：%s" % [
+			str(definition.get("display_name", card_id)),
+			(deck.get("card_instance_ids", []) as Array).size(),
+			str(definition.get("rules_text", "")),
+		]
+	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	market_actions.add_child(label)
+
+
+func _helper_cost_reason(zones: Dictionary, card_type: String) -> String:
+	var active := zones.get("shared:helper-active", {}) as Dictionary
+	var ids := active.get("card_instance_ids", []) as Array
+	if ids.is_empty():
+		return ""
+	var definition := _definition_for_instance(str(ids[0]))
+	for raw_effect: Variant in definition.get("effects", []):
+		if not raw_effect is Dictionary:
+			continue
+		var effect := raw_effect as Dictionary
+		if effect.get("op") == "purchase_cost_modifier" \
+				and card_type in (effect.get("card_types", []) as Array):
+			return "協助者「%s」修正" % str(definition.get("display_name", ""))
+	return ""
 
 
 func _find_buy_command(commands: Array, card_instance_id: String, row_id: String) -> Dictionary:

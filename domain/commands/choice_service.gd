@@ -60,6 +60,11 @@ static func validate(
 	var skip := bool(command.get("skip", false))
 	var card_instance_id := StringName(command.get("card_instance_id", ""))
 	var operation := StringName(choice.get("op", ""))
+	var locked_source_zone := StringName(choice.get("source_card_zone_id", ""))
+	if not locked_source_zone.is_empty() and ZoneService.find_card_zone(
+		state, StringName(choice.get("source_card_instance_id", ""))
+	) != locked_source_zone:
+		return "choice_effect_source_moved"
 	var selected_card_ids := choice.get("selected_card_ids", []) as Array
 	var selected_count := int(choice.get("selected_count", selected_card_ids.size()))
 	var completion_error := _validate_boss_completion_payload(
@@ -84,10 +89,37 @@ static func validate(
 		return "choice_selection_limit_reached"
 	if not str(card_instance_id) in (choice.get("eligible_card_ids", []) as Array):
 		return "ineligible_choice_card"
+	if operation == &"choose_supply_deck_draft":
+		var source_effect := choice.get("source_effect", {}) as Dictionary
+		var source_deck := state.zones.get(card_instance_id) as ZoneData
+		var draft_zone := state.zones.get(HelperService.DRAFT_ROW_ID) as ZoneData
+		if StringName(source_effect.get("op", "")) != operation \
+				or str(card_instance_id) not in (source_effect.get("source_deck_zone_ids", []) as Array) \
+				or StringName(source_effect.get("choice_zone_id", "")) != HelperService.DRAFT_ROW_ID \
+				or source_deck == null or source_deck.kind != &"ordered_deck" \
+				or source_deck.visibility != &"hidden" \
+				or draft_zone == null or not draft_zone.card_instance_ids.is_empty() \
+				or ZoneService.find_card_zone(state, StringName(choice.get("source_card_instance_id", ""))) \
+				!= StringName(choice.get("source_card_zone_id", "")):
+			return "invalid_helper_draft_source"
+		return ""
 	var card := state.cards.get(card_instance_id) as Dictionary
 	if card == null:
 		return "missing_choice_card"
 	match operation:
+		&"choose_transfer_card":
+			var player := state.players.get(actor_id) as PlayerStateData
+			var next_index := (state.turn_order.find(actor_id) + 1) % state.turn_order.size()
+			var recipient_id := state.turn_order[next_index]
+			var recipient := state.players.get(recipient_id) as PlayerStateData
+			if player == null or recipient == null \
+					or ZoneService.find_card_zone(state, card_instance_id) != StringName(player.zone_ids.get(&"hand", &"")) \
+					or StringName(choice.get("source_zone_id", "")) != StringName(player.zone_ids.get(&"hand", &"")) \
+					or StringName(choice.get("destination_zone_id", "")) != StringName(recipient.zone_ids.get(&"hand", &"")) \
+					or StringName(choice.get("recipient_id", "")) != recipient_id:
+				return "invalid_transfer_source"
+			if StringName(card.get("owner_id", "")) != actor_id:
+				return "choice_card_not_owned"
 		&"choose_equipment_replacement":
 			var player := state.players.get(actor_id) as PlayerStateData
 			var target_id := StringName(choice.get("target_card_id", ""))
@@ -329,6 +361,25 @@ static func apply(
 	var operation := StringName(choice.get("op", ""))
 	if operation == &"draft_gain_card":
 		return _apply_draft_gain(state, actor_id, choice, card_instance_id, events, definitions)
+	if operation == &"choose_supply_deck_draft":
+		state.effect_state.clear()
+		events.append({"type":"choice_resolved","actor_id":str(actor_id),"op":str(operation),"source_deck_zone_id":str(card_instance_id),"source_card_instance_id":str(choice.get("source_card_instance_id", ""))})
+		var draft_effect: Dictionary = {
+			"op":"draft_gain_card", "source_deck_zone_id":str(card_instance_id),
+			"choice_zone_id":str(HelperService.DRAFT_ROW_ID), "cards_per_player":1,
+			"destination_zone_key":"hand", "choice_title":str(choice.get("choice_title", "多人輪抽")),
+			"prompt":str((choice.get("source_effect", {}) as Dictionary).get("draft_prompt", "從公開區選擇卡牌")),
+			"source_card_instance_id":str(choice.get("source_card_instance_id", "")),
+			"source_card_zone_id":str(choice.get("source_card_zone_id", "")),
+		}
+		var sequence: Array[Dictionary] = [draft_effect]
+		for raw_effect: Variant in choice.get("continuation_effects", []):
+			if raw_effect is Dictionary:
+				sequence.append((raw_effect as Dictionary).duplicate(true))
+		var draft_error := EffectResolver.resolve(state, actor_id, sequence, events, definitions)
+		if not draft_error.is_empty():
+			return draft_error
+		return _resume_helper_boundary(state, choice, actor_id, events, definitions)
 	var resolved_source_record: Dictionary = {}
 	if not skip:
 		if operation == &"choose_remove_card":
@@ -386,6 +437,15 @@ static func apply(
 			var card := state.cards[card_instance_id] as Dictionary
 			if operation == &"choose_gain_card":
 				card["owner_id"] = str(actor_id)
+			if operation == &"choose_transfer_card":
+				card["owner_id"] = str(choice.get("recipient_id", ""))
+				events.append({
+					"type":"card_transferred", "actor_id":str(actor_id),
+					"from_player_id":str(actor_id),
+					"to_player_id":str(choice.get("recipient_id", "")),
+					"card_instance_id":str(card_instance_id),
+					"source_card_instance_id":str(choice.get("source_card_instance_id", "")),
+				})
 			var selected_card_ids := choice.get("selected_card_ids", []) as Array
 			selected_card_ids.append(str(card_instance_id))
 			choice["selected_card_ids"] = selected_card_ids
@@ -510,6 +570,9 @@ static func apply(
 		if not state.effect_state.is_empty() and choice.has("boss_completion"):
 			state.effect_state["boss_completion"] = choice["boss_completion"]
 			return ""
+	var boundary_error := _resume_helper_boundary(state, choice, StringName(choice.get("actor_id", actor_id)), events, definitions)
+	if not boundary_error.is_empty() or not state.effect_state.is_empty():
+		return boundary_error
 	var boss_completion := choice.get("boss_completion", {}) as Dictionary
 	if not boss_completion.is_empty():
 		return BossService.continue_defeat_after_choice(
@@ -635,7 +698,11 @@ static func _apply_draft_gain(
 	var card := state.cards[card_instance_id] as Dictionary
 	card["owner_id"] = str(actor_id)
 	var move_event := (move_result.get("event", {}) as Dictionary).duplicate(true)
-	move_event["reason"] = "resource_draft_gained"
+	move_event["reason"] = (
+		"helper_draft_gained"
+		if StringName(choice.get("choice_zone_id", "")) == HelperService.DRAFT_ROW_ID
+		else "resource_draft_gained"
+	)
 	move_event["actor_id"] = str(actor_id)
 	events.append(move_event)
 	var remaining_card_ids := choice.get("remaining_card_ids", []) as Array
@@ -680,8 +747,11 @@ static func _apply_draft_gain(
 		for raw_effect: Variant in choice.get("continuation_effects", []):
 			if raw_effect is Dictionary:
 				continuation.append((raw_effect as Dictionary).duplicate(true))
-		return EffectResolver.resolve(state, StringName(choice.get("defeated_by_actor_id", "")), continuation, events, definitions) \
+		var continuation_error := EffectResolver.resolve(state, StringName(choice.get("defeated_by_actor_id", "")), continuation, events, definitions) \
 				if not continuation.is_empty() else ""
+		if not continuation_error.is_empty():
+			return continuation_error
+		return _resume_helper_boundary(state, choice, StringName(choice.get("defeated_by_actor_id", "")), events, definitions)
 	var selection_order := choice.get("selection_order", []) as Array
 	if selection_index >= selection_order.size():
 		return "draft_selection_order_exhausted"
@@ -699,6 +769,24 @@ static func _apply_draft_gain(
 		"remaining_count": remaining_card_ids.size(),
 		"completed_selections": completed_selections.duplicate(true),
 	})
+	return ""
+
+
+static func _resume_helper_boundary(
+	state: GameStateData, choice: Dictionary, actor_id: StringName,
+	events: Array[Dictionary], definitions: Dictionary
+) -> String:
+	if not state.effect_state.is_empty():
+		for marker in ["helper_reveal_after_choice", "helper_rest_boundary", "helper_purchase_boundary"]:
+			if bool(choice.get(marker, false)):
+				state.effect_state[marker] = true
+		return ""
+	if bool(choice.get("helper_reveal_after_choice", false)):
+		return HelperService.reveal_after_choice(state, actor_id, events, definitions)
+	if bool(choice.get("helper_rest_boundary", false)):
+		return RulesEngine.finish_rest_phase(state, events, definitions)
+	if bool(choice.get("helper_purchase_boundary", false)):
+		return HelperService.trigger(state, actor_id, &"on_purchase_start", events, definitions)
 	return ""
 
 
